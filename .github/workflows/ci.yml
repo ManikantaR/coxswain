@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Configure git (worktree/e2e tests need an identity)
+        run: |
+          git config --global user.email ci@cox.test
+          git config --global user.name ci
+          git config --global init.defaultBranch main
+      - name: Lint
+        run: ruff check .
+      - name: Types
+        run: mypy
+      - name: Test (zero tokens, zero network)
+        run: pytest -q

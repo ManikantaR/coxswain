@@ -15,6 +15,8 @@ Conventions for every task:
 
 ## M0 — the proven loop
 
+> STATUS 2026-07-05: T-01..T-13 code-complete — 38 tests green (ruff + mypy + pytest, zero-token stub e2e). T-14 (10 real-task shakedown) is the remaining human-in-loop gate before M1.
+
 ### T-01 · Package + CLI skeleton
 - [ ] `pyproject.toml`: project `cox`, `requires-python >=3.11`, console script `cox = cox.cli:main`, deps: none (PyYAML optional extra `yaml`). Tool config: ruff (line-length 100), mypy strict for `cox/model.py`.
 - [ ] `cox/cli.py`: argparse with subcommands `status`, `dispatch`, `gate`, `fix`, `ship`, `merge`, `teardown`, `watch`, `await-wake`, `peek`, `pause`, `resume-ops`, `cost`. Each delegates to a module function; unknown/unimplemented ones exit 2 with "not implemented (see TASKS.md T-xx)".
