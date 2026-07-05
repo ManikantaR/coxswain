@@ -147,6 +147,60 @@ footer{padding:34px 0;color:var(--muted);font-size:.85rem;text-align:center}
 .tokentbl td,.tokentbl th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left}
 .tokentbl th{color:var(--fg2);font-weight:600}
 .tokentbl td.num{font-variant-numeric:tabular-nums;text-align:right;font-family:var(--mono)}
+/* flows */
+.flowgroup{font-size:.72rem;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);
+  margin:14px 4px 6px;font-weight:700}
+.flowgroup:first-child{margin-top:0}
+.flowitem{border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:var(--card);
+  cursor:pointer;transition:.15s;display:flex;align-items:baseline;gap:8px}
+.flowitem:hover{border-color:var(--accent)}
+.flowitem[aria-current="true"]{border-color:var(--accent);background:var(--bg2);box-shadow:0 0 0 1px var(--accent)}
+.flowitem .fi-name{font-family:var(--mono);font-size:.86rem;font-weight:650}
+.flowitem .fi-desc{color:var(--fg2);font-size:.8rem}
+.tracewrap{border:1px solid var(--line);border-radius:10px;background:var(--bg2);margin-top:10px;
+  max-height:560px;overflow:auto}
+.trace{font-family:var(--mono);font-size:.8rem;padding:8px 0}
+.trow{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:6px 14px;border-left:3px solid transparent;
+  transition:background .25s,opacity .25s}
+.trow .lchip{align-self:start;font-size:.62rem;text-transform:uppercase;letter-spacing:.05em;
+  padding:2px 7px;border-radius:5px;font-weight:700;white-space:nowrap;border:1px solid transparent}
+.trow .body .call{color:var(--fg);font-weight:600}
+.trow .body .call .p{color:var(--n);font-weight:400}
+.trow .body .resp{color:var(--fg2);font-size:.94em;margin-top:2px}
+.trow .body .tags{margin-top:3px;display:flex;gap:5px;flex-wrap:wrap}
+.trow .body .t{font-size:.66rem;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--fg2)}
+.trow .body .t.free{color:var(--accent2);border-color:color-mix(in srgb,var(--accent2) 40%,transparent)}
+.trow .body .t.tok{color:var(--red);border-color:color-mix(in srgb,var(--red) 40%,transparent)}
+.trow .body .t.guard{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.trow .body .t.stop{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.trace.stepping .trow{opacity:.28}
+.trace.stepping .trow.shown{opacity:1}
+.trow.cur{background:color-mix(in srgb,var(--accent) 10%,transparent);border-left-color:var(--accent)}
+/* layer palette */
+.L-cli{background:color-mix(in srgb,#4aa3ff 16%,transparent);color:#8cc7ff;border-color:#4aa3ff55}
+.L-control{background:color-mix(in srgb,#7ee787 15%,transparent);color:#7ee787;border-color:#7ee78755}
+.L-store{background:color-mix(in srgb,#d2a8ff 15%,transparent);color:#d2a8ff;border-color:#d2a8ff55}
+.L-lane{background:color-mix(in srgb,#f0a020 16%,transparent);color:#f0a020;border-color:#f0a02055}
+.L-scm{background:color-mix(in srgb,#ff7b72 15%,transparent);color:#ff7b72;border-color:#ff7b7255}
+.L-proc{background:color-mix(in srgb,#79c0ff 15%,transparent);color:#79c0ff;border-color:#79c0ff55}
+.L-ext{background:var(--bg3);color:var(--fg2);border-color:var(--line)}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;font-size:.72rem}
+.legend .lchip{padding:2px 8px;border-radius:5px;font-weight:700;border:1px solid transparent}
+/* dev guide */
+.dstep{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:14px;background:var(--card)}
+.dstep h3{margin-top:0;display:flex;align-items:center;gap:10px}
+.dstep h3 .num{width:26px;height:26px;border-radius:50%;background:var(--bg3);border:1px solid var(--line);
+  display:inline-flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:700;color:var(--accent)}
+.sh{position:relative;background:#0a0e14;border:1px solid var(--line);border-radius:9px;margin:10px 0;overflow:hidden}
+@media(prefers-color-scheme:light){.sh{background:#0d1117}}
+.sh pre{margin:0;padding:13px 15px;overflow:auto;font-family:var(--mono);font-size:.82rem;line-height:1.6;color:#e6edf3}
+.sh .cp{position:absolute;top:7px;right:7px;background:var(--bg3);border:1px solid var(--line);color:var(--fg2);
+  border-radius:6px;font:inherit;font-size:.72rem;padding:3px 9px;cursor:pointer}
+.sh .cp:hover{color:var(--fg);border-color:var(--accent)}
+.sh .prompt{color:var(--accent2)}
+.sh .cmt{color:var(--c)}
+.trouble td{border-bottom:1px solid var(--line);padding:9px 10px;vertical-align:top;font-size:.9rem}
+.trouble td:first-child{font-family:var(--mono);font-size:.8rem;color:var(--red);white-space:nowrap}
 </style>
 </head>
 <body>
@@ -156,8 +210,10 @@ footer{padding:34px 0;color:var(--muted);font-size:.85rem;text-align:center}
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button class="tab" role="tab" aria-selected="true"  data-panel="new">⚓ New here</button>
       <button class="tab" role="tab" aria-selected="false" data-panel="arch">🏛 Architect</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="flows">🔀 Flows</button>
       <button class="tab" role="tab" aria-selected="false" data-panel="run">▶ Runtime</button>
       <button class="tab" role="tab" aria-selected="false" data-panel="road">🗺 Roadmap</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="dev">🧰 Dev guide</button>
     </nav>
   </div>
 </header>
@@ -317,6 +373,35 @@ footer{padding:34px 0;color:var(--muted);font-size:.85rem;text-align:center}
   </section>
 </div>
 
+<!-- ============ FLOWS ============ -->
+<div class="panel" id="panel-flows" role="tabpanel">
+  <section>
+    <div class="kicker">Call lifecycles · every entrypoint, every layer it touches</div>
+    <h2>Flows — trace one call through the code</h2>
+    <p class="lead">Pick a command, job, or tool on the left. The right side is its <b>real call
+    trace</b>, hand-verified against <code>cox/*.py</code> at this snapshot: indentation is call
+    depth, the colored chip is the layer, and each row names the method, its key params, and its
+    one responsibility. Trivial helpers are collapsed so you see the path, not a hairball. Use
+    <b>Step ▸</b> to walk it one call at a time.</p>
+
+    <div class="walk" style="margin-top:18px;grid-template-columns:0.85fr 1.35fr">
+      <div class="story" id="flowList"></div>
+      <div class="sticky">
+        <div class="filetag" id="flowTitle">cox dispatch</div>
+        <div class="callout" id="flowSummary" style="margin-top:0;border-radius:0 0 10px 10px"></div>
+        <div class="tracewrap"><div class="trace" id="flowTrace"></div></div>
+        <div class="stepnav">
+          <button class="btn" id="ftPrev">◂ Back</button>
+          <button class="btn primary" id="ftStep">Step ▸</button>
+          <button class="btn" id="ftAll">Show all</button>
+          <span class="dim" id="ftCount" style="align-self:center;font-size:.85rem"></span>
+        </div>
+        <div class="legend" id="flowLegend"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
 <!-- ============ RUNTIME ============ -->
 <div class="panel" id="panel-run" role="tabpanel">
   <section>
@@ -399,6 +484,18 @@ footer{padding:34px 0;color:var(--muted);font-size:.85rem;text-align:center}
     <p class="lead">Snapshot dated <b>2026-07-05</b>. M0 (the loop itself) is code-complete and tested;
     its final gate is a human shakedown on 10 real tasks. Nothing in M1/M2 starts until M0 ships for real.</p>
     <div class="timeline" id="timeline"></div>
+  </section>
+</div>
+
+<!-- ============ DEV GUIDE ============ -->
+<div class="panel" id="panel-dev" role="tabpanel">
+  <section>
+    <div class="kicker">How-to · action only · copy-paste and go</div>
+    <h2>Dev guide — build, install, run</h2>
+    <p class="lead">This page assumes you can already code; it just stands up the environment and
+    the daily loop. The <em>why</em> lives in the other tabs — here it’s only commands. Every block
+    has a copy button.</p>
+    <div id="devGuide"></div>
   </section>
 </div>
 
@@ -550,6 +647,179 @@ const ROADMAP = [
  {id:"V1", cls:"", title:"Work port — Windows · TFS/Azure", pill:['wait','planned'],
   body:"Windows runtime, Azure DevOps/TFS SCM adapter, copilot lane, work policy pack, multi-repo registry.",
   prog:[0,6], tasks:[["T-17 W1","wait"],["T-18 W2","wait"],["T-19 W3","wait"],["T-20 W4","wait"],["T-21 W5","wait"],["T-22","wait"]]},
+];
+
+/* ---------- FLOWS: hand-traced call lifecycles (accurate to this snapshot) ----------
+   d = call depth (indent) · L = layer chip · c = call(params) · r = responsibility · t = tags */
+const LAYERS = {cli:"cli",control:"control-plane",store:"store/state",lane:"worker lane",scm:"scm/git host",proc:"proc shim",ext:"external (git·gh·agent)"};
+const FLOWS = {
+ dispatch:{group:"Commands", name:"cox dispatch", desc:"turn a sentence/issue into a spawned worker",
+  file:"cli.py → dispatch.py → worktree.py → lanes/claude.py → proc.py",
+  summary:"You ask for work. The control plane vets it, pins a model, cuts a worktree, writes a brief, and launches a headless agent whose env can’t push. No tokens spent by coxswain itself.",
+  steps:[
+   [0,"cli","_cmd_dispatch(args)","CLI entry: parse repo/title/--path/--lane, delegate.",[]],
+   [1,"control","dispatch.dispatch(repo_path, title, body, path, lane)","The one guarded dispatch path.",[]],
+   [2,"control","home.is_paused()","Kill-switch check: state/PAUSED halts everything.",["kill switch"]],
+   [2,"control","active_worker_count()","Enforce the ≤3 concurrent-worker cap.",[]],
+   [3,"store","store.list_task_ids() + load_meta()","Count tasks currently WORKING/GATING/FIXING.",[]],
+   [2,"store","store.new_task_id(repo, title)","Repo-qualified id: <repo>-<slug>-<yymmddHHMM>.",[]],
+   [2,"control","models.resolve('implementer', repo_path)","Pin a model — env▸repo▸global▸default.",["guard:P8","crash if unpinned"]],
+   [2,"control","worktree.create(repo_path, task_id)","Disposable worktree + branch cox/<id>.",[]],
+   [3,"proc","proc.run(git fetch / worktree add)","Every git rc checked — no silent hang.",["guard:P5"]],
+   [2,"control","render_brief(...) → brief.md","Fill the brief template (rails, evidence contract).",[]],
+   [2,"store","store.save_meta(TaskMeta(state=QUEUED))","Atomic write (tmp+rename); state on disk.",["guard:P3"]],
+   [2,"lane","get_lane(lane).spawn(brief, worktree, model, …)","Hand off to the claude lane.",[]],
+   [3,"lane","_worker_env()  (strip GH_TOKEN)","Worker literally cannot push — trust boundary.",["guard:P6"]],
+   [3,"proc","proc.spawn_detached(argv, log, pid, env)","Detached subprocess → log file. No PTY/tmux.",["guard:P7","free"]],
+   [2,"store","store.append_status('working: dispatched …')","Sparse status line the watcher will read.",["free"]],
+  ]},
+ gate:{group:"Commands", name:"cox gate", desc:"deterministic checks before any review",
+  file:"cli.py → gate.py → repoconfig.py → proc.py → evidence.py",
+  summary:"rebase → test → lint → evidence, all plain Python. Red routes straight to a fix round — the expensive review never runs on broken code.",
+  steps:[
+   [0,"cli","_cmd_gate(task_id)","CLI entry.",[]],
+   [1,"control","gate.run_gate(task_id)","Runs steps 1–4 in fixed order.",["free"]],
+   [2,"store","store.load_meta(task_id)","Load worktree path + dispatched_at.",[]],
+   [2,"control","load_repo_config(worktree)","Read .cox/repo.yml: test/lint cmds, target, review mode.",[]],
+   [2,"proc","proc.run(git rebase origin/<target>)","Step 1. Conflict → needs-human(gate-red).",["stop:gate-red"]],
+   [2,"proc","proc.run(<cfg.test_cmd>)  then  <cfg.lint_cmd>","Steps 2–3. Configured commands = zero tokens.",["free"]],
+   [3,"control","_fail(step, tail(out+err)) → feedback.md","On red: capture output, state→FIXING.",["guard:P5"]],
+   [2,"control","evidence.check(task_id, dispatched_at)","Step 4. Contract files exist, non-empty, fresh.",[]],
+   [3,"control","_sweep()  (fallback)","Rescue misplaced evidence + log a contract-violation warning.",[]],
+   [2,"control","_write(gate.json)","Persist the gate report.",[]],
+   [1,"control","→ passed? review.py : back to fix","RED never reaches the review pass.",["guard:P1"]],
+  ]},
+ review:{group:"Commands", name:"review pass", desc:"one fresh-context judgment call",
+  file:"review.py → models.py → proc.py → lanes/claude.py",
+  summary:"A pinned reviewer sees ONLY the diff + brief (fresh context, unbiased). It runs exactly once; garbage output pings you — it is never re-run.",
+  steps:[
+   [0,"control","review.review(task_id)","Gate step 5. The single review pass.",[]],
+   [1,"control","load_repo_config → review=='none'?","Docs repos can skip review entirely.",[]],
+   [1,"proc","_diff(worktree,target) = git diff origin/t...HEAD","Just the change, nothing else.",[]],
+   [1,"control","build_prompt(diff, brief)","Correctness-only criteria + required JSON schema.",[]],
+   [1,"control","models.resolve('reviewer', worktree)","Pinned reviewer model.",["guard:P8"]],
+   [1,"proc","proc.spawn_detached(claude --permission-mode plan)","Read-only: the reviewer never edits.",["tok:1 pass"]],
+   [1,"lane","parse_stream_json(log,'review') → append_cost","Capture usage → cost ledger.",["guard:P9"]],
+   [1,"control","parse_review(raw)","Route: approve · auto-fix · ask-user · worker-error.",[]],
+   [2,"control","route=='worker-error' → needs-human","Unparseable output pings you. NEVER re-run.",["guard:P2","stop:worker-error"]],
+  ]},
+ fix:{group:"Commands", name:"cox fix", desc:"resume the SAME session, don’t restart",
+  file:"cli.py → fix.py → lanes/claude.py (resume)",
+  summary:"Fixes resume the worker’s existing session, so feedback costs the delta — not a repo re-read. Capped at 2 rounds; the third red hands you a typed reason.",
+  steps:[
+   [0,"cli","_cmd_fix(task_id, --notes)","CLI entry.",[]],
+   [1,"control","fix.fix(task_id, notes)","Start a resumed fix round.",[]],
+   [2,"control","meta.fix_rounds >= 2 ?","Cap reached → NEEDS_HUMAN(gate-red), stop.",["stop:gate-red"]],
+   [2,"control","assemble_feedback(task_id, notes)","Merge gate feedback + review findings + your notes.",[]],
+   [2,"lane","lane.resume(session_id, feedback, worktree)","Continue the SAME agent session.",["guard:P4","tok:delta"]],
+   [3,"proc","proc.spawn_detached(claude --resume <sid>)","Run from the same worktree (cwd-scoped resume).",[]],
+   [2,"store","save_meta(state=FIXING, fix_rounds+1)","Bump the round counter.",[]],
+  ]},
+ ship:{group:"Commands", name:"cox ship / merge", desc:"control plane pushes; you say the word",
+  file:"cli.py → ship.py → scm/github.py → worktree.py",
+  summary:"Only the credential-holding control plane pushes and opens the PR. Merge happens on your explicit word; teardown refuses to delete unlanded work.",
+  steps:[
+   [0,"cli","_cmd_ship(task_id, repo, title)","CLI entry.",[]],
+   [1,"control","ship.ship(...)","Push + open PR.",[]],
+   [2,"scm","get_scm(cfg.scm).push(worktree, branch)","Control plane pushes — worker never does.",["guard:P6"]],
+   [3,"control","except PushRejected → needs-human(push-rejected)","Typed failure, not a generic bucket.",["guard:P5","stop:push-rejected"]],
+   [2,"control","_pr_body(task_id)","Body = gate report + evidence + token cost total.",["guard:P9"]],
+   [2,"scm","scm.create_pr(...) → proc.run(gh pr create)","Returns the PR URL; PrError on failure.",[]],
+   [2,"store","append_status('pr-ready: <url>')","Watcher turns this into a wake / Telegram ping.",[]],
+   [0,"cli","_cmd_merge  (only on 'merge it')","Merge is captain-gated.",[]],
+   [1,"scm","scm.merge(pr_url, squash=True)","Squash-merge via gh.",[]],
+   [1,"control","worktree.remove(...)  fail-closed","Refuses unless work is provably landed.",["guard:P5"]],
+  ]},
+ watch:{group:"Jobs", name:"watcher scan", desc:"zero-token event loop",
+  file:"watch.py → classify.py → wakequeue.py → proc.py",
+  summary:"A plain Python loop. It classifies new status lines, enqueues only actionable ones (crash-safely, before advancing its offset), and never spends a token. Benign lines are absorbed silently.",
+  steps:[
+   [0,"cli","cox watch → watch.run() loop","Sleeps POLL_SECS; observes only while PAUSED.",["free"]],
+   [1,"control","scan_once()","One pass over active tasks + heartbeat.",[]],
+   [2,"store","list_task_ids() → load_meta()","Find WORKING/GATING/FIXING tasks.",[]],
+   [2,"control","scan_task(tid): read status.log from offset","Only the new bytes since last scan.",[]],
+   [3,"control","classify.classify(line)","Pure fn: actionable verb? else None (absorbed).",["free"]],
+   [3,"store","wakequeue.enqueue(task,verb,detail,line)","Append BEFORE advancing offset — crash-safe.",["guard:P3"]],
+   [3,"control","_write_offset(len(text))","Advance only after the wake is durable.",[]],
+   [2,"proc","proc.is_alive(pid) / stale check","Derived wakes: worker-exited, worker-stale.",[]],
+   [2,"store","_write_heartbeat()","status/watcher.heartbeat → stale banner if old.",[]],
+  ]},
+ lane:{group:"Tools", name:"claude lane", desc:"the worker adapter",
+  file:"lanes/claude.py + lanes/base.py",
+  summary:"Adapts the claude CLI to a tiny interface: spawn, resume, parse. The retry cap is a hard constant — no config can make it re-run.",
+  steps:[
+   [0,"lane","AGENT_RETRY_CAP = 1  (base.py)","Module constant, NO config override.",["guard:P2"]],
+   [0,"lane","spawn(brief, worktree, model, log, pid)","Launch a fresh worker.",[]],
+   [1,"lane","_base_argv(model): claude -p --model … stream-json","Pinned model, acceptEdits, allowed tools (no push).",["guard:P8"]],
+   [1,"proc","proc.spawn_detached(argv, env=_worker_env())","Detached; GH_TOKEN stripped.",["guard:P6"]],
+   [0,"lane","resume(session_id, feedback, worktree)","Fix round: claude -p --resume <sid>.",["guard:P4"]],
+   [0,"lane","parse_result(log) → parse_stream_json","Read the final result JSON line.",[]],
+   [1,"lane","extract session_id, usage, total_cost_usd","Feed the cost ledger; malformed → parse-error.",["guard:P9"]],
+   [1,"control","malformed → needs-human(worker-error)","Never retried.",["stop:worker-error"]],
+  ]},
+ scm:{group:"Tools", name:"github scm", desc:"push / PR / merge via gh",
+  file:"scm/github.py + scm/base.py",
+  summary:"The trust boundary in code: only this layer touches the git host, and every gh/git failure becomes a typed reason.",
+  steps:[
+   [0,"scm","push(worktree, branch) → git push -u origin","PushRejected on failure.",["guard:P6","stop:push-rejected"]],
+   [0,"scm","create_pr(...) → gh pr create","Returns URL; PrError if no URL.",["stop:pr-error"]],
+   [0,"scm","pr_checks_green(pr_url) → gh pr view --json","None = unknown → human decides.",[]],
+   [0,"scm","merge(pr_url, squash) → gh pr merge --squash","Only on the captain’s word.",[]],
+  ]},
+};
+
+/* ---------- DEV GUIDE (Diátaxis how-to: action only) ---------- */
+const DEV = [
+ {n:1, h:"Prerequisites", body:
+  `<p class="dim">Coxswain is stdlib-only Python — but it needs a modern interpreter. The system
+   <code>python3</code> on macOS is often 3.9, which is too old.</p>`,
+  sh:[["# needs Python 3.11+ (StrEnum, modern typing)","cmt"],["python3.11 --version   ",""],
+      ["# and the agent CLIs you plan to use as lanes:","cmt"],["claude --version   #  codex --version","p"]]},
+ {n:2, h:"Install (editable, with dev tools)", body:
+  `<p class="dim">Clone, make a venv on 3.11, install in editable mode with the dev extras
+   (pytest, ruff, mypy, pyyaml).</p>`,
+  sh:[["git clone <your-remote>/coxswain && cd coxswain","p"],
+      ["python3.11 -m venv .venv","p"],
+      ["source .venv/bin/activate","p"],
+      ["pip install -e \".[dev]\"","p"]]},
+ {n:3, h:"Verify — lint, types, tests (zero tokens)", body:
+  `<p class="dim">The whole suite runs offline with no LLM calls (the stub lane fakes the agent).
+   All three must be green.</p>`,
+  sh:[["ruff check .","p"],["mypy","p"],["pytest -q          # 38 passed","p"]]},
+ {n:4, h:"Run — your first dispatch", body:
+  `<p class="dim">Point <code>COX_HOME</code> at a state dir, start the watcher in one pane, and
+   dispatch a task in another. <code>--path full</code> runs the whole gate; <code>quick</code>
+   skips the review pass.</p>`,
+  sh:[["export COX_HOME=~/cox-home","p"],
+      ["cox watch                         # pane 1: the zero-token watcher","p"],
+      ["cox dispatch ~/repo/smartocrprocess \\","p"],
+      ["  \"add a --json flag to the export command\" --path full","p"],
+      ["cox status --wakes                # see state + anything needing you","p"]]},
+ {n:5, h:"The daily loop", body:
+  `<p class="dim">What a contributor actually types. The orchestrator agent uses these same verbs;
+   you can drive them by hand too.</p>`,
+  sh:[["cox status                  # fleet overview + per-task cost","p"],
+      ["cox peek <task-id>          # last 40 worker-log lines (capped)","p"],
+      ["cox gate <task-id>          # run the deterministic gate","p"],
+      ["cox fix  <task-id> --notes \"handle the empty-file case\"","p"],
+      ["cox ship <task-id> <repo> \"<pr title>\"","p"],
+      ["cox merge <task-id> <repo>  # only when YOU approve","p"],
+      ["cox pause                   # kill switch: halt dispatch/ship","p"]]},
+ {n:6, h:"Configure a repo for the gate", body:
+  `<p class="dim">Drop a <code>.cox/repo.yml</code> into each target repo (commit it). Configured
+   commands are the strong, tokenless gate path.</p>`,
+  sh:[["# <target-repo>/.cox/repo.yml","cmt"],
+      ["commands:","p"],["  test: pytest -q","p"],["  lint: ruff check .","p"],
+      ["review: full        # or 'none' for docs-only repos","p"],
+      ["target_branch: main","p"],["scm: github","p"]]},
+];
+const TROUBLE = [
+ ["requires 3.11", "Your venv used the system python (3.9). Recreate it with <code>python3.11 -m venv .venv</code>."],
+ ["not implemented (see TASKS.md)", "That subcommand or lane is a stub for a later milestone (e.g. codex=M1, Telegram=M2). Expected."],
+ ["PAUSED — dispatch refused", "The kill switch is on. Clear it: <code>cox resume-ops</code>."],
+ ["BosunConfigError", "A <code>.cox/repo.yml</code> or <code>models.yml</code> exists but is unparseable / PyYAML missing. Fail-loud by design (P8) — fix the file."],
+ ["worker cap reached", "≤3 tasks already active. Finish/merge one, or <code>cox pause</code> and triage."],
+ ["Windows / NotImplementedError detach", "V1 (ROADMAP W1). M0 runs on macOS/Linux only."],
 ];
 
 /* ---------- tiny syntax highlighter (python/bash-ish, no deps) ---------- */
@@ -726,10 +996,100 @@ document.getElementById("flowPlay").onclick=playHappy;
 document.getElementById("flowRed").onclick=playRed;
 document.getElementById("flowReset").onclick=()=>{clearFlow();setLog("<b>Ready.</b> Press Play to dispatch a task.");document.getElementById("n-gate").querySelector("rect").style.stroke="";};
 
+/* ---------- FLOWS renderer ---------- */
+let curFlow="dispatch", ftShown=0;
+function renderFlowList(){
+  const groups={};
+  Object.entries(FLOWS).forEach(([k,f])=>{(groups[f.group]=groups[f.group]||[]).push([k,f]);});
+  const el=document.getElementById("flowList");
+  el.innerHTML=Object.entries(groups).map(([g,items])=>
+    `<div class="flowgroup">${g}</div>`+items.map(([k,f])=>
+      `<div class="flowitem" data-k="${k}" role="button" tabindex="0" aria-current="${k===curFlow}">
+        <span class="fi-name">${f.name}</span><span class="fi-desc">${f.desc}</span></div>`).join("")
+  ).join("");
+  el.querySelectorAll(".flowitem").forEach(it=>{
+    it.addEventListener("click",()=>selectFlow(it.dataset.k));
+    it.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();selectFlow(it.dataset.k)}});
+  });
+}
+function tagHtml(t){
+  if(t.startsWith("guard:"))return `<span class="t guard">🛡 ${t.slice(6)}</span>`;
+  if(t.startsWith("tok:"))return `<span class="t tok">◐ tokens: ${t.slice(4)}</span>`;
+  if(t==="free")return `<span class="t free">◇ 0 tokens</span>`;
+  if(t.startsWith("stop:"))return `<span class="t stop">⏸ needs-human(${t.slice(5)})</span>`;
+  return `<span class="t">${t}</span>`;
+}
+function renderFlow(k){
+  const f=FLOWS[k];
+  document.getElementById("flowTitle").textContent=f.name+"   ·   "+f.file;
+  document.getElementById("flowSummary").innerHTML=f.summary;
+  const tr=document.getElementById("flowTrace");
+  tr.innerHTML=f.steps.map((s,i)=>{
+    const [d,L,c,r,tags]=s;
+    const call=c.replace(/\(([^)]*)\)/,(m,p)=>`(<span class="p">${p}</span>)`);
+    const tg=(tags&&tags.length)?`<div class="tags">${tags.map(tagHtml).join("")}</div>`:"";
+    return `<div class="trow" data-i="${i}" style="padding-left:${14+d*22}px">
+      <span class="lchip L-${L}">${LAYERS[L]}</span>
+      <div class="body"><span class="call">${call}</span><div class="resp">${r}</div>${tg}</div></div>`;
+  }).join("");
+  document.getElementById("flowLegend").innerHTML=Object.entries(LAYERS).map(([k2,v])=>
+    `<span class="lchip L-${k2}">${v}</span>`).join("");
+  ftShown=f.steps.length; setStepping(false);
+  document.getElementById("ftCount").textContent=`${f.steps.length} calls`;
+}
+function selectFlow(k){
+  curFlow=k;
+  document.querySelectorAll("#flowList .flowitem").forEach(it=>it.setAttribute("aria-current",it.dataset.k===k));
+  document.querySelector("#panel-flows .tracewrap").scrollTop=0;
+  renderFlow(k);
+}
+function setStepping(on){
+  const tr=document.getElementById("flowTrace");
+  tr.classList.toggle("stepping",on);
+  const rows=[...tr.querySelectorAll(".trow")];
+  rows.forEach((r,i)=>{r.classList.toggle("shown",!on||i<ftShown);r.classList.toggle("cur",on&&i===ftShown-1);});
+  document.getElementById("ftCount").textContent=on?`${ftShown} / ${rows.length} calls`:`${rows.length} calls`;
+}
+document.getElementById("ftStep").onclick=()=>{
+  const n=FLOWS[curFlow].steps.length;
+  if(!document.getElementById("flowTrace").classList.contains("stepping")){ftShown=1;setStepping(true);}
+  else if(ftShown<n){ftShown++;setStepping(true);}
+  const cur=document.querySelector("#flowTrace .trow.cur");
+  if(cur)cur.scrollIntoView({block:"nearest",behavior:reduce?"auto":"smooth"});
+};
+document.getElementById("ftPrev").onclick=()=>{if(ftShown>1){ftShown--;setStepping(true);}};
+document.getElementById("ftAll").onclick=()=>{ftShown=FLOWS[curFlow].steps.length;setStepping(false);};
+
+/* ---------- DEV GUIDE renderer ---------- */
+function shBlock(lines){
+  const rows=lines.map(([txt,cls])=>{
+    const c=cls==="p"?'<span class="prompt">$</span> ':cls==="cmt"?"":"";
+    const t=cls==="cmt"?`<span class="cmt">${txt}</span>`:txt.replace(/</g,"&lt;");
+    return c+t;
+  }).join("\n");
+  const raw=lines.filter(l=>l[1]!=="cmt").map(l=>l[0].replace(/\s+#.*$/,"").trim()).join("\n");
+  return `<div class="sh"><button class="cp" data-cp="${encodeURIComponent(raw)}">copy</button><pre>${rows}</pre></div>`;
+}
+function renderDev(){
+  const el=document.getElementById("devGuide");
+  el.innerHTML=DEV.map(d=>`<div class="dstep"><h3><span class="num">${d.n}</span> ${d.h}</h3>
+    ${d.body}${shBlock(d.sh)}</div>`).join("")+
+    `<div class="dstep"><h3><span class="num">?</span> Troubleshooting</h3>
+     <table class="trouble" style="width:100%;border-collapse:collapse"><tbody>${
+     TROUBLE.map(([e,f])=>`<tr><td>${e}</td><td class="dim">${f}</td></tr>`).join("")}</tbody></table></div>`;
+  el.querySelectorAll(".cp").forEach(b=>b.addEventListener("click",()=>{
+    navigator.clipboard.writeText(decodeURIComponent(b.dataset.cp)).then(()=>{
+      const t=b.textContent;b.textContent="copied ✓";setTimeout(()=>b.textContent=t,1200);
+    }).catch(()=>{b.textContent="copy failed";});
+  }));
+}
+
 /* ---------- boot ---------- */
 renderStory(); go(0);
+renderFlowList(); renderFlow(curFlow);
+renderDev();
 const hash=location.hash.replace("#","");
-if(["new","arch","run","road"].includes(hash)) selectTab(hash);
+if(["new","arch","flows","run","road","dev"].includes(hash)) selectTab(hash);
 </script>
 </body>
 </html>
