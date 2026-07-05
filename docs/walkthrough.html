@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coxswain — Interactive Walkthrough</title>
+<style>
+:root{
+  --bg:#0d1117; --bg2:#161b22; --bg3:#1c2430; --fg:#e6edf3; --fg2:#9da7b3;
+  --muted:#6e7781; --accent:#4aa3ff; --accent2:#7ee787; --warn:#f0a020;
+  --red:#ff7b72; --line:#2a323d; --card:#141a22;
+  --k:#ff7b72; --s:#a5d6ff; --c:#8b949e; --f:#d2a8ff; --n:#79c0ff;
+  --radius:12px; --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme:light){
+  :root{--bg:#fbfcfd;--bg2:#f2f5f8;--bg3:#e9eef3;--fg:#1c2128;--fg2:#57606a;
+    --muted:#8b949e;--accent:#0969da;--accent2:#1a7f37;--warn:#9a6700;--red:#cf222e;
+    --line:#d6dde4;--card:#ffffff;--k:#cf222e;--s:#0a3069;--c:#6e7781;--f:#8250df;--n:#0550ae;}
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);
+  line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+code{font-family:var(--mono);font-size:.9em;background:var(--bg3);padding:.1em .35em;border-radius:5px}
+h1,h2,h3{line-height:1.25;font-weight:680}
+h2{font-size:1.6rem;margin:.2em 0 .4em}
+h3{font-size:1.15rem;margin:1.4em 0 .3em}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+header.top{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.top .wrap{display:flex;align-items:center;gap:18px;height:60px}
+.brand{font-weight:750;letter-spacing:.2px;display:flex;align-items:center;gap:10px;white-space:nowrap}
+.brand .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+.tabs{display:flex;gap:4px;margin-left:auto;flex-wrap:wrap}
+.tab{background:none;border:1px solid transparent;color:var(--fg2);font:inherit;font-size:.92rem;
+  padding:7px 13px;border-radius:9px;cursor:pointer;transition:.15s}
+.tab:hover{color:var(--fg);background:var(--bg2)}
+.tab[aria-selected="true"]{color:var(--fg);background:var(--bg3);border-color:var(--line)}
+.tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.panel{display:none;animation:fade .35s ease}
+.panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+section{padding:38px 0;border-bottom:1px solid var(--line)}
+.lead{font-size:1.12rem;color:var(--fg2);max-width:70ch}
+.kicker{text-transform:uppercase;letter-spacing:.14em;font-size:.72rem;color:var(--accent);font-weight:700}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:820px){.g2,.g3,.g4{grid-template-columns:1fr}.tabs{gap:2px}.tab{padding:6px 9px;font-size:.82rem}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.card h3{margin-top:0}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+.stat .num{font-size:2rem;font-weight:760;line-height:1;font-variant-numeric:tabular-nums}
+.stat .lbl{color:var(--fg2);font-size:.86rem;margin-top:6px}
+.pill{display:inline-block;font-size:.72rem;font-weight:650;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--line);color:var(--fg2);background:var(--bg2)}
+.pill.ok{color:var(--accent2);border-color:color-mix(in srgb,var(--accent2) 40%,transparent)}
+.pill.now{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.pill.wait{color:var(--muted)}
+.callout{border-left:3px solid var(--accent);background:var(--bg2);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn)}
+.callout.crew{border-color:var(--accent2)}
+.crew-tag{color:var(--accent2);font-weight:650}
+/* code */
+pre.code{background:var(--bg2);border:1px solid var(--line);border-radius:10px;overflow:auto;
+  font-family:var(--mono);font-size:.83rem;line-height:1.55;margin:0}
+pre.code .ln{display:block;padding:0 16px;white-space:pre;transition:background .3s,opacity .3s}
+pre.code .ln .gutter{display:inline-block;width:2.2em;color:var(--muted);user-select:none;text-align:right;margin-right:1.1em}
+pre.code.stepping .ln{opacity:.32}
+pre.code.stepping .ln.hot{opacity:1;background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.tok-k{color:var(--k)}.tok-s{color:var(--s)}.tok-c{color:var(--c);font-style:italic}
+.tok-f{color:var(--f)}.tok-n{color:var(--n)}.tok-d{color:var(--fg2)}
+.filetag{font-family:var(--mono);font-size:.78rem;color:var(--fg2);background:var(--bg3);
+  border:1px solid var(--line);border-bottom:none;border-radius:8px 8px 0 0;padding:5px 12px;display:inline-block}
+.filetag+pre.code{border-radius:0 10px 10px 10px}
+/* walkthrough stepper */
+.walk{display:grid;grid-template-columns:1fr 1.1fr;gap:22px;align-items:start}
+@media(max-width:900px){.walk{grid-template-columns:1fr}}
+.walk .story{display:flex;flex-direction:column;gap:10px}
+.step{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--card);cursor:pointer;transition:.18s}
+.step:hover{border-color:var(--accent)}
+.step[aria-current="true"]{border-color:var(--accent);background:var(--bg2);box-shadow:0 0 0 1px var(--accent)}
+.step .n{font-family:var(--mono);color:var(--accent);font-size:.8rem;font-weight:700}
+.step h4{margin:.2em 0 .3em;font-size:1rem}
+.step p{margin:0;color:var(--fg2);font-size:.9rem}
+.sticky{position:sticky;top:78px}
+.stepnav{display:flex;gap:8px;margin-top:12px}
+.btn{background:var(--bg3);color:var(--fg);border:1px solid var(--line);border-radius:8px;
+  padding:8px 14px;font:inherit;font-size:.9rem;cursor:pointer;transition:.15s}
+.btn:hover{border-color:var(--accent);color:var(--fg)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:650}
+/* flow diagram */
+.flowwrap{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+.node rect{fill:var(--bg2);stroke:var(--line);stroke-width:1.5;transition:.35s}
+.node.active rect{stroke:var(--accent);fill:color-mix(in srgb,var(--accent) 16%,var(--bg2));filter:drop-shadow(0 0 8px color-mix(in srgb,var(--accent) 60%,transparent))}
+.node.done rect{stroke:var(--accent2)}
+.node text{fill:var(--fg);font-family:var(--sans);font-size:13px;font-weight:600}
+.node .sub{fill:var(--fg2);font-size:10.5px;font-weight:400}
+.edge{stroke:var(--line);stroke-width:2;fill:none}
+.edge.hot{stroke:var(--accent)}
+.token{fill:var(--accent2);filter:drop-shadow(0 0 6px var(--accent2))}
+.branch-edge{stroke:var(--warn);stroke-width:2;fill:none;stroke-dasharray:5 4}
+.flowlog{font-family:var(--mono);font-size:.82rem;background:var(--bg2);border:1px solid var(--line);
+  border-radius:10px;padding:12px 14px;min-height:52px;color:var(--fg2);margin-top:14px}
+.flowlog b{color:var(--fg)}
+.controls{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
+/* c4 map */
+.c4{display:flex;flex-direction:column;gap:2px}
+.layer{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.layer summary{padding:14px 18px;cursor:pointer;font-weight:650;background:var(--bg2);list-style:none;
+  display:flex;align-items:center;gap:12px}
+.layer summary::-webkit-details-marker{display:none}
+.layer summary .chev{transition:.2s;color:var(--muted)}
+.layer[open] summary .chev{transform:rotate(90deg)}
+.layer .body{padding:6px 18px 18px}
+.compgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+@media(max-width:900px){.compgrid{grid-template-columns:repeat(2,1fr)}}
+.comp{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px;font-size:.86rem}
+.comp .cn{font-weight:650;display:block;margin-bottom:3px}
+.comp .cf{font-family:var(--mono);font-size:.74rem;color:var(--muted)}
+/* timeline */
+.timeline{position:relative;padding-left:26px;margin-top:20px}
+.timeline::before{content:"";position:absolute;left:7px;top:6px;bottom:6px;width:2px;background:var(--line)}
+.mile{position:relative;margin-bottom:24px}
+.mile::before{content:"";position:absolute;left:-23px;top:5px;width:14px;height:14px;border-radius:50%;
+  background:var(--bg);border:3px solid var(--muted)}
+.mile.done::before{border-color:var(--accent2);background:var(--accent2)}
+.mile.now::before{border-color:var(--warn);background:var(--warn)}
+.mile h3{margin:.1em 0 .3em;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.taskrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tk{font-family:var(--mono);font-size:.74rem;padding:3px 8px;border-radius:6px;border:1px solid var(--line);color:var(--fg2)}
+.tk.done{color:var(--accent2);border-color:color-mix(in srgb,var(--accent2) 35%,transparent);background:color-mix(in srgb,var(--accent2) 8%,transparent)}
+.tk.now{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+.progress{height:7px;background:var(--bg3);border-radius:5px;overflow:hidden;margin-top:8px}
+.progress > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+footer{padding:34px 0;color:var(--muted);font-size:.85rem;text-align:center}
+.dim{color:var(--fg2)}
+.hero-svg{width:100%;height:auto}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001s!important;transition-duration:.001s!important;scroll-behavior:auto!important}
+}
+.tokentbl{width:100%;border-collapse:collapse;font-size:.9rem}
+.tokentbl td,.tokentbl th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left}
+.tokentbl th{color:var(--fg2);font-weight:600}
+.tokentbl td.num{font-variant-numeric:tabular-nums;text-align:right;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><span class="dot"></span>Coxswain</div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab" role="tab" aria-selected="true"  data-panel="new">⚓ New here</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="arch">🏛 Architect</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="run">▶ Runtime</button>
+      <button class="tab" role="tab" aria-selected="false" data-panel="road">🗺 Roadmap</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- ============ NEW HERE ============ -->
+<div class="panel active" id="panel-new" role="tabpanel">
+  <section>
+    <div class="kicker">Start here · no prior context needed</div>
+    <h2>What is Coxswain, really?</h2>
+    <p class="lead">You have a repo and a pile of small tasks. You <em>could</em> open a coding agent
+    and babysit it. Coxswain is the layer that lets you say <b>“work this issue”</b> to one assistant
+    and get back a <b>reviewed pull request</b> — without you watching, and without burning tokens on
+    plumbing.</p>
+
+    <div class="callout crew">
+      <span class="crew-tag">The crew metaphor →</span> A <b>coxswain</b> is the one rower who doesn’t
+      row. They sit at the stern, steer, and call the strokes. That’s the whole design in one image:
+      <b>you talk to the cox; the crew (worker agents) rows; nothing ships unreviewed.</b>
+      Every metaphor below is followed by the real component it maps to — the metaphor is training
+      wheels, not the machine.
+    </div>
+
+    <div class="grid g4" style="margin-top:22px">
+      <div class="stat"><div class="num">5</div><div class="lbl">moving parts (components)</div></div>
+      <div class="stat"><div class="num">2,272</div><div class="lbl">lines of Python (stdlib only)</div></div>
+      <div class="stat"><div class="num">38</div><div class="lbl">tests green · 0 tokens to run</div></div>
+      <div class="stat"><div class="num">10</div><div class="lbl">guardrails enforced <i>in code</i></div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="kicker">The one question that explains everything</div>
+    <h2>“What happens when you say <span style="color:var(--accent)">dispatch this issue</span>?”</h2>
+    <p class="lead">Follow one task from your sentence to a merged PR. Click a step (or use the
+    arrows) — the matching <b>real code</b> lights up on the right. This is the loop; everything
+    else is support for it.</p>
+
+    <div class="walk" style="margin-top:20px">
+      <div class="story" id="walkStory">
+        <!-- steps injected -->
+      </div>
+      <div class="sticky">
+        <div class="filetag" id="walkFile">cox/dispatch.py</div>
+        <pre class="code stepping" id="walkCode"><code></code></pre>
+        <div class="stepnav">
+          <button class="btn" id="walkPrev">← Prev</button>
+          <button class="btn primary" id="walkNext">Next →</button>
+          <span class="dim" id="walkCount" style="align-self:center;font-size:.85rem"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="kicker">Why this exists</div>
+    <h2>It’s the fix for a real post-mortem</h2>
+    <p class="lead">Coxswain is the successor to a project called <b>relay</b>. Relay worked, but it
+    burned tokens on small tasks and felt fragile. Every design choice here is a named fix. If you
+    only remember three:</p>
+    <div class="grid g3" style="margin-top:8px">
+      <div class="card"><h3>🔁 No cold restarts</h3><p class="dim">Relay spun up a <i>fresh</i> agent for
+      every phase — each one re-read the whole repo. Coxswain keeps <b>one session per task</b> and
+      <b>resumes</b> it for fixes, so a fix costs the delta, not a re-read.</p></div>
+      <div class="card"><h3>🚫 No retry loops on the pricey model</h3><p class="dim">Relay re-ran its
+      reviewer up to ~5× when infra flaked. Here, <b>every agent call has retry cap 1</b> — a flake
+      pings you, it never silently re-runs.</p></div>
+      <div class="card"><h3>💤 Zero-token waiting</h3><p class="dim">Watching for “is it done yet?”
+      spends no tokens: a plain Python watcher classifies events and only wakes the smart layer when
+      something actually needs a human.</p></div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ ARCHITECT ============ -->
+<div class="panel" id="panel-arch" role="tabpanel">
+  <section>
+    <div class="kicker">C4 · zoom from the whole system down to the modules</div>
+    <h2>Architecture map</h2>
+    <p class="lead">Read top-down. Each layer opens to reveal the one below it — the classic
+    Context → Components → Code ladder. Start collapsed; expand only what you’re curious about.</p>
+
+    <div class="c4" style="margin-top:18px">
+      <details class="layer" open>
+        <summary><span class="chev">▶</span> ① Context — who and what touches the system</summary>
+        <div class="body">
+          <div class="compgrid" style="grid-template-columns:repeat(3,1fr)">
+            <div class="comp"><span class="cn">👤 Captain (you)</span><span class="cf">terminal chat</span></div>
+            <div class="comp"><span class="cn">🤖 Agent CLIs</span><span class="cf">claude · codex · copilot</span></div>
+            <div class="comp"><span class="cn">🌐 Git host</span><span class="cf">GitHub · (V1) Azure/TFS</span></div>
+          </div>
+          <p class="dim" style="margin:12px 0 0">You never touch the agents or the git host directly —
+          the orchestrator does, through the <code>cox</code> CLI, which is where the guardrails live.</p>
+        </div>
+      </details>
+
+      <details class="layer" open>
+        <summary><span class="chev">▶</span> ② Components — the 5 moving parts</summary>
+        <div class="body">
+          <div class="compgrid">
+            <div class="comp"><span class="cn">🧭 Orchestrator</span><span class="cf">ORCHESTRATOR.md</span><br><span class="dim" style="font-size:.8rem">Agent session you chat with. Judgment only.</span></div>
+            <div class="comp"><span class="cn">👀 Watcher</span><span class="cf">watch.py · wakequeue.py</span><br><span class="dim" style="font-size:.8rem">Zero-token event loop.</span></div>
+            <div class="comp"><span class="cn">⚙️ Control plane</span><span class="cf">cli.py · dispatch.py · ship.py</span><br><span class="dim" style="font-size:.8rem">Does the mechanics. Holds creds.</span></div>
+            <div class="comp"><span class="cn">🛠 Workers</span><span class="cf">lanes/*.py</span><br><span class="dim" style="font-size:.8rem">Agents in worktrees. No push creds.</span></div>
+            <div class="comp"><span class="cn">✅ Gate</span><span class="cf">gate.py · review.py</span><br><span class="dim" style="font-size:.8rem">rebase→test→lint→evidence→review.</span></div>
+          </div>
+          <div class="callout crew" style="margin-top:14px"><span class="crew-tag">Metaphor →</span>
+          cox steers · lookout calls “land ho” · quartermaster does the paperwork and holds the keys ·
+          rowers row · harbormaster won’t let you dock unreviewed. <b>Real terms are the file names above.</b></div>
+        </div>
+      </details>
+
+      <details class="layer">
+        <summary><span class="chev">▶</span> ③ Code — the module dependency spine</summary>
+        <div class="body">
+          <p class="dim" style="margin-top:4px">Arrows = “imports / calls”. Everything mechanical is
+          plain Python; the only token-spending calls are inside <code>lanes/</code> and <code>review.py</code>.</p>
+          <svg viewBox="0 0 760 250" class="hero-svg" role="img" aria-label="module dependency graph">
+            <defs><marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto">
+              <path d="M0,0 L8,3.5 L0,7 Z" fill="var(--muted)"/></marker></defs>
+            <g font-family="var(--mono)" font-size="12" fill="var(--fg)">
+              <g class="mnode"><rect x="20" y="105" width="90" height="34" rx="7" fill="var(--bg2)" stroke="var(--line)"/><text x="65" y="127" text-anchor="middle">cli.py</text></g>
+              <g class="mnode"><rect x="170" y="30" width="110" height="34" rx="7" fill="var(--bg2)" stroke="var(--line)"/><text x="225" y="52" text-anchor="middle">dispatch.py</text></g>
+              <g class="mnode"><rect x="170" y="180" width="110" height="34" rx="7" fill="var(--bg2)" stroke="var(--line)"/><text x="225" y="202" text-anchor="middle">gate.py</text></g>
+              <g class="mnode"><rect x="340" y="105" width="100" height="34" rx="7" fill="var(--bg2)" stroke="var(--line)"/><text x="390" y="127" text-anchor="middle">store.py</text></g>
+              <g class="mnode"><rect x="340" y="30" width="100" height="34" rx="7" fill="var(--bg2)" stroke="var(--line)"/><text x="390" y="52" text-anchor="middle">lanes/</text></g>
+              <g class="mnode"><rect x="340" y="180" width="100" height="34" rx="7" fill="var(--bg2)" stroke="var(--line)"/><text x="390" y="202" text-anchor="middle">review.py</text></g>
+              <g class="mnode"><rect x="500" y="105" width="100" height="34" rx="7" fill="var(--bg2)" stroke="var(--line)"/><text x="550" y="127" text-anchor="middle">proc.py</text></g>
+              <g class="mnode"><rect x="640" y="105" width="100" height="34" rx="7" fill="var(--bg3)" stroke="var(--line)"/><text x="690" y="120" text-anchor="middle" font-size="11">git · gh</text><text x="690" y="133" text-anchor="middle" font-size="9" fill="var(--muted)">claude</text></g>
+              <g stroke="var(--muted)" fill="none" marker-end="url(#ah)">
+                <path d="M110 118 L168 47"/><path d="M110 126 L168 197"/><path d="M110 122 L338 122"/>
+                <path d="M280 47 L338 47"/><path d="M280 197 L338 197"/>
+                <path d="M440 47 L560 118" /><path d="M440 197 L560 128"/>
+                <path d="M440 122 L498 122"/><path d="M600 122 L638 122"/>
+              </g>
+            </g>
+          </svg>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <section>
+    <div class="kicker">P1–P10 · the rules that can’t be config’d away</div>
+    <h2>Guardrails, and where each one lives</h2>
+    <p class="lead">These aren’t documentation — they’re enforced in code. Each card names the file
+    that makes it true. This is the “design review” surface: if you want to break the design, you
+    break one of these.</p>
+    <div class="grid g2" id="guardGrid" style="margin-top:8px"></div>
+  </section>
+
+  <section>
+    <div class="kicker">Decision log · why, not just what</div>
+    <h2>The choices that shaped it (D1–D13)</h2>
+    <div class="grid g2" id="decGrid" style="margin-top:8px"></div>
+  </section>
+</div>
+
+<!-- ============ RUNTIME ============ -->
+<div class="panel" id="panel-run" role="tabpanel">
+  <section>
+    <div class="kicker">The loop, alive</div>
+    <h2>Trace a task through the machine</h2>
+    <p class="lead">Press <b>Play</b> to send one task from <code>dispatch</code> to <code>merge</code>.
+    The green token is the work moving; components light up as they act; the log narrates each hop.
+    Try the <b>“gate goes red”</b> path too — that’s where most of the interesting design lives.</p>
+
+    <div class="flowwrap" style="margin-top:18px">
+      <svg viewBox="0 0 900 300" class="hero-svg" id="flowSvg" role="img" aria-label="runtime flow of a task">
+        <defs>
+          <marker id="fa" markerWidth="9" markerHeight="9" refX="7.5" refY="3.5" orient="auto">
+            <path d="M0,0 L8,3.5 L0,7 Z" fill="var(--line)"/></marker>
+        </defs>
+        <!-- edges -->
+        <path class="edge" id="e0" d="M120 80 L200 80" marker-end="url(#fa)"/>
+        <path class="edge" id="e1" d="M320 80 L400 80" marker-end="url(#fa)"/>
+        <path class="edge" id="e2" d="M520 80 L600 80" marker-end="url(#fa)"/>
+        <path class="edge" id="e3" d="M700 80 L780 80" marker-end="url(#fa)"/>
+        <!-- review to ship (down/right) -->
+        <path class="edge" id="e4" d="M690 110 L690 180 L200 180 L200 110" marker-end="url(#fa)" opacity="0"/>
+        <!-- gate red branch -->
+        <path class="branch-edge" id="eRed" d="M460 110 L460 240 L250 240 L250 110" marker-end="url(#fa)" opacity="0"/>
+        <text x="355" y="235" fill="var(--warn)" font-size="11" font-family="var(--mono)" id="redLbl" opacity="0">gate red → resumed fix round (P4)</text>
+        <!-- nodes -->
+        <g class="node" id="n-dispatch"><rect x="20" y="55" width="100" height="50" rx="9"/><text x="70" y="78" text-anchor="middle">dispatch</text><text x="70" y="94" text-anchor="middle" class="sub">worktree + brief</text></g>
+        <g class="node" id="n-worker"><rect x="200" y="55" width="120" height="50" rx="9"/><text x="260" y="78" text-anchor="middle">worker</text><text x="260" y="94" text-anchor="middle" class="sub">agent in worktree</text></g>
+        <g class="node" id="n-gate"><rect x="400" y="55" width="120" height="50" rx="9"/><text x="460" y="78" text-anchor="middle">gate</text><text x="460" y="94" text-anchor="middle" class="sub">test·lint·evidence</text></g>
+        <g class="node" id="n-review"><rect x="600" y="55" width="100" height="50" rx="9"/><text x="650" y="78" text-anchor="middle">review</text><text x="650" y="94" text-anchor="middle" class="sub">1 pass · verdict</text></g>
+        <g class="node" id="n-ship"><rect x="780" y="55" width="100" height="50" rx="9"/><text x="830" y="78" text-anchor="middle">ship → PR</text><text x="830" y="94" text-anchor="middle" class="sub">push · gh pr</text></g>
+        <!-- token -->
+        <circle class="token" id="token" r="7" cx="70" cy="80" opacity="0"/>
+      </svg>
+      <div class="flowlog" id="flowLog"><b>Ready.</b> Press Play to dispatch a task.</div>
+      <div class="controls">
+        <button class="btn primary" id="flowPlay">▶ Play happy path</button>
+        <button class="btn" id="flowRed">⚠ Show gate-red path</button>
+        <button class="btn" id="flowReset">↺ Reset</button>
+        <span class="dim" id="flowMotion" style="font-size:.82rem"></span>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:22px">
+      <div class="card">
+        <h3>Where the tokens actually go</h3>
+        <p class="dim">Only 3 hops spend LLM tokens. The rest is deterministic Python — free, fast,
+        and testable. This table is the whole cost argument.</p>
+        <table class="tokentbl">
+          <tr><th>Hop</th><th>Spends tokens?</th></tr>
+          <tr><td>dispatch (worktree, brief)</td><td class="num" style="color:var(--accent2)">no</td></tr>
+          <tr><td>worker implement</td><td class="num" style="color:var(--red)">yes · 1 run</td></tr>
+          <tr><td>gate (rebase·test·lint·evidence)</td><td class="num" style="color:var(--accent2)">no</td></tr>
+          <tr><td>review pass</td><td class="num" style="color:var(--red)">yes · 1 pass</td></tr>
+          <tr><td>fix round (if needed)</td><td class="num" style="color:var(--warn)">yes · <b>resumed</b></td></tr>
+          <tr><td>ship · merge · teardown</td><td class="num" style="color:var(--accent2)">no</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <h3>The numbers behind the design</h3>
+        <p class="dim">From Anthropic’s multi-agent research + the relay post-mortem — why this loop is
+        shaped the way it is.</p>
+        <table class="tokentbl">
+          <tr><td>Single agent vs. one chat message</td><td class="num">~4×</td></tr>
+          <tr><td>Naïve multi-agent swarm</td><td class="num">~15×</td></tr>
+          <tr><td>Relay worst case (cold restarts)</td><td class="num">3+5 runs</td></tr>
+          <tr><td>Coxswain worst case per task</td><td class="num">1+1+2</td></tr>
+          <tr><td>Idle supervision cost</td><td class="num" style="color:var(--accent2)">0</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ ROADMAP ============ -->
+<div class="panel" id="panel-road" role="tabpanel">
+  <section>
+    <div class="kicker">Strict milestone order · one proven loop before any second surface</div>
+    <h2>Roadmap &amp; task status</h2>
+    <p class="lead">Snapshot dated <b>2026-07-05</b>. M0 (the loop itself) is code-complete and tested;
+    its final gate is a human shakedown on 10 real tasks. Nothing in M1/M2 starts until M0 ships for real.</p>
+    <div class="timeline" id="timeline"></div>
+  </section>
+</div>
+
+</main>
+
+<footer>
+  Coxswain — curated snapshot, <b>2026-07-05</b>, for the M0 codebase (commit-level accurate to the
+  <code>cox/</code> package). Hand-authored; regenerate at each milestone. Fully offline · no tracking · no network.
+</footer>
+
+<script>
+/* ---------- data ---------- */
+const CODE = {
+ dispatch:{file:"cox/dispatch.py", lines:[
+  "def dispatch(*, repo_path, title, body, path, lane='claude', repo_name=None):",
+  "    home.ensure_home()",
+  "    if home.is_paused():",
+  "        raise DispatchError('coxswain is PAUSED — dispatch refused')",
+  "    if active_worker_count() >= MAX_WORKERS:",
+  "        raise DispatchError(f'worker cap {MAX_WORKERS} reached')",
+  "    task_id = store.new_task_id(repo, title)",
+  "    model = models.resolve('implementer', repo_path=repo_path)  # crashes if unpinned",
+  "    wt = worktree.create(repo_path, task_id)   # disposable worktree + branch",
+  "    brief_path.write_text(render_brief(...))",
+  "    get_lane(lane).spawn(brief_path=brief_path, worktree=wt.path, model=model, ...)",
+  "    store.append_status(task_id, f'working: dispatched on {lane} ({model.model})')"]},
+ worker:{file:"cox/lanes/claude.py", lines:[
+  "def _worker_env():",
+  "    \"\"\"Env with push credentials stripped (P6). The control plane pushes.\"\"\"",
+  "    env = dict(os.environ)",
+  "    for key in ('GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN'):",
+  "        env.pop(key, None)          # <- worker literally cannot push",
+  "    return env",
+  "",
+  "def spawn(self, brief_path, worktree, model, log_path, pid_path):",
+  "    argv = ['claude','-p','--model',model.model,",
+  "            '--permission-mode','acceptEdits',",
+  "            '--output-format','stream-json', brief]",
+  "    pid = proc.spawn_detached(argv, cwd=worktree, env=_worker_env())"]},
+ gate:{file:"cox/gate.py", lines:[
+  "def run_gate(task_id):",
+  "    # 1. rebase onto target  (deterministic — zero tokens)",
+  "    # 2. test   3. lint   (configured commands — the strong path)",
+  "    for step, cmd in (('test',cfg.test_cmd),('lint',cfg.lint_cmd)):",
+  "        try:",
+  "            proc.run(_shell(cmd), cwd=worktree)",
+  "        except proc.BosunProcError as e:",
+  "            return _fail(report, step, f'{step} failed:\\n{_tail(e.out+e.err)}')",
+  "    # 4. evidence contract",
+  "    ev = evidence.check(task_id, meta.dispatched_at)",
+  "    if not ev.ok:",
+  "        return _fail(report,'evidence',ev.note, evidence_missing=True)",
+  "    # RED never reaches the review pass — no paying for judgment on broken code"]},
+ review:{file:"cox/review.py", lines:[
+  "def review(task_id):",
+  "    \"\"\"Run the SINGLE review pass. Never retried (P2).\"\"\"",
+  "    spec = models.resolve('reviewer', repo_path=worktree)   # pinned model",
+  "    # fresh context: the reviewer sees ONLY the diff + brief + criteria,",
+  "    # so it isn't biased toward code it just wrote.",
+  "    outcome = parse_review(_final_text(log_path))",
+  "    if outcome is None:                       # garbage output?",
+  "        return ReviewOutcome(route='worker-error', ...)   # -> pings you",
+  "    # ask-user findings -> needs-human;  auto-fix -> one resumed fix round",
+  "    return outcome"]},
+ fix:{file:"cox/fix.py", lines:[
+  "MAX_FIX_ROUNDS = 2",
+  "",
+  "def fix(task_id, notes=None):",
+  "    meta = store.load_meta(task_id)",
+  "    if meta.fix_rounds >= MAX_FIX_ROUNDS:",
+  "        # 3rd red -> stop looping, hand to the human with a typed reason",
+  "        raise FixCapReached(f'{task_id}: needs-human(gate-red)')",
+  "    feedback = assemble_feedback(task_id, notes)",
+  "    get_lane(meta.lane).resume(session_id=meta.session_id,   # SAME session!",
+  "                               feedback=feedback, worktree=worktree)",
+  "    # resume = feedback costs the delta, not a full repo re-read (P4)"]},
+ ship:{file:"cox/ship.py", lines:[
+  "def ship(task_id, repo_path, title):",
+  "    scm = get_scm(cfg.scm)",
+  "    try:",
+  "        scm.push(Path(meta.worktree), meta.branch)   # control plane pushes",
+  "    except PushRejected:",
+  "        meta = replace(meta, state=NEEDS_HUMAN, reason=PUSH_REJECTED)  # typed",
+  "    url = scm.create_pr(repo_path, meta.branch, title, _pr_body(task_id), target)",
+  "    # PR body carries evidence summary + token cost total, then:",
+  "    store.append_status(task_id, f'pr-ready: {url}')"]},
+ merge:{file:"cox/ship.py", lines:[
+  "def merge(task_id, repo_path):",
+  "    # only ever called on the captain's explicit word ('merge it')",
+  "    scm.merge(repo_path, meta.pr_url, squash=True)",
+  "    meta = replace(meta, state=LANDED)",
+  "    try:",
+  "        worktree.remove(repo_path, wt, cfg.target_branch)  # fail-closed teardown",
+  "    except worktree.UnlandedWorkError:",
+  "        pass   # refuses to delete work that isn't provably landed"]},
+};
+
+const WALK = [
+ {key:"dispatch", h:"1 · You say “dispatch this issue”", hot:[2,3,7,8],
+  p:"The control plane checks the kill-switch and worker cap, pins a model (or crashes — never an unpinned call), then cuts a disposable git worktree and writes a brief. No tokens yet."},
+ {key:"worker", h:"2 · A worker rows in its own boat", hot:[1,4,5],
+  p:"An agent (claude/codex) runs headless in that worktree. Its environment has the push credentials stripped out — the rower physically cannot dock the boat. It commits locally and appends a sparse status line."},
+ {key:"gate", h:"3 · The harbormaster inspects — for free", hot:[3,4,5,6,12],
+  p:"rebase → run your configured test & lint commands → check the evidence contract. All deterministic Python, zero tokens. If anything is red, it goes straight back to a fix round — the pricey review never runs on broken code."},
+ {key:"review", h:"4 · One review pass, fresh eyes", hot:[2,4,5,7],
+  p:"A pinned model reviews ONLY the diff + brief (fresh context, so it isn't in love with its own code). It runs exactly once. Garbage output? It pings you — it never silently re-runs (that was relay's #1 token burner)."},
+ {key:"fix", h:"5 · Fixes resume, they don't restart", hot:[0,5,8,9,10],
+  p:"If findings need fixing, the SAME agent session is resumed with just the feedback — so it already knows the repo. Capped at 2 rounds; the third red hands you a typed 'needs-human(gate-red)', not an infinite loop."},
+ {key:"ship", h:"6 · The quartermaster files the PR", hot:[1,3,4,7,8],
+  p:"Now — and only now — the control plane (which holds the credentials) pushes the branch and opens a PR whose body carries the evidence summary and the token cost. Any failure becomes a typed reason, not a mystery."},
+ {key:"merge", h:"7 · You say “merge it”", hot:[1,2,3,5],
+  p:"Merge happens only on your explicit word. Then teardown is fail-closed: it refuses to delete the worktree unless the work is provably on the remote. Nothing is lost, nothing ships unreviewed."},
+];
+
+const GUARDS = [
+ ["P1","LLM tokens only where judgment pays","Mechanics are deterministic Python; only 3 hops spend tokens.","gate.py · proc.py"],
+ ["P2","No retry loop ever multiplies an LLM call","<code>AGENT_RETRY_CAP = 1</code>, a constant with no config override.","lanes/base.py"],
+ ["P3","All state on disk; restarts are non-events","Atomic meta writes + append-only logs + durable wake queue.","store.py · wakequeue.py"],
+ ["P4","One session per task, resumed","Fix rounds call <code>lane.resume(session_id, …)</code>, not a fresh spawn.","fix.py · lanes/claude.py"],
+ ["P5","Fail loud, fail typed","One subprocess choke-point; every needs-human carries a closed-enum reason.","proc.py · model.py"],
+ ["P6","Trust boundary","Worker env strips <code>GH_TOKEN</code>; only the control plane pushes.","lanes/claude.py · ship.py"],
+ ["P7","No PTY / tmux plumbing","Workers are plain detached subprocesses writing to log files.","proc.py"],
+ ["P8","Models always pinned","Unpinned model = crash at dispatch, not a silent 1M-context bill.","models.py"],
+ ["P9","Cost ledger is mandatory","Every agent call appends usage to <code>cost.jsonl</code>.","store.py"],
+ ["P10","One proven loop before any second surface","Milestone order is strict; codex/Telegram are stubs until M0 ships.","ROADMAP.md"],
+];
+
+const DECS = [
+ ["D1","Orchestrator = agent session + zero-token watcher","A dumb daemon brain turns every edge case into a dead-end queue (relay's 8-cause needs_decision)."],
+ ["D3","One worker session, resumed for fixes","Cold-start-per-phase was relay's #1 token burner — each round re-read the repo."],
+ ["D4","Deterministic-first gate, ONE review pass","Reviewer retry loops multiplied the most expensive model on infra flakiness."],
+ ["D5","Dispatch paths: inline / quick / full","'A straight prompt would've been cheaper' — multi-agent is ~15× tokens; only pay it when it pays."],
+ ["D6","Chat + Telegram, no dashboard","Relay's webview verdict was 'utterly not useful'; interrupt-driven chat keeps winning."],
+ ["D7","Detached subprocesses, no tmux","tmux is banned at work; relay's script/tmux plumbing caused 4 launch-day platform bugs."],
+ ["D8","Python stdlib core","Must run on Windows at work with no bash; relay's Python core was directly salvageable."],
+ ["D13","Name: coxswain (CLI cox)","The one crew member who doesn't row — steers and calls the strokes. 'bosun' collided with an active project."],
+];
+
+const ROADMAP = [
+ {id:"M0", cls:"now", title:"The proven loop", pill:['now','code-complete · shakedown pending'],
+  body:"chat → worker → gate → review → PR → merge, with a zero-token watcher and a live cost ledger.",
+  prog:[13,14], tasks:[["T-01","done"],["T-02","done"],["T-03","done"],["T-04","done"],["T-05","done"],["T-06/07","done"],["T-08","done"],["T-09/10","done"],["T-11/12/13","done"],["T-14 shakedown","now"]]},
+ {id:"M1", cls:"", title:"Codex lane", pill:['wait','planned'],
+  body:"Second harness through the same Lane interface; no automatic failover.",
+  prog:[0,1], tasks:[["T-15","wait"]]},
+ {id:"M2", cls:"", title:"Telegram AFK pings", pill:['wait','planned'],
+  body:"One-way notifier for needs-human / pr-ready / ci-red / landed. ≤1 ping/task/10min.",
+  prog:[0,1], tasks:[["T-16","wait"]]},
+ {id:"V1", cls:"", title:"Work port — Windows · TFS/Azure", pill:['wait','planned'],
+  body:"Windows runtime, Azure DevOps/TFS SCM adapter, copilot lane, work policy pack, multi-repo registry.",
+  prog:[0,6], tasks:[["T-17 W1","wait"],["T-18 W2","wait"],["T-19 W3","wait"],["T-20 W4","wait"],["T-21 W5","wait"],["T-22","wait"]]},
+];
+
+/* ---------- tiny syntax highlighter (python/bash-ish, no deps) ---------- */
+const KW = new Set("def return if elif else for in try except raise import from as with while and or not None True False class lambda pass".split(" "));
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function hl(line){
+  // comments first
+  let m = line.match(/^(.*?)(\s#.*)$/);
+  let comment = "";
+  if(m && !/['"]#/.test(m[1])){ comment = '<span class="tok-c">'+esc(m[2])+'</span>'; line = m[1]; }
+  let out = "", i=0;
+  const re = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+\.?\d*\b|\b[A-Za-z_]\w*\b|[^\w"']+)/g;
+  let t;
+  while((t=re.exec(line))!==null){
+    let w=t[0];
+    if(/^["']/.test(w)) out+='<span class="tok-s">'+esc(w)+'</span>';
+    else if(/^\d/.test(w)) out+='<span class="tok-n">'+esc(w)+'</span>';
+    else if(KW.has(w)) out+='<span class="tok-k">'+esc(w)+'</span>';
+    else if(/^[A-Za-z_]\w*$/.test(w) && line[re.lastIndex]==="(") out+='<span class="tok-f">'+esc(w)+'</span>';
+    else out+='<span class="tok-d">'+esc(w)+'</span>';
+  }
+  return out+comment;
+}
+function renderCode(key, hot){
+  const c = CODE[key];
+  document.getElementById("walkFile").textContent = c.file;
+  const pre = document.getElementById("walkCode");
+  pre.innerHTML = "<code>"+c.lines.map((ln,idx)=>{
+    const isHot = hot && hot.includes(idx);
+    const g = String(idx+1).padStart(2," ");
+    return `<span class="ln${isHot?' hot':''}"><span class="gutter">${g}</span>${ln.trim()===""?" ":hl(ln)}</span>`;
+  }).join("")+"</code>";
+  const first = pre.querySelector(".ln.hot");
+  if(first) first.scrollIntoView({block:"center",behavior: reduce?"auto":"smooth"});
+}
+
+/* ---------- walkthrough stepper ---------- */
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let wi = 0;
+function renderStory(){
+  const s = document.getElementById("walkStory");
+  s.innerHTML = WALK.map((w,i)=>`<div class="step" data-i="${i}" role="button" tabindex="0"
+    aria-current="${i===wi}"><span class="n">STEP ${i+1}</span><h4>${w.h}</h4><p>${w.p}</p></div>`).join("");
+  s.querySelectorAll(".step").forEach(el=>{
+    el.addEventListener("click",()=>go(+el.dataset.i));
+    el.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go(+el.dataset.i)}});
+  });
+}
+function go(i){
+  wi = Math.max(0, Math.min(WALK.length-1, i));
+  document.querySelectorAll("#walkStory .step").forEach((el,idx)=>el.setAttribute("aria-current", idx===wi));
+  const active = document.querySelector(`#walkStory .step[data-i="${wi}"]`);
+  if(active) active.scrollIntoView({block:"nearest",behavior:reduce?"auto":"smooth"});
+  renderCode(WALK[wi].key, WALK[wi].hot);
+  document.getElementById("walkCount").textContent = `${wi+1} / ${WALK.length}`;
+}
+document.getElementById("walkPrev").onclick=()=>go(wi-1);
+document.getElementById("walkNext").onclick=()=>go(wi+1);
+
+/* ---------- guardrails + decisions + roadmap ---------- */
+document.getElementById("guardGrid").innerHTML = GUARDS.map(([id,t,d,f])=>
+  `<div class="card"><h3><span class="pill">${id}</span> ${t}</h3><p class="dim">${d}</p>
+   <p class="cf" style="font-family:var(--mono);font-size:.78rem;color:var(--accent)">▸ ${f}</p></div>`).join("");
+document.getElementById("decGrid").innerHTML = DECS.map(([id,t,d])=>
+  `<div class="card"><h3><span class="pill">${id}</span> ${t}</h3><p class="dim">${d}</p></div>`).join("");
+document.getElementById("timeline").innerHTML = ROADMAP.map(m=>{
+  const pct = Math.round(100*m.prog[0]/m.prog[1]);
+  const pills = `<span class="pill ${m.pill[0]}">${m.pill[1]}</span>`;
+  const tasks = m.tasks.map(([t,st])=>`<span class="tk ${st}">${t}</span>`).join("");
+  return `<div class="mile ${m.cls}"><h3><span class="pill">${m.id}</span> ${m.title} ${pills}</h3>
+    <p class="dim" style="margin:.2em 0">${m.body}</p>
+    <div class="progress"><i style="width:${pct}%"></i></div>
+    <div class="dim" style="font-size:.8rem;margin-top:4px">${m.prog[0]} / ${m.prog[1]} tasks</div>
+    <div class="taskrow">${tasks}</div></div>`;
+}).join("");
+
+/* ---------- tabs ---------- */
+const tabs = [...document.querySelectorAll(".tab")];
+function selectTab(name){
+  tabs.forEach(t=>t.setAttribute("aria-selected", t.dataset.panel===name));
+  document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("active", p.id==="panel-"+name));
+  history.replaceState(null,"","#"+name);
+  window.scrollTo({top:0,behavior:"auto"});
+}
+tabs.forEach((t,idx)=>{
+  t.addEventListener("click",()=>selectTab(t.dataset.panel));
+  t.addEventListener("keydown",e=>{
+    if(e.key==="ArrowRight"||e.key==="ArrowLeft"){
+      e.preventDefault();
+      const d=e.key==="ArrowRight"?1:-1, n=(idx+d+tabs.length)%tabs.length;
+      tabs[n].focus(); selectTab(tabs[n].dataset.panel);
+    }
+  });
+});
+
+/* ---------- runtime flow animation ---------- */
+const svg = document.getElementById("flowSvg");
+const token = document.getElementById("token");
+const flowLog = document.getElementById("flowLog");
+const nodes = ["dispatch","worker","gate","review","ship"].map(n=>document.getElementById("n-"+n));
+let anim = null;
+function setLog(html){flowLog.innerHTML = html;}
+function clearFlow(){
+  nodes.forEach(n=>n.classList.remove("active","done"));
+  token.setAttribute("opacity","0");
+  ["e4","eRed","redLbl"].forEach(id=>document.getElementById(id).setAttribute("opacity","0"));
+  document.querySelectorAll(".edge").forEach(e=>e.classList.remove("hot"));
+  if(anim){cancelAnimationFrame(anim);anim=null;}
+}
+document.getElementById("flowMotion").textContent = reduce ? "reduced-motion: steps shown instantly" : "";
+
+// node centers (x) at y=80
+const POS = [70,260,460,650,830];
+function moveToken(fromX,toX,cb,edgeId){
+  if(edgeId){const e=document.getElementById(edgeId);if(e)e.classList.add("hot");}
+  if(reduce){ token.setAttribute("cx",toX); cb&&cb(); return; }
+  const dur=650, t0=performance.now();
+  function frame(t){
+    let p=Math.min(1,(t-t0)/dur);
+    const e = p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+    token.setAttribute("cx", fromX+(toX-fromX)*e);
+    if(p<1) anim=requestAnimationFrame(frame); else cb&&cb();
+  }
+  token.setAttribute("cy",80); token.setAttribute("opacity","1");
+  anim=requestAnimationFrame(frame);
+}
+function light(i){nodes.forEach((n,k)=>{if(k<i)n.classList.add("done");});nodes[i]&&nodes[i].classList.add("active");}
+
+const HAPPY = [
+ {x:70,  log:"<b>dispatch</b> — cut a worktree + branch, wrote the brief. <span style='color:var(--accent2)'>0 tokens.</span>", edge:null},
+ {x:260, log:"<b>worker</b> — agent implementing in its worktree (push creds stripped). <span style='color:var(--red)'>tokens: 1 run.</span>", edge:"e0"},
+ {x:460, log:"<b>gate</b> — rebase · test · lint · evidence, all green. <span style='color:var(--accent2)'>0 tokens.</span>", edge:"e1"},
+ {x:650, log:"<b>review</b> — one fresh-context pass → verdict: approve. <span style='color:var(--red)'>tokens: 1 pass.</span>", edge:"e2"},
+ {x:830, log:"<b>ship</b> — control plane pushes, opens PR (evidence + cost in body). <b>pr-ready.</b>", edge:"e3"},
+];
+function playHappy(){
+  clearFlow();
+  let i=0;
+  function next(){
+    if(i>=HAPPY.length){ setLog("Awaiting your word: <b>“merge it”</b> → squash-merge + fail-closed teardown. ✅"); return; }
+    const s=HAPPY[i];
+    moveToken(i===0?s.x:HAPPY[i-1].x, s.x, ()=>{ light(i); setLog(s.log); i++; setTimeout(next, reduce?250:520); }, s.edge);
+  }
+  next();
+}
+function playRed(){
+  clearFlow();
+  const seq=[0,1,2];
+  let i=0;
+  function next(){
+    if(i<seq.length){
+      const s=HAPPY[seq[i]];
+      const isGate = seq[i]===2;
+      moveToken(i===0?s.x:HAPPY[seq[i-1]].x, s.x, ()=>{
+        light(seq[i]);
+        if(isGate){
+          document.getElementById("n-gate").classList.remove("active");
+          document.getElementById("n-gate").querySelector("rect").style.stroke="var(--warn)";
+          setLog("<b>gate</b> — test failed ❌. Straight back to a <b>resumed</b> fix round — the review pass never runs on red code. <span style='color:var(--warn)'>Fix costs the delta, not a re-read (P4).</span>");
+          document.getElementById("eRed").setAttribute("opacity","1");
+          document.getElementById("redLbl").setAttribute("opacity","1");
+          if(!reduce){token.setAttribute("cx",250);token.setAttribute("cy",110);}
+        } else setLog(HAPPY[seq[i]].log);
+        i++; setTimeout(next, reduce?250:560);
+      }, s.edge);
+    } else {
+      setLog("Capped at 2 fix rounds. A third red hands you a typed <b>needs-human(gate-red)</b> — never an infinite loop. 🛟");
+      document.getElementById("n-gate").querySelector("rect").style.stroke="";
+    }
+  }
+  next();
+}
+document.getElementById("flowPlay").onclick=playHappy;
+document.getElementById("flowRed").onclick=playRed;
+document.getElementById("flowReset").onclick=()=>{clearFlow();setLog("<b>Ready.</b> Press Play to dispatch a task.");document.getElementById("n-gate").querySelector("rect").style.stroke="";};
+
+/* ---------- boot ---------- */
+renderStory(); go(0);
+const hash=location.hash.replace("#","");
+if(["new","arch","run","road"].includes(hash)) selectTab(hash);
+</script>
+</body>
+</html>
