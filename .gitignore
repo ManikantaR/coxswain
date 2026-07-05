@@ -1,0 +1,14 @@
+# runtime state (never commit a live home)
+state/
+data/
+worktrees/
+*.log
+
+# python
+__pycache__/
+*.egg-info/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/

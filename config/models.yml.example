@@ -1,0 +1,16 @@
+# Global model pins. Copy to ~/.config/cox/models.yml.
+# EVERY agent invocation must resolve to a pinned model — an unpinned
+# `claude -p` can land on the credit-gated 1M-context path (this is what
+# killed relay's smartocrprocess-12 worker). Resolution precedence:
+# env (COX_MODEL_IMPL / COX_MODEL_REVIEW) > repo .cox/repo.yml > this file > code defaults.
+
+implementer:
+  model: claude-sonnet-5
+  effort: medium
+reviewer:
+  model: claude-opus-4-8
+  effort: medium
+
+lanes:
+  codex:
+    implementer: { model: gpt-5.1-codex, effort: medium }

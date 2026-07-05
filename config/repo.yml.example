@@ -1,0 +1,17 @@
+# Per-project config. Copy into the TARGET repo as .cox/repo.yml and commit it.
+# Configured commands are the strong path: they run deterministically with
+# ZERO agent tokens (DESIGN §2.4). Missing commands are skipped with a loud
+# note in the gate report — configure them.
+
+commands:
+  test: "pytest -q"          # e.g. "npm test", "dotnet test"
+  lint: "ruff check ."       # e.g. "npm run lint"
+
+review: full                 # full | none  (none = quick-style gate only; docs repos)
+target_branch: main
+scm: github                  # github | azdevops (V1) | tfs (V1) | local (tests)
+
+# Optional model overrides for this repo (else ~/.config/cox/models.yml):
+# models:
+#   implementer: { model: claude-sonnet-5, effort: medium }
+#   reviewer:    { model: claude-opus-4-8, effort: medium }

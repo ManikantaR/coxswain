@@ -1,0 +1,6 @@
+# Telegram notifier (M2, T-16). Copy to ~/.config/cox/telegram.yml. chmod 600.
+bot_token: "123456:ABC..."
+chat_id: "123456789"
+# Wake verbs that trigger a ping (subset of DESIGN §2.2 actionable verbs):
+events: [needs-human, pr-ready, ci-red, landed]
+# Hard rate limit is 1 msg/task/10min regardless of config.

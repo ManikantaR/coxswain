@@ -1,0 +1,36 @@
+[project]
+name = "coxswain"
+version = "0.0.1"
+description = "Chat-first orchestrator for AI coding agents. You talk to the cox; the crew rows; nothing ships unreviewed."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6"]
+dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "pyyaml>=6"]
+
+[project.scripts]
+cox = "cox.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cox*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "PLE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+# strict scope per DESIGN §3; widen as modules land
+files = ["cox/model.py", "cox/classify.py"]
+strict = true

@@ -1,0 +1,20 @@
+# Dispatch rules (DESIGN §2.5). Copy to ~/.config/cox/dispatch.yml.
+# The orchestrator (LLM) matches the task description against rule
+# descriptions and picks the path; the CLI only validates the path value.
+# Captain override words always win. No rule matched: issues -> full, ad-hoc -> ask.
+
+rules:
+  - description: "question, explanation, lookup, or reading code — no repo change"
+    path: inline
+  - description: "typo/comment/doc-only change in the coxswain home itself"
+    path: inline
+  - description: "mechanical low-risk change: bump dependency, rename, add log line, config tweak"
+    path: quick
+  - description: "docs-only change in a project repo"
+    path: quick
+  - description: "bug fix, feature, refactor, anything touching logic or tests"
+    path: full
+
+defaults:
+  issue: full
+  adhoc: ask
