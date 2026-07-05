@@ -1,0 +1,103 @@
+{
+  "generated": "2026-07-05",
+  "template_version": "1",
+  "stacks": [
+    "python"
+  ],
+  "components": [
+    "orchestrator",
+    "watcher",
+    "control-plane",
+    "workers",
+    "gate"
+  ],
+  "entrypoints": {
+    "dispatch": {
+      "group": "Commands",
+      "file": "cox/dispatch.py",
+      "steps": 15
+    },
+    "gate": {
+      "group": "Commands",
+      "file": "cox/gate.py",
+      "steps": 11
+    },
+    "review": {
+      "group": "Commands",
+      "file": "cox/review.py",
+      "steps": 9
+    },
+    "fix": {
+      "group": "Commands",
+      "file": "cox/fix.py",
+      "steps": 7
+    },
+    "ship": {
+      "group": "Commands",
+      "file": "cox/ship.py",
+      "steps": 10
+    },
+    "watch": {
+      "group": "Jobs",
+      "file": "cox/watch.py",
+      "steps": 9
+    },
+    "lane": {
+      "group": "Tools",
+      "file": "cox/lanes/claude.py",
+      "steps": 8
+    },
+    "scm": {
+      "group": "Tools",
+      "file": "cox/scm/github.py",
+      "steps": 4
+    }
+  },
+  "guards": [
+    "P1",
+    "P2",
+    "P3",
+    "P4",
+    "P5",
+    "P6",
+    "P7",
+    "P8",
+    "P9",
+    "P10"
+  ],
+  "roadmap": {
+    "M0": [
+      13,
+      14
+    ],
+    "M1": [
+      0,
+      1
+    ],
+    "M2": [
+      0,
+      1
+    ],
+    "V1": [
+      0,
+      6
+    ]
+  },
+  "note": "walkthrough.html is hand-authored (pre-skill); this docmap lets codebase-walkthrough run UPDATE against it.",
+  "hashes": {
+    "cox/dispatch.py": "f1965dd9c8b24f6284106e97a4c6c82949b37814",
+    "cox/gate.py": "3b1bb894e3a1f1382c31d76b0a6c3e7fda68571d",
+    "cox/review.py": "000c517ac80d7b42bf543b0c377445f6670dc16a",
+    "cox/fix.py": "dea1f7866a9b8daed704a65f51f9e09fb727357c",
+    "cox/ship.py": "e5ca673977b0cc93744eb294a693507163b456a3",
+    "cox/watch.py": "e77e1943d5a64f11b1cf0f1b2d6fadc10358d1e6",
+    "cox/lanes/claude.py": "541bd46fb19467a9ad301ce6f7b2a5458a1699f8",
+    "cox/lanes/base.py": "b84fc742b58b63db3da712abf676a366ca5a2447",
+    "cox/scm/github.py": "aed4fd68e7dae5df2d148c00c8a68bb1e5bc445b",
+    "cox/models.py": "a864b9a5dfe087bdc6fbb01a063dcf9e7787a0aa",
+    "cox/worktree.py": "dd34ce6b10a2f492cdfcddfdf9c01012a4a9f39d",
+    "cox/store.py": "f4df65d93e78939d559748203d8a32db16fecd13",
+    "cox/classify.py": "fee4a76b9b7e67764705f51eb97c477b0e7c0af9",
+    "cox/wakequeue.py": "50ceb8755f02e27bf4c6594661c2c6596c495666"
+  }
+}
