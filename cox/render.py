@@ -17,10 +17,36 @@ the web dashboard's per-task feed later (see coxswain-observability-direction).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 # Which input field best labels each tool call, in priority order.
 _ARG_KEYS = ("command", "file_path", "path", "pattern", "url", "query", "description")
+
+_HOME = str(Path.home())
+# Matches Unix absolute paths embedded in command strings.
+_PATH_RE = re.compile(r"/[^\s'\"<>|&;()\[\]{}]+")
+
+
+def _shorten_path(p: str) -> str:
+    """Shorten a single matched absolute path token for compact display."""
+    for marker in ("/cox-home/worktrees/", "/cox-home/data/"):
+        idx = p.find(marker)
+        if idx != -1:
+            rest = p[idx + len(marker) :]
+            parts = [s for s in rest.split("/") if s]
+            tail = "/".join(parts[-2:]) if len(parts) >= 2 else rest
+            return "…/" + tail
+    if p.startswith(_HOME + "/"):
+        return "~" + p[len(_HOME) :]
+    if p == _HOME:
+        return "~"
+    return p
+
+
+def _shorten_paths(text: str) -> str:
+    """Replace long absolute paths in *text* with readable short forms."""
+    return _PATH_RE.sub(lambda m: _shorten_path(m.group(0)), text)
 
 
 def _tool_summary(name: str, inp: dict) -> str:
@@ -28,8 +54,27 @@ def _tool_summary(name: str, inp: dict) -> str:
         val = inp.get(key)
         if isinstance(val, str) and val.strip():
             one = " ".join(val.split())
-            return f"{name}  {one[:80]}"
+            shortened = _shorten_paths(one)
+            return f"{name}  {shortened[:80]}"
     return name
+
+
+def _collapse_duplicates(lines: list[str]) -> list[str]:
+    """Collapse consecutive identical lines into one with a count suffix."""
+    if not lines:
+        return lines
+    result: list[str] = []
+    prev = lines[0]
+    count = 1
+    for line in lines[1:]:
+        if line == prev:
+            count += 1
+        else:
+            result.append(prev if count == 1 else f"{prev}  (x{count})")
+            prev = line
+            count = 1
+    result.append(prev if count == 1 else f"{prev}  (x{count})")
+    return result
 
 
 def _events(log_path: Path) -> list[str]:
@@ -63,7 +108,7 @@ def _events(log_path: Path) -> list[str]:
             verdict = "done" if not obj.get("is_error") else "error"
             cost_str = f"${cost:.2f}" if isinstance(cost, (int, float)) else "$?"
             out.append(f"■ {verdict}  {cost_str} · {tin} in / {tout} out")
-    return out
+    return _collapse_duplicates(out)
 
 
 def summarize_stream(log_path: Path, n: int = 15) -> list[str]:
