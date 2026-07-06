@@ -18,7 +18,10 @@ from .base import RunResult, SpawnHandle
 
 # Tools a worker needs to do real work and commit, but NOT push (trust boundary,
 # DESIGN P6 — push creds are withheld from the worker env by dispatch).
-_ALLOWED_TOOLS = "Edit,Write,Read,Bash(git*),Bash(pytest*),Bash(npm*),Bash(ruff*)"
+_ALLOWED_TOOLS = (
+    "Edit,Write,Read,Bash(git*),Bash(pytest*),Bash(npm*),"
+    "Bash(ruff*),Bash(mypy*),Bash(python*),Bash(python3*)"
+)
 
 
 class ClaudeLane:

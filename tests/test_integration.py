@@ -30,6 +30,16 @@ def test_worktree_create_bad_repo(tmp_path):
         worktree.create(tmp_path / "nope", "x-1")
 
 
+# --- _ALLOWED_TOOLS includes mypy and python entries (OBS-tool-friction) ---
+def test_allowed_tools_includes_mypy_and_python():
+    from cox.lanes.claude import _ALLOWED_TOOLS
+
+    entries = [e.strip() for e in _ALLOWED_TOOLS.split(",")]
+    assert "Bash(mypy*)" in entries
+    assert "Bash(python*)" in entries
+    assert "Bash(python3*)" in entries
+
+
 # --- T-07 claude spawn argv (shakedown 2026-07-05: worker must be granted the
 # task data dir, which is outside the worktree, or status/evidence writes are
 # sandbox-blocked) ---
