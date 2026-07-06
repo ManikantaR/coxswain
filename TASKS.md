@@ -6,9 +6,13 @@
 > **Done:** M0 code-complete — **T-01 … T-13** all implemented, committed, and green
 > (38 tests: ruff + mypy --strict + pytest; tokenless stub-lane e2e). Repo: `~/repo/coxswain`.
 >
-> **NEXT STEP → T-14 (M0 shakedown).** Human-in-loop, not code: run the loop on ~10 real tasks and
-> log results in `docs/SHAKEDOWN.md` (see [ROADMAP.md](docs/ROADMAP.md) M0 exit criteria). First
-> live run: `COX_HOME=~/cox-home cox watch` (one pane) + `cox dispatch <repo> "<task>" --path full`.
+> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS.** Run 1 (`cox status --json`,
+> coxswain repo) is dispatched → worker → **gate PASS**, cost ledger live ($1.61),
+> session captured. Three bugs found & fixed live (BUG-01 sandbox writes, BUG-02
+> `--add-dir` variadic, BUG-03 cost/session ingest) — all committed + pushed; suite
+> 40 green. **Immediate next: review → ship (PR) → merge for run 1**, then runs 2–10
+> across ≥2 repos. Live log: `docs/SHAKEDOWN.md`. Harness: `COX_HOME=~/cox-home cox
+> watch` + `cox dispatch <repo> "<task>" --path full`.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).

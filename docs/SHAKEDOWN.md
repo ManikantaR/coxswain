@@ -28,7 +28,13 @@ Environment: Mac, `COX_HOME=~/cox-home`, claude lane, Python 3.11 venv.
 
 | # | date | repo | task | path | lane | gate | review | fix rounds | impl $ | fix $ | outcome | notes |
 |---|------|------|------|------|------|------|--------|-----------|--------|-------|---------|-------|
-|   |      |      |      |      |      |      |        |           |        |       |         |       |
+| 1 | 2026-07-05 | coxswain | `cox status --json` | full | claude/sonnet | PASS | — | 0 | $1.61 | — | gated, PR pending | surfaced BUG-01/02/03; $1.61 high for a 1-flag change (worker looped on mypy --strict, 73 tool calls) |
+
+> Run 1 took three dispatches: #1 → BUG-01 (sandbox blocks status/evidence writes),
+> #1b → BUG-02 (`--add-dir` variadic ate the brief), #1c → clean worker run that
+> then surfaced BUG-03 (cost/session never captured). All three fixed + committed.
+> Loop proven through **dispatch → worker → gate + cost ledger**; review → ship →
+> merge still to run for this task.
 
 ## Observations / bugs found
 
