@@ -6,14 +6,14 @@
 > **Done:** M0 code-complete — **T-01 … T-13** all implemented, committed, and green
 > (38 tests: ruff + mypy --strict + pytest; tokenless stub-lane e2e). Repo: `~/repo/coxswain`.
 >
-> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS (1 of ~10 landed).** Run 1
-> (`cox status --json`) went the **full loop end-to-end: dispatch → worker → gate →
-> review(approve) → ship → merge → teardown → LANDED** ([PR #1](https://github.com/ManikantaR/coxswain/pull/1));
-> coxswain shipped its own feature. Cost $1.95 (impl $1.61 + review $0.33). The run
-> surfaced and fixed **six real bugs the stub-e2e can't catch** — BUG-01 sandbox
-> writes, BUG-02 `--add-dir` variadic, BUG-03 cost/session ingest, BUG-04 review
-> unwired, BUG-05 zombie `is_alive`, BUG-06 merge `--delete-branch`. Suite 44 green,
-> all pushed. Full detail in `docs/SHAKEDOWN.md`.
+> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS (2 of ~10 landed).** Runs 1 & 2 both
+> went the **full loop → LANDED** ([PR #1](https://github.com/ManikantaR/coxswain/pull/1),
+> [PR #2](https://github.com/ManikantaR/coxswain/pull/2)). Run 1 surfaced + fixed **six
+> bugs the stub-e2e can't catch** (BUG-01 sandbox writes, BUG-02 `--add-dir` variadic,
+> BUG-03 cost/session ingest, BUG-04 review unwired, BUG-05 zombie `is_alive`, BUG-06
+> merge `--delete-branch`). **Run 2 was the first CLEAN run** — all 6 fixes held, no
+> re-dispatch, review didn't hang, merge worked first try ($1.44). Suite 51 green, all
+> pushed. Full detail in `docs/SHAKEDOWN.md`.
 >
 > **Also shipped (captain-directed, ahead of "prove value first"):** `cox peek`
 > narrated activity feed (frugal orchestrator) + **`cox serve` glance dashboard** —
@@ -23,12 +23,13 @@
 > in the feed; **plan-approval control** (Devin-style approve-before-implement) not yet
 > built. Direction memo: `coxswain-observability-direction`.
 >
-> **Immediate next (the real go/no-go): runs 2–10** — pick real issues across ≥2 repos
-> (smartocrprocess + relay/cox), incl. a task that forces a **fix round** (to prove
-> `--resume` cost ≪ implement) and one across a **second repo**. This AFK batch is what
-> actually answers "is orchestration worth the token premium." Watch the per-task cost
-> trend on `cox serve`. Harness: `COX_HOME=~/cox-home cox watch` + `cox dispatch <repo>
-> "<task>" --path full`, then `cox gate <id>` → `cox review <id>` → `cox ship …` → `cox merge`.
+> **Immediate next (the real go/no-go): runs 3–10** — still owed by the exit criteria:
+> (a) a task that forces a **FIX ROUND** (gate-red or review auto-fix) to prove
+> `--resume` cost ≪ implement — NOT yet exercised; (b) a run in a **SECOND repo**
+> (smartocr/relay) — runs 1&2 were both coxswain; (c) a **parallel AFK batch** (2–3 at
+> once) — the only regime where orchestration's token premium pays off. Watch cost trend
+> on `cox serve`. Harness: `COX_HOME=~/cox-home cox watch` + `cox dispatch <repo> "<task>"
+> --path full`, then `cox gate <id>` → `cox review <id>` → `cox ship …` → `cox merge`.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).

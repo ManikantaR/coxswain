@@ -29,6 +29,14 @@ Environment: Mac, `COX_HOME=~/cox-home`, claude lane, Python 3.11 venv.
 | # | date | repo | task | path | lane | gate | review | fix rounds | impl $ | fix $ | outcome | notes |
 |---|------|------|------|------|------|------|--------|-----------|--------|-------|---------|-------|
 | 1 | 2026-07-05 | coxswain | `cox status --json` | full | claude/sonnet | PASS | approve (0 findings) | 0 | $1.61 | — | **LANDED** ([PR #1](https://github.com/ManikantaR/coxswain/pull/1)) | full loop; surfaced BUG-01…06; total $1.95 (impl $1.61 + review $0.33) |
+| 2 | 2026-07-06 | coxswain | narrated-feed polish (collapse dupes + shorten paths) | full | claude/sonnet | PASS | approve (0 findings) | 0 | $1.17 | — | **LANDED** ([PR #2](https://github.com/ManikantaR/coxswain/pull/2)) | **first clean run** — all 6 fixes held: no re-dispatch, review completed (no zombie hang), merge worked first try. total $1.44. surfaced OBS-tool-friction. |
+
+> **Run 2 = the loop actually working.** Where run 1 needed 3 dispatches + 6 fixes,
+> run 2 went dispatch → worker → gate → review(approve) → ship → merge → landed on
+> the first pass. Validated live: BUG-03 (cost ingest, $1.17 captured), BUG-05 (review
+> completed cleanly, no 15-min zombie hang), BUG-06 (merge clean first try). Bonus: the
+> shipped feature makes the cost driver *visible* — the mypy loop now renders as one
+> line `→ Bash  mypy …  (x7)` instead of 7.
 
 > **Run 1 = first full end-to-end loop, and coxswain shipped its own feature.**
 > Three dispatches to get a clean worker run: #1 → BUG-01 (sandbox blocks
@@ -126,6 +134,18 @@ success) so recovery is safe. Re-ran `cox merge` → **landed**, teardown clean
 (patch-id match handled the squash). Minor follow-up: remote branch is left
 dangling after merge (enable repo auto-delete, or add a teardown remote-branch
 delete) — cosmetic.
+
+### OBS-tool-friction (run #2) — allowlist is prefix-brittle + incomplete.
+`_ALLOWED_TOOLS` = `Edit,Write,Read,Bash(git*),Bash(pytest*),Bash(npm*),Bash(ruff*)`.
+Two problems seen live: (a) `mypy` isn't in the list at all, yet workers run it every
+time (and loop on `mypy --strict` — the #1 cost driver in both runs); (b) prefix
+patterns don't match common invocations — the worker tried `python -m pytest` and
+`python3 -m mypy`, which don't match `pytest*`/(absent) `mypy`, so it burned turns
+seeking approval and trying variant binaries before working around. Fix options:
+broaden the allowlist (add `Bash(mypy*)`, `Bash(python*)`), or drop the allowlist
+under `acceptEdits` (which doesn't seem to gate Bash consistently anyway) and rely on
+the stripped push-creds + worktree sandbox for the trust boundary. Also worth telling
+workers in the brief: "run `pytest`/`ruff`/`mypy` directly, not via `python -m`."
 
 ### OBS (non-blocking, run #1c)
 - The worker added `pythonpath = ["."]` to `pyproject.toml` — not scope creep: it
