@@ -114,6 +114,13 @@ def _cmd_peek(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    from . import server
+
+    server.serve(host=args.host, port=args.port, token=args.token)
+    return 0
+
+
 def _cmd_pause(args: argparse.Namespace) -> int:
     home.set_paused(True)
     print("PAUSED")
@@ -282,6 +289,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("cost", help="per-task token/cost total")
     s.add_argument("task_id")
     s.set_defaults(func=_cmd_cost)
+
+    s = sub.add_parser("serve", help="glance dashboard (web, desktop + phone on LAN)")
+    s.add_argument("--host", default="127.0.0.1", help="127.0.0.1 (local) or 0.0.0.0 (LAN/phone)")
+    s.add_argument("--port", type=int, default=8787)
+    s.add_argument("--token", default=None, help="shared access token (default: random)")
+    s.set_defaults(func=_cmd_serve)
 
     return p
 
