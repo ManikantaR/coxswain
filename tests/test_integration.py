@@ -172,6 +172,64 @@ def test_summarize_stream_renders_compact_feed(tmp_path):
     assert render.summarize_stream(tmp_path / "nope.log") == ["(no worker log yet)"]
 
 
+# --- collapse duplicate adjacent tool lines ---
+def test_summarize_stream_collapses_adjacent_duplicates(tmp_path):
+    import json
+
+    from cox import render
+
+    def asst(*content):
+        return json.dumps({"type": "assistant", "message": {"content": list(content)}})
+
+    tool_line = {"type": "tool_use", "name": "Bash", "input": {"command": "mypy cox/"}}
+    lines = [
+        asst(tool_line),
+        asst(tool_line),
+        asst(tool_line),
+        asst({"type": "tool_use", "name": "Bash", "input": {"command": "ruff check ."}}),
+        asst({"type": "tool_use", "name": "Bash", "input": {"command": "ruff check ."}}),
+    ]
+    log = tmp_path / "worker.log"
+    log.write_text("\n".join(lines), encoding="utf-8")
+
+    feed = render.summarize_stream(log, n=20)
+    assert feed[0] == "→ Bash  mypy cox/  (x3)"
+    assert feed[1] == "→ Bash  ruff check .  (x2)"
+    assert len(feed) == 2
+
+
+# --- path shortening in tool summaries ---
+def test_summarize_stream_shortens_paths(tmp_path):
+    import json
+    from pathlib import Path as _Path
+
+    from cox import render
+
+    home = str(_Path.home())
+
+    def asst(*content):
+        return json.dumps({"type": "assistant", "message": {"content": list(content)}})
+
+    lines = [
+        # home-relative path
+        asst({"type": "tool_use", "name": "Read",
+              "input": {"file_path": f"{home}/myproject/foo.py"}}),
+        # cox worktree path -> last 2 segments
+        asst({"type": "tool_use", "name": "Edit",
+              "input": {"file_path": f"{home}/cox-home/worktrees/task-abc/cox/render.py"}}),
+        # cox data path -> last 2 segments
+        asst({"type": "tool_use", "name": "Bash",
+              "input": {"command": f"cat {home}/cox-home/data/task-abc/evidence/summary.md"}}),
+    ]
+    log = tmp_path / "worker.log"
+    log.write_text("\n".join(lines), encoding="utf-8")
+
+    feed = render.summarize_stream(log, n=20)
+    assert feed[0] == "→ Read  ~/myproject/foo.py"
+    assert feed[1] == "→ Edit  …/cox/render.py"
+    assert "…/evidence/summary.md" in feed[2]
+
+
 # --- T-07 claude parse ---
 def test_parse_stream_json_fixture():
     res = parse_stream_json(FIXTURES / "claude-stream.jsonl", phase="implement")
