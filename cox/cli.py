@@ -8,6 +8,7 @@ lines so the orchestrator spends few tokens reading them.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -17,6 +18,27 @@ from .model import DispatchPath
 
 def _cmd_status(args: argparse.Namespace) -> int:
     ids = store.list_task_ids()
+
+    if args.json:
+        rows = []
+        for tid in ids:
+            m = store.load_meta(tid)
+            cost_entries = store.read_cost(tid)
+            _, _, cost_usd = store.cost_total(tid)
+            rows.append({
+                "id": m.id,
+                "repo": m.repo,
+                "state": m.state.value,
+                "reason": m.reason.value if m.reason else None,
+                "path": m.path.value,
+                "lane": m.lane,
+                "model": m.model,
+                "cost_usd": cost_usd if cost_entries else None,
+                "dispatched_at": m.dispatched_at,
+            })
+        print(json.dumps(rows))
+        return 0
+
     age = watch.heartbeat_age()
     in_flight = any(store.load_meta(t).state.value in {"working", "gating", "fixing"} for t in ids)
     if in_flight and (age is None or age > 60):
@@ -183,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("status", help="fleet overview + cost")
     s.add_argument("--wakes", action="store_true", help="also list undelivered wakes")
+    s.add_argument("--json", action="store_true", help="emit JSON array of task objects")
     s.set_defaults(func=_cmd_status)
 
     s = sub.add_parser("await-wake", help="block until a wake is available (orchestrator's ear)")
