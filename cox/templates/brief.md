@@ -21,6 +21,9 @@ captain reviews and merges — never you.
 3. Go green by fixing code, never by deleting/skipping/xfail-ing tests or `--no-verify`.
 4. If stuck after ~3 tries at one root cause, stop and say so in `evidence/summary.md`.
 
+Run test/lint/type tools directly (e.g. `pytest`, `ruff`, `mypy`) rather than
+via `python -m`, since the allowlist matches command prefixes.
+
 ## Liveness — status protocol
 Append status lines to `{status_log}`. Append SPARSELY — every append may wake
 the supervisor. Use `working: <phase>` at most every few minutes while active.
