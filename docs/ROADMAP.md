@@ -4,9 +4,10 @@ Strict milestone order (DESIGN.md P10). A milestone is DONE only when its exit
 criteria are met **on real tasks**, not demos. Do not start the next milestone
 before that. Task-level breakdown lives in [../TASKS.md](../TASKS.md).
 
-> **▶ Status (2026-07-05):** M0 **code-complete** (T-01…T-13, 38 tests green). Remaining M0 gate:
-> **T-14 shakedown** (10 real tasks) — this is the next step. M1/M2/V1 not started.
-> The single source of truth for "what's next" is the RESUME block at the top of TASKS.md.
+> **▶ Status (2026-07-05):** M0 code-complete + **T-14 shakedown underway: run 1 of ~10 LANDED**
+> (full loop, coxswain shipped its own `cox status --json` via PR #1). Six real bugs found & fixed
+> live (BUG-01…06, see docs/SHAKEDOWN.md); suite 44 green. Next: runs 2–10 across ≥2 repos, incl. a
+> fix-round + second-repo task. M1/M2/V1 not started. Source of truth = RESUME block atop TASKS.md.
 
 ## V0 — personal (Mac), Claude-first
 

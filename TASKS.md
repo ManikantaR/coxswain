@@ -6,13 +6,20 @@
 > **Done:** M0 code-complete — **T-01 … T-13** all implemented, committed, and green
 > (38 tests: ruff + mypy --strict + pytest; tokenless stub-lane e2e). Repo: `~/repo/coxswain`.
 >
-> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS.** Run 1 (`cox status --json`,
-> coxswain repo) is dispatched → worker → **gate PASS**, cost ledger live ($1.61),
-> session captured. Three bugs found & fixed live (BUG-01 sandbox writes, BUG-02
-> `--add-dir` variadic, BUG-03 cost/session ingest) — all committed + pushed; suite
-> 40 green. **Immediate next: review → ship (PR) → merge for run 1**, then runs 2–10
-> across ≥2 repos. Live log: `docs/SHAKEDOWN.md`. Harness: `COX_HOME=~/cox-home cox
-> watch` + `cox dispatch <repo> "<task>" --path full`.
+> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS (1 of ~10 landed).** Run 1
+> (`cox status --json`) went the **full loop end-to-end: dispatch → worker → gate →
+> review(approve) → ship → merge → teardown → LANDED** ([PR #1](https://github.com/ManikantaR/coxswain/pull/1));
+> coxswain shipped its own feature. Cost $1.95 (impl $1.61 + review $0.33). The run
+> surfaced and fixed **six real bugs the stub-e2e can't catch** — BUG-01 sandbox
+> writes, BUG-02 `--add-dir` variadic, BUG-03 cost/session ingest, BUG-04 review
+> unwired, BUG-05 zombie `is_alive`, BUG-06 merge `--delete-branch`. Suite 44 green,
+> all pushed. Full detail in `docs/SHAKEDOWN.md`.
+>
+> **Immediate next: runs 2–10** — pick real issues across ≥2 repos (smartocrprocess +
+> relay/cox), incl. a task that forces a **fix round** (to prove `--resume` cost ≪
+> implement) and one across a **second repo**. Watch the per-task cost trend. Harness:
+> `COX_HOME=~/cox-home cox watch` + `cox dispatch <repo> "<task>" --path full`, then
+> `cox gate <id>` → `cox review <id>` → `cox ship <id> <repo> "<title>"` → `cox merge`.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).

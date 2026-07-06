@@ -28,13 +28,22 @@ Environment: Mac, `COX_HOME=~/cox-home`, claude lane, Python 3.11 venv.
 
 | # | date | repo | task | path | lane | gate | review | fix rounds | impl $ | fix $ | outcome | notes |
 |---|------|------|------|------|------|------|--------|-----------|--------|-------|---------|-------|
-| 1 | 2026-07-05 | coxswain | `cox status --json` | full | claude/sonnet | PASS | — | 0 | $1.61 | — | gated, PR pending | surfaced BUG-01/02/03; $1.61 high for a 1-flag change (worker looped on mypy --strict, 73 tool calls) |
+| 1 | 2026-07-05 | coxswain | `cox status --json` | full | claude/sonnet | PASS | approve (0 findings) | 0 | $1.61 | — | **LANDED** ([PR #1](https://github.com/ManikantaR/coxswain/pull/1)) | full loop; surfaced BUG-01…06; total $1.95 (impl $1.61 + review $0.33) |
 
-> Run 1 took three dispatches: #1 → BUG-01 (sandbox blocks status/evidence writes),
-> #1b → BUG-02 (`--add-dir` variadic ate the brief), #1c → clean worker run that
-> then surfaced BUG-03 (cost/session never captured). All three fixed + committed.
-> Loop proven through **dispatch → worker → gate + cost ledger**; review → ship →
-> merge still to run for this task.
+> **Run 1 = first full end-to-end loop, and coxswain shipped its own feature.**
+> Three dispatches to get a clean worker run: #1 → BUG-01 (sandbox blocks
+> status/evidence writes), #1b → BUG-02 (`--add-dir` variadic ate the brief),
+> #1c → clean run. Then the back half surfaced three more: BUG-03 (cost/session
+> never captured), BUG-04 (review unwired + parsed-before-done), BUG-05 (`is_alive`
+> hangs on zombies), BUG-06 (`gh pr merge --delete-branch` fails on a
+> worktree-held branch). **All six fixed, tested, committed, pushed.** Loop proven:
+> dispatch → worker → gate → review(approve) → ship(PR #1) → merge → teardown →
+> **landed**. `cox status --json` now runs live from merged main. 44 tests green.
+>
+> Cost note: $1.95 total for a one-flag change is high — the implementer looped
+> ~9× on `mypy --strict` (73 tool calls). Watch this as runs 2–10 accumulate; it's
+> the "expensive small lift" relay pattern and a candidate for a tighter brief or a
+> cheaper implement model on trivial tasks.
 
 ## Observations / bugs found
 
@@ -106,6 +115,17 @@ blocked ~15 min until timeout and `review.json` was never written. **Fix:**
 state (`ps -o state` = `Z`) as dead. Also added a DESIGN-P2 guard: `review()`
 returns a cached `review.json` verdict instead of re-spawning (no re-run, no
 double-spend) — regression test `test_review_returns_cached_verdict_without_respawn`.
+
+### BUG-06 (2026-07-05, run #1 merge) — `gh pr merge --delete-branch` fails on worktree-held branch. FIXED.
+The remote squash-merge of PR #1 succeeded, but `--delete-branch` then tried to
+delete the *local* branch that the task worktree still had checked out; git
+refuses, so `merge()` raised and the task stayed `pr_open`. **Fix:** dropped
+`--delete-branch` (fail-closed teardown already removes the worktree then the local
+branch, in the right order) and made `merge()` idempotent (already-merged =
+success) so recovery is safe. Re-ran `cox merge` → **landed**, teardown clean
+(patch-id match handled the squash). Minor follow-up: remote branch is left
+dangling after merge (enable repo auto-delete, or add a teardown remote-branch
+delete) — cosmetic.
 
 ### OBS (non-blocking, run #1c)
 - The worker added `pythonpath = ["."]` to `pyproject.toml` — not scope creep: it
