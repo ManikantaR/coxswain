@@ -15,11 +15,20 @@
 > unwired, BUG-05 zombie `is_alive`, BUG-06 merge `--delete-branch`. Suite 44 green,
 > all pushed. Full detail in `docs/SHAKEDOWN.md`.
 >
-> **Immediate next: runs 2–10** — pick real issues across ≥2 repos (smartocrprocess +
-> relay/cox), incl. a task that forces a **fix round** (to prove `--resume` cost ≪
-> implement) and one across a **second repo**. Watch the per-task cost trend. Harness:
-> `COX_HOME=~/cox-home cox watch` + `cox dispatch <repo> "<task>" --path full`, then
-> `cox gate <id>` → `cox review <id>` → `cox ship <id> <repo> "<title>"` → `cox merge`.
+> **Also shipped (captain-directed, ahead of "prove value first"):** `cox peek`
+> narrated activity feed (frugal orchestrator) + **`cox serve` glance dashboard** —
+> stdlib web board for desktop + phone on the home LAN (token URL, live SSE, per-task
+> narrated feed, STOP + Pause). Verified rendering desktop+mobile with real run-1 data.
+> 49 tests green. Deferred polish: shorten Bash paths / collapse duplicate tool lines
+> in the feed; **plan-approval control** (Devin-style approve-before-implement) not yet
+> built. Direction memo: `coxswain-observability-direction`.
+>
+> **Immediate next (the real go/no-go): runs 2–10** — pick real issues across ≥2 repos
+> (smartocrprocess + relay/cox), incl. a task that forces a **fix round** (to prove
+> `--resume` cost ≪ implement) and one across a **second repo**. This AFK batch is what
+> actually answers "is orchestration worth the token premium." Watch the per-task cost
+> trend on `cox serve`. Harness: `COX_HOME=~/cox-home cox watch` + `cox dispatch <repo>
+> "<task>" --path full`, then `cox gate <id>` → `cox review <id>` → `cox ship …` → `cox merge`.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).
