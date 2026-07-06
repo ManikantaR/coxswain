@@ -38,6 +38,15 @@ Environment: Mac, `COX_HOME=~/cox-home`, claude lane, Python 3.11 venv.
 > shipped feature makes the cost driver *visible* — the mypy loop now renders as one
 > line `→ Bash  mypy …  (x7)` instead of 7.
 
+| 3 | 2026-07-06 | coxswain | broaden tool allowlist (mypy/python) + brief guidance | full | **claude-sonnet-4-6** | PASS | approve (0 findings) | 0 | $0.46 | — | **LANDED** ([PR #3](https://github.com/ManikantaR/coxswain/pull/3)) | first run on sonnet 4.6; **total $0.55** — ~3× cheaper than the sonnet-5 default; no tool-friction (dogfooded its own fix); watched live on `cox serve`. |
+
+> **FINDING — model choice is the biggest cost lever.** Run 3 (sonnet 4.6, `COX_MODEL_IMPL=claude-sonnet-4-6:medium`)
+> cost **$0.55 total** vs run 1 $1.95 / run 2 $1.44 on the `sonnet` alias (→ sonnet-5).
+> Task sizes differ, so it's not a clean apples-to-apples, but a ~3× gap is too big to
+> ignore. **Candidate default change:** pin the implementer to sonnet 4.6 for routine
+> tasks and reserve sonnet-5 for hard ones (models.yml). This directly attacks the
+> token-premium worry — a cheaper implement model shrinks the whole economics question.
+
 > **Run 1 = first full end-to-end loop, and coxswain shipped its own feature.**
 > Three dispatches to get a clean worker run: #1 → BUG-01 (sandbox blocks
 > status/evidence writes), #1b → BUG-02 (`--add-dir` variadic ate the brief),

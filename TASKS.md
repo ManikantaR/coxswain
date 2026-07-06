@@ -6,14 +6,14 @@
 > **Done:** M0 code-complete — **T-01 … T-13** all implemented, committed, and green
 > (38 tests: ruff + mypy --strict + pytest; tokenless stub-lane e2e). Repo: `~/repo/coxswain`.
 >
-> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS (2 of ~10 landed).** Runs 1 & 2 both
-> went the **full loop → LANDED** ([PR #1](https://github.com/ManikantaR/coxswain/pull/1),
-> [PR #2](https://github.com/ManikantaR/coxswain/pull/2)). Run 1 surfaced + fixed **six
-> bugs the stub-e2e can't catch** (BUG-01 sandbox writes, BUG-02 `--add-dir` variadic,
-> BUG-03 cost/session ingest, BUG-04 review unwired, BUG-05 zombie `is_alive`, BUG-06
-> merge `--delete-branch`). **Run 2 was the first CLEAN run** — all 6 fixes held, no
-> re-dispatch, review didn't hang, merge worked first try ($1.44). Suite 51 green, all
-> pushed. Full detail in `docs/SHAKEDOWN.md`.
+> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS (3 of ~10 landed).** Runs 1–3 all went
+> the **full loop → LANDED** ([PR #1](https://github.com/ManikantaR/coxswain/pull/1),
+> [#2](https://github.com/ManikantaR/coxswain/pull/2),
+> [#3](https://github.com/ManikantaR/coxswain/pull/3)). Run 1 surfaced + fixed **six bugs**
+> (BUG-01…06, see SHAKEDOWN). Runs 2 & 3 were clean first-try. **Cost trend: $1.95 → $1.44
+> (sonnet-5) → $0.55 (sonnet 4.6)** — model choice is the biggest lever; consider pinning
+> sonnet 4.6 as the implementer default. Dashboard (`cox serve`) live on LAN; run 3 watched
+> in real time. Suite 52 green, all pushed. Full detail in `docs/SHAKEDOWN.md`.
 >
 > **Also shipped (captain-directed, ahead of "prove value first"):** `cox peek`
 > narrated activity feed (frugal orchestrator) + **`cox serve` glance dashboard** —
