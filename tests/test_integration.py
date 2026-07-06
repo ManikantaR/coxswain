@@ -8,8 +8,8 @@ import pytest
 
 from cox import fix as fixmod
 from cox import gate, review, store, worktree
-from cox.lanes.claude import parse_stream_json
-from cox.model import DispatchPath, TaskMeta, TaskState
+from cox.lanes.claude import ClaudeLane, parse_stream_json
+from cox.model import DispatchPath, ModelSpec, TaskMeta, TaskState
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -28,6 +28,43 @@ def test_worktree_create_bad_repo(tmp_path):
 
     with pytest.raises(proc.BosunProcError):
         worktree.create(tmp_path / "nope", "x-1")
+
+
+# --- T-07 claude spawn argv (shakedown 2026-07-05: worker must be granted the
+# task data dir, which is outside the worktree, or status/evidence writes are
+# sandbox-blocked) ---
+def test_spawn_grants_data_dir(tmp_path, monkeypatch):
+    from cox.lanes import claude as claudemod
+
+    recorded: dict[str, list[str]] = {}
+
+    def fake_spawn(argv, *, log_path, pid_path, cwd, env):
+        recorded["argv"] = list(argv)
+        return 4242
+
+    monkeypatch.setattr(claudemod.proc, "spawn_detached", fake_spawn)
+
+    data_dir = tmp_path / "data" / "task-1"
+    data_dir.mkdir(parents=True)
+    brief = data_dir / "brief.md"
+    brief.write_text("do the thing", encoding="utf-8")
+    worktree_path = tmp_path / "wt"
+    worktree_path.mkdir()
+
+    handle = ClaudeLane().spawn(
+        brief_path=brief,
+        worktree=worktree_path,
+        model=ModelSpec(provider="anthropic", model="sonnet", effort="medium"),
+        log_path=data_dir / "worker.log",
+        pid_path=data_dir / "pid",
+    )
+
+    assert handle.pid == 4242
+    argv = recorded["argv"]
+    assert "--add-dir" in argv
+    assert argv[argv.index("--add-dir") + 1] == str(data_dir)
+    # the brief text is still the final positional arg, after --add-dir's value
+    assert argv[-1] == "do the thing"
 
 
 # --- T-07 claude parse ---

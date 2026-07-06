@@ -44,7 +44,13 @@ class ClaudeLane:
         self, brief_path: Path, worktree: Path, model: ModelSpec, log_path: Path, pid_path: Path
     ) -> SpawnHandle:
         brief = brief_path.read_text(encoding="utf-8")
-        argv = self._base_argv(model) + [brief]
+        # The worker's status.log + evidence dir live in the task data dir, which
+        # is OUTSIDE the worktree. Claude Code sandboxes writes to the cwd unless
+        # extra dirs are allowed, so grant the data dir (brief.md's parent) — else
+        # the liveness/evidence protocol is silently unwritable (shakedown finding
+        # 2026-07-05). --add-dir verified live in docs/CLI-FACTS.md.
+        data_dir = brief_path.parent
+        argv = self._base_argv(model) + ["--add-dir", str(data_dir), brief]
         pid = proc.spawn_detached(
             argv, log_path=log_path, pid_path=pid_path, cwd=worktree, env=_worker_env()
         )
@@ -54,7 +60,9 @@ class ClaudeLane:
         self, session_id: str, feedback: str, worktree: Path, log_path: Path, pid_path: Path
     ) -> SpawnHandle:
         # Model is carried by the resumed session; --resume must run from the
-        # original worktree cwd (CLI-FACTS.md).
+        # original worktree cwd (CLI-FACTS.md). data dir (worker.log's parent)
+        # granted so the fix round can write status/evidence too (see spawn()).
+        data_dir = log_path.parent
         argv = [
             "claude",
             "-p",
@@ -67,6 +75,8 @@ class ClaudeLane:
             "--output-format",
             "stream-json",
             "--verbose",
+            "--add-dir",
+            str(data_dir),
             feedback,
         ]
         pid = proc.spawn_detached(
