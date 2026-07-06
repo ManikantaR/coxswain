@@ -132,6 +132,15 @@ def _cmd_fix(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_review(args: argparse.Namespace) -> int:
+    from . import review
+
+    outcome = review.review(args.task_id)
+    n = len(outcome.findings)
+    print(f"review {args.task_id}: route={outcome.route} verdict={outcome.verdict} findings={n}")
+    return 0 if outcome.route == "approve" else 1
+
+
 def _cmd_ship(args: argparse.Namespace) -> int:
     from . import ship
 
@@ -204,6 +213,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("task_id")
     s.add_argument("--notes", default=None)
     s.set_defaults(func=_cmd_fix)
+
+    s = sub.add_parser("review", help="one read-only review pass + verdict routing")
+    s.add_argument("task_id")
+    s.set_defaults(func=_cmd_review)
 
     s = sub.add_parser("ship", help="push + open PR")
     s.add_argument("task_id")

@@ -85,10 +85,13 @@ def review(task_id: str) -> ReviewOutcome:
         "--permission-mode", "plan",  # read-only: the reviewer never edits
         "--output-format", "stream-json", "--verbose", prompt,
     ]  # fmt: skip
-    proc.spawn_detached(argv, log_path=log_path, pid_path=pid_path, cwd=worktree)
-    # NOTE: the watcher observes completion; this function is called on the
-    # review-complete wake. For the synchronous path (tests/e2e) callers pass
-    # a pre-written review.log and call parse_review directly.
+    pid = proc.spawn_detached(argv, log_path=log_path, pid_path=pid_path, cwd=worktree)
+    # The review is one bounded read-only pass whose verdict the orchestrator
+    # needs before it can proceed, so block until the reviewer exits, then parse
+    # (shakedown BUG-04 — the old code parsed the log before the worker had
+    # written it, always yielding worker-error). An incomplete log after the
+    # timeout still parses to the typed worker-error route, never a silent pass.
+    _wait_for_exit(pid)
     result = parse_stream_json(log_path, phase="review")
     if result.cost:
         store.append_cost(task_id, result.cost)
@@ -104,6 +107,15 @@ def review(task_id: str) -> ReviewOutcome:
         encoding="utf-8",
     )
     return outcome
+
+
+def _wait_for_exit(pid: int, timeout: float = 900.0) -> None:
+    """Block until the reviewer process exits (or timeout). Read-only, bounded."""
+    import time
+
+    t0 = time.time()
+    while proc.is_alive(pid) and time.time() - t0 < timeout:
+        time.sleep(1.0)
 
 
 def _final_text(log_path: Path) -> str:
