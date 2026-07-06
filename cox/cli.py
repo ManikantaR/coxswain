@@ -95,8 +95,21 @@ def _cmd_peek(args: argparse.Namespace) -> int:
     if not log.exists():
         print(f"no worker log for {args.task_id}")
         return 1
-    lines = log.read_text(encoding="utf-8").splitlines()
-    for line in lines[-40:]:  # capped (DESIGN: never stream a whole log)
+    if args.raw:
+        # escape hatch: last 40 raw stream-json lines (capped)
+        for line in log.read_text(encoding="utf-8").splitlines()[-40:]:
+            print(line)
+        return 0
+    # default: compact narrated activity feed — cheap for the orchestrator to
+    # read, and the same renderer the glance dashboard reuses (DESIGN: never
+    # stream a whole log). Header line first for one-glance context.
+    from . import render
+
+    m = store.load_meta(args.task_id)
+    _, _, cost = store.cost_total(args.task_id)
+    cost_str = f"${cost:.2f}" if cost is not None else "$?"
+    print(f"[{args.task_id}] {m.state.value}  {m.lane}/{m.model}  {cost_str}")
+    for line in render.summarize_stream(log, n=args.lines):
         print(line)
     return 0
 
@@ -216,8 +229,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--once", action="store_true", help="single scan then exit (tests/cron)")
     s.set_defaults(func=_cmd_watch)
 
-    s = sub.add_parser("peek", help="last 40 worker-log lines (capped)")
+    s = sub.add_parser("peek", help="compact narrated activity feed for a task")
     s.add_argument("task_id")
+    s.add_argument("--lines", type=int, default=15, help="feed events to show (default 15)")
+    s.add_argument("--raw", action="store_true", help="dump last 40 raw stream-json lines instead")
     s.set_defaults(func=_cmd_peek)
 
     s = sub.add_parser("dispatch", help="spawn a worker task")

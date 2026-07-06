@@ -133,6 +133,45 @@ def test_review_returns_cached_verdict_without_respawn(tmp_path, monkeypatch):
     assert out.route == "approve"
 
 
+# --- narrated activity feed renderer (frugal peek + dashboard brick) ---
+def test_summarize_stream_renders_compact_feed(tmp_path):
+    import json
+
+    from cox import render
+
+    def asst(*content):
+        return json.dumps({"type": "assistant", "message": {"content": list(content)}})
+
+    lines = [
+        json.dumps({"type": "system", "subtype": "thinking_tokens"}),  # ignored
+        asst({"type": "text", "text": "Installing deps now"}),
+        asst({"type": "tool_use", "name": "Bash", "input": {"command": "git rebase origin/main"}}),
+        "not json — must be skipped",
+        json.dumps(
+            {
+                "type": "result",
+                "is_error": False,
+                "total_cost_usd": 1.61,
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 8000,
+                    "output_tokens": 42,
+                },
+            }
+        ),
+    ]
+    log = tmp_path / "worker.log"
+    log.write_text("\n".join(lines), encoding="utf-8")
+
+    feed = render.summarize_stream(log, n=15)
+    assert feed[0] == "· Installing deps now"
+    assert feed[1] == "→ Bash  git rebase origin/main"
+    assert feed[2].startswith("■ done  $1.61")
+    assert "8100 in / 42 out" in feed[2]
+    # no worker log -> friendly line, never a crash
+    assert render.summarize_stream(tmp_path / "nope.log") == ["(no worker log yet)"]
+
+
 # --- T-07 claude parse ---
 def test_parse_stream_json_fixture():
     res = parse_stream_json(FIXTURES / "claude-stream.jsonl", phase="implement")
