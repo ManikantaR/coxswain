@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from cox import classify, home, models, proc, store, wakequeue
+from cox.cli import main
 from cox.model import CostEntry, DispatchPath, NeedsHumanReason, TaskMeta, TaskState
 
 
@@ -148,3 +151,69 @@ def test_wakequeue_dedupe_and_delivery():
     assert wakequeue.undelivered() == []
     # Re-enqueue same source line is still deduped after delivery.
     assert wakequeue.enqueue("t1", "done", "x", "done: x") is False
+
+
+# --- status --json ---
+def test_status_json_empty_home(capsys):
+    rc = main(["status", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert json.loads(out) == []
+
+
+def test_status_json_one_task(capsys):
+    m = TaskMeta(
+        id="myrepo-feat-2601010000",
+        repo="myrepo",
+        worktree="/wt/myrepo-feat",
+        branch="cox/feat",
+        lane="claude",
+        model="sonnet:medium",
+        path=DispatchPath.FULL,
+        state=TaskState.WORKING,
+        reason=None,
+        dispatched_at=1_700_000_000.0,
+    )
+    store.save_meta(m)
+    store.append_cost(m.id, CostEntry("implement", 200, 50, 0.05))
+
+    rc = main(["status", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    rows = json.loads(out)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == "myrepo-feat-2601010000"
+    assert row["repo"] == "myrepo"
+    assert row["state"] == "working"
+    assert row["reason"] is None
+    assert row["path"] == "full"
+    assert row["lane"] == "claude"
+    assert row["model"] == "sonnet:medium"
+    assert abs(row["cost_usd"] - 0.05) < 1e-9
+    assert row["dispatched_at"] == 1_700_000_000.0
+
+
+def test_status_json_reason_and_no_cost(capsys):
+    m = TaskMeta(
+        id="myrepo-bug-2601010001",
+        repo="myrepo",
+        worktree="/wt/myrepo-bug",
+        branch="cox/bug",
+        lane="claude",
+        model="opus:high",
+        path=DispatchPath.QUICK,
+        state=TaskState.NEEDS_HUMAN,
+        reason=NeedsHumanReason.GATE_RED,
+        dispatched_at=1_700_001_000.0,
+    )
+    store.save_meta(m)
+    # No cost entries — cost_usd should be null.
+
+    rc = main(["status", "--json"])
+    assert rc == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["reason"] == "gate-red"
+    assert row["cost_usd"] is None
