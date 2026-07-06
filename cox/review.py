@@ -74,6 +74,12 @@ def review(task_id: str) -> ReviewOutcome:
     if cfg.review == "none":
         return ReviewOutcome(route="approve", verdict="approve", findings=[])
 
+    # DESIGN P2: the review is never re-run. If a verdict already exists, return
+    # it instead of spawning (and paying for) a second reviewer.
+    cached = _load_cached(task_id)
+    if cached is not None:
+        return cached
+
     brief = (store.task_data_dir(task_id) / "brief.md").read_text(encoding="utf-8")
     prompt = build_prompt(_diff(worktree, cfg.target_branch), brief)
     spec = models.resolve("reviewer", repo_path=worktree)  # pinned (P8)
@@ -107,6 +113,26 @@ def review(task_id: str) -> ReviewOutcome:
         encoding="utf-8",
     )
     return outcome
+
+
+def _load_cached(task_id: str) -> ReviewOutcome | None:
+    """Return a prior verdict from review.json, or None if this task has none."""
+    p = store.task_data_dir(task_id) / "review.json"
+    if not p.exists():
+        return None
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if data.get("error"):
+        return ReviewOutcome(route="worker-error", verdict="", findings=[])
+    findings = data.get("findings") or []
+    if str(data.get("verdict", "")).lower() == "reject" or any(
+        f.get("action") == "ask-user" for f in findings
+    ):
+        route = "ask-user"
+    elif any(f.get("action") == "auto-fix" for f in findings):
+        route = "auto-fix"
+    else:
+        route = "approve"
+    return ReviewOutcome(route=route, verdict=str(data.get("verdict", route)), findings=findings)
 
 
 def _wait_for_exit(pid: int, timeout: float = 900.0) -> None:

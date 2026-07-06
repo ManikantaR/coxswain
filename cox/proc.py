@@ -93,13 +93,36 @@ def spawn_detached(
 
 
 def is_alive(pid: int) -> bool:
-    """True if the process exists (POSIX signal-0 probe)."""
+    """True if the process exists and is not a reaped-pending zombie.
+
+    A finished-but-unreaped child stays in the process table as a zombie; a
+    plain signal-0 probe reports it alive forever, hanging any wait loop
+    (shakedown BUG-05: the review wait blocked ~15 min on a defunct reviewer).
+    Best-effort reap our own children first, then treat zombie state as dead.
+    """
     if pid <= 0:
         return False
+    try:
+        # Reap if it's our child and already exited (non-blocking); WNOHANG
+        # returns (pid, status) once, then ChildProcessError on later calls.
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            return False
+    except (ChildProcessError, OSError):
+        pass  # not our child (detached/reparented) — fall through to probe
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    return True
+    return not _is_zombie(pid)
+
+
+def _is_zombie(pid: int) -> bool:
+    """True if pid is a zombie (defunct, awaiting reap). Best-effort, POSIX ps."""
+    try:
+        r = run(["ps", "-o", "state=", "-p", str(pid)], ok_rc=(0, 1))
+    except BosunProcError:
+        return False
+    return r.out.strip().startswith("Z")

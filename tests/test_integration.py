@@ -98,6 +98,41 @@ def test_ingest_worker_result_records_cost_and_session():
     assert len(store.read_cost(tid)) == 1
 
 
+# --- T-10 review is never re-run: cached verdict short-circuits spawn (DESIGN P2,
+# shakedown BUG-05 double-spend guard) ---
+def test_review_returns_cached_verdict_without_respawn(tmp_path, monkeypatch):
+    from cox import review
+
+    tid = "repo-review-1"
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    meta = TaskMeta(
+        id=tid, repo="repo", worktree=str(wt), branch="cox/x",
+        lane="claude", model="sonnet:medium", path=DispatchPath.FULL,
+        state=TaskState.GATING,
+    )
+    store.save_meta(meta)
+    # a prior verdict exists on disk
+    import json as _json
+
+    store.task_data_dir(tid).mkdir(parents=True, exist_ok=True)
+    (store.task_data_dir(tid) / "review.json").write_text(
+        _json.dumps({"verdict": "approve", "findings": []}), encoding="utf-8"
+    )
+    # repo.yml with review=full so we don't take the review=none early return
+    (wt / ".cox").mkdir()
+    (wt / ".cox" / "repo.yml").write_text("review: full\n", encoding="utf-8")
+
+    # spawning would be a re-run — forbid it
+    def boom(*a, **k):
+        raise AssertionError("review must not re-spawn when a verdict is cached")
+
+    monkeypatch.setattr(review.proc, "spawn_detached", boom)
+
+    out = review.review(tid)
+    assert out.route == "approve"
+
+
 # --- T-07 claude parse ---
 def test_parse_stream_json_fixture():
     res = parse_stream_json(FIXTURES / "claude-stream.jsonl", phase="implement")

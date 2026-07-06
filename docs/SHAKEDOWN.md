@@ -90,6 +90,23 @@ Test `test_ingest_worker_result_records_cost_and_session` (incl. idempotence).
 Also added `.cox/repo.yml` for coxswain (`test: pytest -q`, `lint: ruff check .`)
 so the gate actually runs the deterministic checks instead of skipping them.
 
+### BUG-04 (2026-07-05, run #1 review) — review pass unwired + parsed before completion. FIXED.
+No `cox review` subcommand existed, and `review.review()` spawned the reviewer
+detached then parsed `review.log` immediately — before the reviewer wrote it —
+always returning `worker-error`. It was implicitly a two-call design (spawn, then
+re-parse on a wake) that nothing drove. **Fix:** `review()` now blocks on the
+reviewer pid then parses; added `cox review <id>`. Live verdict on run 1:
+`{"findings":[],"verdict":"approve"}` — clean approve, review cost $0.33 recorded.
+
+### BUG-05 (2026-07-05, run #1 review) — `is_alive()` reports zombies as alive → wait hangs. FIXED.
+The reviewer finished (result in log) but became a `Z <defunct>` zombie; `is_alive`
+used `os.kill(pid, 0)`, which succeeds for un-reaped zombies, so `_wait_for_exit`
+blocked ~15 min until timeout and `review.json` was never written. **Fix:**
+`is_alive()` now reaps its own children (`waitpid(WNOHANG)`) and treats zombie
+state (`ps -o state` = `Z`) as dead. Also added a DESIGN-P2 guard: `review()`
+returns a cached `review.json` verdict instead of re-spawning (no re-run, no
+double-spend) — regression test `test_review_returns_cached_verdict_without_respawn`.
+
 ### OBS (non-blocking, run #1c)
 - The worker added `pythonpath = ["."]` to `pyproject.toml` — not scope creep: it
   lets `pytest` import `cox` from a worktree that has no editable install. Kept.
