@@ -49,6 +49,22 @@ no commit, no evidence, $0.28 burned.
 Regression test `test_spawn_grants_data_dir` locks it in. `--add-dir` verified in
 `claude --help`. Re-dispatch after this fix = run #1b.
 
+### BUG-02 (2026-07-05, run #1b) — `--add-dir` is variadic; it ate the brief. FIXED.
+The BUG-01 fix placed `--add-dir <data_dir> <brief>` with the brief immediately
+after the dir. But `claude`'s `--add-dir <directories...>` is **variadic**: it
+consumed the brief as a *second directory*, leaving no prompt. Headless with a
+prompt arg it errors fast (`Error: Input must be provided … when using --print`);
+the detached worker instead sat alive for ~5 min emitting zero bytes (no prompt,
+nothing to do). First live run looked like a hang.
+
+Proven with a two-arm probe: `--add-dir DIR <brief>` → rc=1 "Input must be
+provided"; `--add-dir DIR --model … --verbose <brief>` → rc=0, result ok in 3.7s.
+
+**Fix:** `--add-dir <dir>` now sits mid-argv (followed by `--model`/other flags),
+so a `--flag` terminates the variadic list and the brief stays the lone trailing
+positional. Regression test asserts the token after the dir starts with `--`.
+Re-dispatch = run #1c.
+
 <!-- Log anything the shakedown surfaces: guardrail gaps, token surprises,
      UX friction in the chat loop, crash-recovery behavior. Each becomes a
      TASKS.md fix item if it blocks M0. -->

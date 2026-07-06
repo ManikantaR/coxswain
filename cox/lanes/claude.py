@@ -24,10 +24,18 @@ _ALLOWED_TOOLS = "Edit,Write,Read,Bash(git*),Bash(pytest*),Bash(npm*),Bash(ruff*
 class ClaudeLane:
     name = "claude"
 
-    def _base_argv(self, model: ModelSpec) -> list[str]:
+    def _base_argv(self, model: ModelSpec, data_dir: Path) -> list[str]:
+        # --add-dir grants the worker its task data dir (status.log + evidence),
+        # which lives OUTSIDE the worktree cwd — else those writes are sandbox-
+        # blocked (shakedown BUG-01, 2026-07-05). It MUST be followed by a flag,
+        # never by the trailing brief: `--add-dir <directories...>` is variadic
+        # and will otherwise swallow the brief as a second directory, leaving no
+        # prompt (shakedown BUG-02). --add-dir verified live in docs/CLI-FACTS.md.
         argv = [
             "claude",
             "-p",
+            "--add-dir",
+            str(data_dir),
             "--model",
             model.model,
             "--permission-mode",
@@ -44,13 +52,7 @@ class ClaudeLane:
         self, brief_path: Path, worktree: Path, model: ModelSpec, log_path: Path, pid_path: Path
     ) -> SpawnHandle:
         brief = brief_path.read_text(encoding="utf-8")
-        # The worker's status.log + evidence dir live in the task data dir, which
-        # is OUTSIDE the worktree. Claude Code sandboxes writes to the cwd unless
-        # extra dirs are allowed, so grant the data dir (brief.md's parent) — else
-        # the liveness/evidence protocol is silently unwritable (shakedown finding
-        # 2026-07-05). --add-dir verified live in docs/CLI-FACTS.md.
-        data_dir = brief_path.parent
-        argv = self._base_argv(model) + ["--add-dir", str(data_dir), brief]
+        argv = self._base_argv(model, brief_path.parent) + [brief]
         pid = proc.spawn_detached(
             argv, log_path=log_path, pid_path=pid_path, cwd=worktree, env=_worker_env()
         )
@@ -61,13 +63,16 @@ class ClaudeLane:
     ) -> SpawnHandle:
         # Model is carried by the resumed session; --resume must run from the
         # original worktree cwd (CLI-FACTS.md). data dir (worker.log's parent)
-        # granted so the fix round can write status/evidence too (see spawn()).
+        # granted so the fix round can write status/evidence too (see _base_argv);
+        # --add-dir is mid-argv so the variadic list can't eat the feedback arg.
         data_dir = log_path.parent
         argv = [
             "claude",
             "-p",
             "--resume",
             session_id,
+            "--add-dir",
+            str(data_dir),
             "--permission-mode",
             "acceptEdits",
             "--allowedTools",
@@ -75,8 +80,6 @@ class ClaudeLane:
             "--output-format",
             "stream-json",
             "--verbose",
-            "--add-dir",
-            str(data_dir),
             feedback,
         ]
         pid = proc.spawn_detached(

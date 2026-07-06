@@ -62,8 +62,12 @@ def test_spawn_grants_data_dir(tmp_path, monkeypatch):
     assert handle.pid == 4242
     argv = recorded["argv"]
     assert "--add-dir" in argv
-    assert argv[argv.index("--add-dir") + 1] == str(data_dir)
-    # the brief text is still the final positional arg, after --add-dir's value
+    i = argv.index("--add-dir")
+    assert argv[i + 1] == str(data_dir)
+    # BUG-02: --add-dir is variadic; the token after its dir MUST be a flag, never
+    # the brief, or claude swallows the brief as a second directory and errors.
+    assert argv[i + 2].startswith("--")
+    # the brief is the lone trailing positional
     assert argv[-1] == "do the thing"
 
 
