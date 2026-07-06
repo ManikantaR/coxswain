@@ -57,7 +57,15 @@ class GitHubScm:
 
     def merge(self, repo: Path, pr_url: str, squash: bool = True) -> None:
         flag = "--squash" if squash else "--merge"
+        # No --delete-branch: the branch is checked out in the task worktree and
+        # git refuses to delete a branch a worktree holds (shakedown BUG-06 — the
+        # remote merge succeeded but the local-branch delete failed and raised).
+        # Fail-closed teardown (worktree.remove) drops the worktree then the local
+        # branch afterward, in the right order.
         try:
-            proc.run(["gh", "pr", "merge", pr_url, flag, "--delete-branch"], cwd=repo)
+            proc.run(["gh", "pr", "merge", pr_url, flag], cwd=repo)
         except proc.BosunProcError as e:
+            blob = f"{e.out}\n{e.err}".lower()
+            if "already merged" in blob or "not open" in blob:
+                return  # idempotent: a merged PR is a merged PR
             raise PrError(f"gh pr merge failed: {e.err.strip()}") from e
