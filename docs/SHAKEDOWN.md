@@ -65,6 +65,36 @@ so a `--flag` terminates the variadic list and the brief stays the lone trailing
 positional. Regression test asserts the token after the dir starts with `--`.
 Re-dispatch = run #1c.
 
+### BUG-03 (2026-07-05, run #1c) — implement cost + session_id never captured. FIXED.
+Run #1c completed cleanly (worker wrote `done:`, committed, wrote evidence), but
+`cox cost <id>` showed `$0.0000 / 0 tokens`. Root cause: only `review.py` appends
+to the cost ledger. The **implementer** worker's cost is in `worker.log`, but
+nothing parses it after the worker exits — `dispatch` spawns *before* a session
+exists, and no post-exit ingest step runs. Same gap broke fix-rounds: `fix.py`
+raises `no session_id to resume` because `meta.session_id` is never populated
+(the id only appears in the worker's result object).
+
+**Fix:** `gate.ingest_worker_result(task_id)` runs at the top of `run_gate` — the
+first orchestrator action after `done:`. It parses `worker.log` once, appends the
+implement-phase cost, and persists the `session_id` into meta (unbreaking
+`--resume`). Idempotent: guarded on an existing `implement` cost entry, so
+re-gating after a fix round doesn't double-count; the fix round logs its own cost.
+Test `test_ingest_worker_result_records_cost_and_session` (incl. idempotence).
+
+Also added `.cox/repo.yml` for coxswain (`test: pytest -q`, `lint: ruff check .`)
+so the gate actually runs the deterministic checks instead of skipping them.
+
+### OBS (non-blocking, run #1c)
+- The worker added `pythonpath = ["."]` to `pyproject.toml` — not scope creep: it
+  lets `pytest` import `cox` from a worktree that has no editable install. Kept.
+- The worker ran `mypy` although `mypy` is not in `_ALLOWED_TOOLS`
+  (`Edit,Write,Read,Bash(git*|pytest*|npm*|ruff*)`). Under `--permission-mode
+  acceptEdits` the allowlist appears not to gate Bash — revisit whether the lane
+  should pass `--disallowedTools` or tighten this for the work profile.
+- Stale wakes for torn-down tasks (#…051612, #…052016) linger in
+  `wake-queue.jsonl` after their state/data dirs were deleted. Teardown should
+  purge a task's undelivered wakes. Low severity (they're harmless noise).
+
 <!-- Log anything the shakedown surfaces: guardrail gaps, token surprises,
      UX friction in the chat loop, crash-recovery behavior. Each becomes a
      TASKS.md fix item if it blocks M0. -->

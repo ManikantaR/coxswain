@@ -37,7 +37,32 @@ def _tail(text: str, n: int = 200) -> str:
     return "\n".join(text.splitlines()[-n:])
 
 
+def ingest_worker_result(task_id: str) -> None:
+    """Record the implement worker's cost + capture its session_id, once.
+
+    Nothing else reads the worker.log for the implement phase: dispatch spawns
+    before a session_id exists, so without this the cost ledger stays $0 and
+    fix-round --resume has no session to resume (shakedown BUG-03). Idempotent —
+    guarded on an existing implement-phase cost entry — so re-gating after a fix
+    round does not double-count. The fix round records its own cost in fix.py.
+    """
+    from dataclasses import replace
+
+    from .lanes import get_lane
+
+    meta = store.load_meta(task_id)
+    if any(c.phase == "implement" for c in store.read_cost(task_id)):
+        return  # already ingested
+    log_path = store.task_data_dir(task_id) / "worker.log"
+    res = get_lane(meta.lane).parse_result(log_path, phase="implement")
+    if res.cost is not None:
+        store.append_cost(task_id, res.cost)
+    if res.session_id and not meta.session_id:
+        store.save_meta(replace(meta, session_id=res.session_id))
+
+
 def run_gate(task_id: str) -> GateReport:
+    ingest_worker_result(task_id)
     meta = store.load_meta(task_id)
     worktree = Path(meta.worktree)
     cfg = load_repo_config(worktree)

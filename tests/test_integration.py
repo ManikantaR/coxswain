@@ -71,6 +71,33 @@ def test_spawn_grants_data_dir(tmp_path, monkeypatch):
     assert argv[-1] == "do the thing"
 
 
+# --- T-09 ingest worker result: cost + session_id (shakedown BUG-03) ---
+def test_ingest_worker_result_records_cost_and_session():
+    from cox import gate
+
+    tid = "repo-ingest-1"
+    meta = TaskMeta(
+        id=tid, repo="repo", worktree="/tmp/wt", branch="cox/x",
+        lane="claude", model="sonnet:medium", path=DispatchPath.FULL,
+        state=TaskState.GATING,
+    )
+    store.save_meta(meta)
+    log = store.task_data_dir(tid) / "worker.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text((FIXTURES / "claude-stream.jsonl").read_text(), encoding="utf-8")
+
+    gate.ingest_worker_result(tid)
+
+    costs = store.read_cost(tid)
+    assert [c.phase for c in costs] == ["implement"]
+    assert costs[0].cost_usd == pytest.approx(0.0421)
+    assert store.load_meta(tid).session_id == "e5fd32ca-1111-2222-3333-444455556666"
+
+    # idempotent: a second call must not double-count the implement cost
+    gate.ingest_worker_result(tid)
+    assert len(store.read_cost(tid)) == 1
+
+
 # --- T-07 claude parse ---
 def test_parse_stream_json_fixture():
     res = parse_stream_json(FIXTURES / "claude-stream.jsonl", phase="implement")

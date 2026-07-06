@@ -1,0 +1,8 @@
+# Coxswain's own repo config — the deterministic gate for cox tasks (DESIGN §2.4).
+# Commands run in the task worktree; keep them tokenless and fast.
+commands:
+  test: pytest -q
+  lint: ruff check .
+review: full
+target_branch: main
+scm: github
