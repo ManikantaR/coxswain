@@ -25,15 +25,33 @@ from .base import RunResult, SpawnHandle
 _SANDBOX = "workspace-write"
 
 
+def _git_common_dir(worktree: Path) -> str | None:
+    """The parent repo's shared .git (index/objects for a LINKED worktree).
+
+    A worktree commit writes index.lock + new objects there, OUTSIDE the
+    worktree — so codex's sandbox must be granted this dir or `git commit`
+    fails (shakedown BUG-07). None if it can't be resolved (then we just don't
+    add it; the failure is loud, not silent)."""
+    try:
+        r = proc.run(
+            ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            ok_rc=(0, 128),
+        )
+    except proc.BosunProcError:
+        return None
+    out = r.out.strip()
+    return out or None
+
+
 class CodexLane:
     name = "codex"
 
     def _base_argv(self, model: ModelSpec, data_dir: Path, worktree: Path) -> list[str]:
-        # --add-dir grants the task data dir (status.log + evidence) which lives
-        # outside the worktree (BUG-01). Keep the brief the lone trailing
-        # positional; every flag here takes a value or is boolean, so the prompt
-        # can't be swallowed (BUG-02 lesson).
-        return [
+        # --add-dir grants writable roots outside the worktree: the task data dir
+        # (status.log + evidence, BUG-01) and the parent repo's shared .git so
+        # `git commit` can write index.lock + objects (BUG-07). --add-dir repeats.
+        # Keep the brief the lone trailing positional (BUG-02 lesson).
+        argv = [
             "codex",
             "exec",
             "--json",
@@ -47,9 +65,12 @@ class CodexLane:
             _SANDBOX,
             "--add-dir",
             str(data_dir),
-            "-C",
-            str(worktree),
         ]
+        gitdir = _git_common_dir(worktree)
+        if gitdir:
+            argv += ["--add-dir", gitdir]
+        argv += ["-C", str(worktree)]
+        return argv
 
     def spawn(
         self, brief_path: Path, worktree: Path, model: ModelSpec, log_path: Path, pid_path: Path
@@ -66,7 +87,16 @@ class CodexLane:
     ) -> SpawnHandle:
         # Resume by explicit thread_id — never `--last --json` (arg-parse bug,
         # openai/codex#6717, CLI-FACTS). data dir = worker.log's parent.
+        # `codex exec resume` does NOT accept -s/--add-dir/-C (BUG-08 — those are
+        # `codex exec`-only). Sandbox + writable roots must go through `-c` config,
+        # and cwd is set via spawn_detached (we run from the worktree). Writable
+        # roots = data dir (status/evidence) + parent .git (commit, BUG-07).
         data_dir = log_path.parent
+        roots = [str(data_dir)]
+        gitdir = _git_common_dir(worktree)
+        if gitdir:
+            roots.append(gitdir)
+        roots_toml = "[" + ",".join(f'"{r}"' for r in roots) + "]"
         argv = [
             "codex",
             "exec",
@@ -75,12 +105,10 @@ class CodexLane:
             "--json",
             "-c",
             "approval_policy=never",
-            "-s",
-            _SANDBOX,
-            "--add-dir",
-            str(data_dir),
-            "-C",
-            str(worktree),
+            "-c",
+            f"sandbox_mode={_SANDBOX}",
+            "-c",
+            f"sandbox_workspace_write.writable_roots={roots_toml}",
             feedback,
         ]
         pid = proc.spawn_detached(
