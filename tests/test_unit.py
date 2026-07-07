@@ -64,6 +64,16 @@ def test_cost_total_unknown_when_any_none():
     assert cost is None
 
 
+# --- version subcommand ---
+def test_version_command_prints_nonempty(monkeypatch, capsys):
+    import cox.cli as cli_mod
+    monkeypatch.setattr(cli_mod, "version", lambda _name: "1.2.3")
+    rc = main(["version"])
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    assert out  # non-empty version string
+
+
 # --- T-03 models ---
 def test_models_default_pinned():
     # default lane is claude -> a pinned Sonnet; reviewer stays Opus
