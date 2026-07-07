@@ -52,6 +52,7 @@ def dispatch(
     path: DispatchPath,
     lane: str = "claude",
     repo_name: str | None = None,
+    model_override: str | None = None,
 ) -> TaskMeta:
     """Create and spawn a task. Returns its persisted meta (state=working)."""
     home.ensure_home()
@@ -68,7 +69,11 @@ def dispatch(
     repo = repo_name or repo_path.name
     task_id = store.new_task_id(repo, title)
 
-    model = models.resolve("implementer", repo_path=repo_path)  # crashes if unpinned (P8)
+    # --model wins (e.g. opus:high for a hard task); else the lane's pinned default.
+    if model_override:
+        model = models.parse_spec(model_override)
+    else:
+        model = models.resolve("implementer", repo_path=repo_path, lane=lane)  # crashes if unpinned
     wt = worktree.create(repo_path, task_id)
 
     brief_text = render_brief(

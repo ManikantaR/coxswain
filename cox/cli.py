@@ -148,6 +148,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         body=args.body or args.title,
         path=DispatchPath(args.path),
         lane=args.lane,
+        model_override=args.model,
     )
     print(f"dispatched {meta.id} ({meta.path.value}) on {meta.lane}/{meta.model}")
     return 0
@@ -247,7 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("title")
     s.add_argument("--body", default=None)
     s.add_argument("--path", choices=[p.value for p in DispatchPath], default="full")
-    s.add_argument("--lane", default="claude")
+    s.add_argument("--lane", default="claude", choices=["claude", "codex", "stub"])
+    s.add_argument("--model", default=None, help="override impl model, e.g. opus:high (hard tasks)")
     s.set_defaults(func=_cmd_dispatch)
 
     s = sub.add_parser("gate", help="run deterministic gate steps 1-4")

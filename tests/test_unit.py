@@ -66,8 +66,10 @@ def test_cost_total_unknown_when_any_none():
 
 # --- T-03 models ---
 def test_models_default_pinned():
+    # default lane is claude -> a pinned Sonnet; reviewer stays Opus
     spec = models.resolve("implementer")
-    assert spec.model == "sonnet" and spec.effort == "medium"
+    assert spec.model == "claude-sonnet-4-6" and spec.effort == "medium"
+    assert models.resolve("reviewer").model == "opus"
 
 
 def test_models_env_override(monkeypatch):

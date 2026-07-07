@@ -33,8 +33,18 @@ from .model import ModelSpec
 # the CLI knows, so defaults rarely go stale across launches, and they stay off
 # the credit-gated 1M-context path.
 _ROLE_DEFAULT: dict[str, ModelSpec] = {
-    "implementer": ModelSpec(provider="anthropic", model="sonnet", effort="medium"),
+    "implementer": ModelSpec(provider="anthropic", model="claude-sonnet-4-6", effort="medium"),
     "reviewer": ModelSpec(provider="anthropic", model="opus", effort="medium"),
+}
+
+# Per-lane implementer default: the model family follows the lane. claude → a
+# cost-effective Sonnet, codex → gpt-5.4. Reviewer stays Opus for every lane
+# (judgment is where the strong model earns its keep); route genuinely hard
+# implement tasks to Opus explicitly via `cox dispatch --model opus:high`.
+_LANE_IMPL_DEFAULT: dict[str, ModelSpec] = {
+    "claude": ModelSpec(provider="anthropic", model="claude-sonnet-4-6", effort="medium"),
+    "codex": ModelSpec(provider="openai", model="gpt-5.4", effort="medium"),
+    "stub": ModelSpec(provider="anthropic", model="sonnet", effort="medium"),
 }
 
 _ENV_KEY = {"implementer": "COX_MODEL_IMPL", "reviewer": "COX_MODEL_REVIEW"}
@@ -47,6 +57,11 @@ class BosunConfigError(RuntimeError):
 def _parse_spec(raw: str, provider: str = "anthropic") -> ModelSpec:
     model, _, effort = raw.partition(":")
     return ModelSpec(provider=provider, model=model.strip(), effort=(effort or "medium").strip())
+
+
+def parse_spec(raw: str, provider: str = "anthropic") -> ModelSpec:
+    """Public: parse a '<model>[:<effort>]' string into a ModelSpec (for --model)."""
+    return _parse_spec(raw, provider)
 
 
 def _spec_from_mapping(m: Any) -> ModelSpec | None:
@@ -86,8 +101,8 @@ def _global_path() -> Path:
     return Path(raw).expanduser() if raw else Path.home() / ".config" / "cox" / "models.yml"
 
 
-def resolve(role: str, repo_path: Path | None = None) -> ModelSpec:
-    """Return a pinned ModelSpec for a role. Never returns unpinned (DESIGN P8)."""
+def resolve(role: str, repo_path: Path | None = None, lane: str = "claude") -> ModelSpec:
+    """Return a pinned ModelSpec for a role + lane. Never unpinned (DESIGN P8)."""
     if role not in _ROLE_DEFAULT:
         raise ValueError(f"unknown role {role!r}")
 
@@ -112,5 +127,7 @@ def resolve(role: str, repo_path: Path | None = None) -> ModelSpec:
         if spec:
             return spec
 
-    # 4. built-in default
+    # 4. built-in default — implementer follows the lane; reviewer is role-fixed
+    if role == "implementer" and lane in _LANE_IMPL_DEFAULT:
+        return _LANE_IMPL_DEFAULT[lane]
     return _ROLE_DEFAULT[role]
