@@ -51,6 +51,26 @@ Environment: Mac, `COX_HOME=~/cox-home`, claude lane, Python 3.11 venv.
 > informational `no-op` finding without blocking, leaving the scope call to the captain
 > (design working as intended). Codex reports **no dollar cost** (tokens only) → cost shows `?`.
 
+| 5 | 2026-07-07 | coxswain | `cox version` subcommand | full | claude/sonnet-4.6 | PASS (×2) | approve (0 findings) | **1** | $1.08 | **$0.40** | **LANDED** ([PR #5](https://github.com/ManikantaR/coxswain/pull/5)) | **dispatched from the UI button**; **FIX ROUND validated `--resume`: $0.40 vs $1.08 implement (~37%)**; total $1.65 (impl+fix+review). |
+
+> **Run 5 = two milestones.** (1) **Dispatch-from-UI**: added a ＋Dispatch panel to
+> `cox serve` (repo·title·body·lane·model → POST /api/dispatch), and dispatched THIS
+> task from the browser button (board showed the WORKING card instantly). Manual captain
+> dispatch only. (2) **Fix round → `--resume` thesis PROVEN**: after the implement
+> ($1.08, cold repo read), a resumed-session fix round cost **$0.40 (~37%)** — the same
+> `session_id`, no repo re-read. This is relay's #1 token-burner (cold-start-per-phase)
+> actually fixed, and the direct answer to the token-premium worry: resumed fixes are cheap.
+> Fix round committed → re-gate PASS → review approve → merged. Also validated the resumed
+> claude session end-to-end.
+
+### BUG-09 (run #5) — fix-round cost not auto-recorded. OPEN.
+`fix.fix()` resumes the session (appends a new result to worker.log) but nothing
+ingests that result's cost — `gate.ingest_worker_result` is guarded on an existing
+`implement` entry, so re-gating after a fix skips it. Measured + recorded the $0.40
+fix cost manually here. Fix: extend the gate ingest to record each new fix-round
+result (track results-seen vs costs-recorded, phase="fix"). Low severity (cost
+undercount, not a loop break).
+
 ### BUG-07 (run #4) — codex can't commit in a linked worktree (.git outside sandbox). FIXED.
 A linked worktree's index.lock + objects live in the PARENT repo's shared `.git`
 (git-common-dir), outside codex's `-C worktree` + `--add-dir data_dir` sandbox, so

@@ -6,14 +6,14 @@
 > **Done:** M0 code-complete — **T-01 … T-13** all implemented, committed, and green
 > (38 tests: ruff + mypy --strict + pytest; tokenless stub-lane e2e). Repo: `~/repo/coxswain`.
 >
-> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS (4 of ~10 landed).** Runs 1–4 all went
-> the **full loop → LANDED** (PR [#1](https://github.com/ManikantaR/coxswain/pull/1)–[#4](https://github.com/ManikantaR/coxswain/pull/4)).
-> Run 1 fixed **six bugs** (BUG-01…06). **Run 4 built + proved the CODEX LANE** (M1/T-15,
-> captain-directed early): first codex/gpt-5.4 task landed; fixed BUG-07 (worktree .git
-> writable) + BUG-08 (resume flags). **Multi-lane model routing live** (`cox models`):
-> claude→sonnet-4.6, codex→gpt-5.4, reviewer→opus, hard→`--model opus:high`. Cost trend:
-> $1.95→$1.44 (sonnet-5)→$0.55 (sonnet 4.6); codex reports tokens only (no $). Dashboard
-> `cox serve` live on LAN. Suite 57 green, all pushed. Detail in `docs/SHAKEDOWN.md`.
+> **NEXT STEP → T-14 (M0 shakedown) — IN PROGRESS (5 of ~10 landed).** Runs 1–5 all went
+> the **full loop → LANDED** (PR [#1](https://github.com/ManikantaR/coxswain/pull/1)–[#5](https://github.com/ManikantaR/coxswain/pull/5)).
+> Highlights: run 1 fixed **6 bugs**; **run 4 built + proved the CODEX LANE** (gpt-5.4,
+> multi-lane routing via `cox models`; fixed BUG-07/08); **run 5 = dispatch-from-UI +
+> FIX-ROUND**: added a ＋Dispatch button to `cox serve` (dispatched a task from the
+> browser) AND **validated `--resume`: fix $0.40 vs implement $1.08 (~37%)** — the token
+> thesis proven. Cost trend $1.95→$1.44 (sonnet-5)→~$1.1 (sonnet 4.6); codex = tokens only.
+> Dashboard live on LAN with dispatch + stop + pause. Suite 60 green, all pushed.
 >
 > **Also shipped (captain-directed, ahead of "prove value first"):** `cox peek`
 > narrated activity feed (frugal orchestrator) + **`cox serve` glance dashboard** —
@@ -23,15 +23,15 @@
 > in the feed; **plan-approval control** (Devin-style approve-before-implement) not yet
 > built. Direction memo: `coxswain-observability-direction`.
 >
-> **Immediate next (the real go/no-go): runs 5–10** — still owed by the exit criteria:
-> (a) a **FIX ROUND** (gate-red / review auto-fix) proving `--resume` cost ≪ implement —
-> NOT yet exercised (and it double-validates **BUG-08** codex resume); (b) a run in a
-> **SECOND repo** (smartocr/relay) — all 4 so far were coxswain; (c) a **parallel AFK
-> batch** (2–3 at once) — the regime where the token premium pays off. Known gaps to fix:
-> **dashboard/`cox peek` feed doesn't render codex JSONL** (render.py is claude-format
-> only — codex cards show state+cost but empty feed); consider a tighter "minimal diff"
-> brief line for codex. Harness: `cox watch` + `cox dispatch <repo> "<t>" [--lane codex]
-> [--model opus:high]`, then `cox gate` → `cox review` → `cox ship` → `cox merge`.
+> **Immediate next: runs 6–10** — still owed by the exit criteria: (a) a run in a
+> **SECOND repo** (smartocr/relay) — all 5 so far were coxswain; (b) a **parallel AFK
+> batch** (2–3 at once) — the regime where the token premium pays off; (c) **crash-recovery
+> checks** (kill orchestrator/watcher mid-task, confirm recovery). ✅ done: fix-round/
+> `--resume` (run 5), codex lane (run 4). Known gaps: **BUG-09** fix-round cost not
+> auto-recorded; **codex JSONL feed** not rendered on dashboard (render.py claude-only);
+> **BUG-08 codex resume** still needs a real codex fix-round. Then M2 (Telegram) is the
+> last unbuilt V0 piece. Harness: dashboard ＋Dispatch button, or `cox dispatch <repo>
+> "<t>" [--lane codex] [--model opus:high]` → `cox gate` → `cox review` → `cox ship` → `cox merge`.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).
