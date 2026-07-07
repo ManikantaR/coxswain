@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
-import threading
-import urllib.request
-from http.server import ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,21 +64,48 @@ def test_stop_task_marks_failed_when_no_live_pid():
     assert store.load_meta("t-stop").state is TaskState.FAILED
 
 
+class _FakeSocket:
+    def __init__(self, request: bytes) -> None:
+        self._rfile = io.BytesIO(request)
+        self._wfile = io.BytesIO()
+
+    def makefile(self, mode: str, *args: object, **kwargs: object) -> io.BytesIO:
+        del args, kwargs
+        if "r" in mode:
+            return self._rfile
+        if "w" in mode:
+            return self._wfile
+        raise ValueError(mode)
+
+    def sendall(self, data: bytes) -> None:
+        self._wfile.write(data)
+
+    def close(self) -> None:
+        pass
+
+    def value(self) -> bytes:
+        return self._wfile.getvalue()
+
+
+def _http_get(path: str) -> tuple[int, dict[str, object]]:
+    handler_cls = server._make_handler("secret")
+    sock = _FakeSocket(
+        f"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode()
+    )
+    handler_cls(sock, ("127.0.0.1", 0), SimpleNamespace(server_name="localhost", server_port=80))
+    head, body = sock.value().split(b"\r\n\r\n", 1)
+    code = int(head.splitlines()[0].split()[1])
+    return code, json.loads(body)
+
+
 def test_http_requires_token_and_serves_tasks():
     _mk("t-http", TaskState.WORKING)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server._make_handler("secret"))
-    port = httpd.server_address[1]
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    try:
-        # no token -> 401
-        with pytest.raises(urllib.error.HTTPError) as ei:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/tasks", timeout=5)
-        assert ei.value.code == 401
-        # with token -> the task shows up
-        body = urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/api/tasks?t=secret", timeout=5
-        ).read()
-        data = json.loads(body)
-        assert any(t["id"] == "t-http" for t in data["tasks"])
-    finally:
-        httpd.shutdown()
+    code, body = _http_get("/api/tasks")
+    assert code == 401
+    assert body == {"error": "unauthorized"}
+
+    code, body = _http_get("/api/tasks?t=secret")
+    assert code == 200
+    tasks = body["tasks"]
+    assert isinstance(tasks, list)
+    assert any(task["id"] == "t-http" for task in tasks)
