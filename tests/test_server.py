@@ -64,6 +64,36 @@ def test_stop_task_marks_failed_when_no_live_pid():
     assert store.load_meta("t-stop").state is TaskState.FAILED
 
 
+def test_dispatch_task_validates_and_surfaces_errors():
+    # missing fields -> error, no spawn
+    assert "error" in server.dispatch_task({"repo": "", "title": ""})
+    # a real dispatch is monkeypatched at the dispatch module boundary
+    assert server.dispatch_task({"title": "x"})["error"]  # no repo
+
+
+def test_dispatch_task_calls_dispatch(monkeypatch):
+    from cox import dispatch as disp
+    from cox.model import DispatchPath, TaskMeta
+
+    captured = {}
+
+    def fake_dispatch(**kw):
+        captured.update(kw)
+        return TaskMeta(
+            id="repo-x-2601010000", repo="repo", worktree="/w", branch="cox/x",
+            lane=kw["lane"], model="sonnet:medium", path=kw["path"], state=TaskState.WORKING,
+        )
+
+    monkeypatch.setattr(disp, "dispatch", fake_dispatch)
+    out = server.dispatch_task(
+        {"repo": "~/repo/coxswain", "title": "do it", "lane": "codex", "model": "opus:high"}
+    )
+    assert out["id"] == "repo-x-2601010000"
+    assert captured["lane"] == "codex"
+    assert captured["model_override"] == "opus:high"
+    assert captured["path"] is DispatchPath.FULL
+
+
 class _FakeSocket:
     def __init__(self, request: bytes) -> None:
         self._rfile = io.BytesIO(request)

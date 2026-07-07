@@ -103,6 +103,35 @@ def set_paused(paused: bool) -> dict:
     return {"paused": paused}
 
 
+def dispatch_task(payload: dict) -> dict:
+    """Captain dispatch from the UI. Manual only (never auto-dispatch, DESIGN).
+
+    Mirrors `cox dispatch`; any dispatch failure (paused, worker cap, unpinned
+    model, bad repo) is surfaced to the UI rather than raised."""
+    from . import dispatch as disp
+    from .model import DispatchPath
+
+    repo = str(payload.get("repo") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    if not repo or not title:
+        return {"error": "repo and title are required"}
+    lane = str(payload.get("lane") or "claude")
+    path_val = str(payload.get("path") or "full")
+    model = str(payload.get("model") or "").strip() or None
+    try:
+        meta = disp.dispatch(
+            repo_path=Path(repo).expanduser(),
+            title=title,
+            body=str(payload.get("body") or title),
+            path=DispatchPath(path_val),
+            lane=lane,
+            model_override=model,
+        )
+    except Exception as e:  # noqa: BLE001 - surface every dispatch failure to the UI
+        return {"error": f"{type(e).__name__}: {e}"}
+    return {"id": meta.id, "lane": meta.lane, "model": meta.model, "state": meta.state.value}
+
+
 # --- HTTP shell -------------------------------------------------------------
 
 
@@ -177,8 +206,20 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/stop"):
                 tid = u.path[len("/api/task/") : -len("/stop")]
                 self._json(stop_task(tid))
+            elif u.path == "/api/dispatch":
+                out = dispatch_task(self._read_json())
+                self._json(out, 400 if out.get("error") else 200)
             else:
                 self._json({"error": "not found"}, 404)
+
+        def _read_json(self) -> dict:
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(n) if n > 0 else b""
+                obj = json.loads(raw or b"{}")
+                return obj if isinstance(obj, dict) else {}
+            except (ValueError, json.JSONDecodeError):
+                return {}
 
     return Handler
 

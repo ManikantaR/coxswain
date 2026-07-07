@@ -53,6 +53,17 @@
   a { color:var(--accent); }
   .empty { color:var(--dim); text-align:center; padding:40px 0; }
   .off { color:var(--bad); }
+  #dispatch { border-bottom:1px solid var(--line); background:var(--panel); }
+  .dform { max-width:820px; margin:0 auto; padding:14px 16px; display:grid; gap:8px; }
+  .dform input, .dform textarea, .dform select {
+    font:inherit; background:var(--bg); color:var(--fg); border:1px solid var(--line);
+    border-radius:8px; padding:8px 10px; width:100%; }
+  .dform textarea { resize:vertical; font-family:inherit; }
+  .drow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .drow select { flex:1; min-width:140px; } .drow input { flex:1; min-width:140px; }
+  #d-go { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .dmsg { font-size:13px; color:var(--dim); min-height:18px; }
+  .dmsg.ok { color:var(--ok); } .dmsg.err { color:var(--bad); }
 </style>
 </head>
 <body>
@@ -63,8 +74,22 @@
   <span class="pill" id="p-cost">$<b>0.00</b></span>
   <span class="spacer"></span>
   <span id="conn" class="pill">connecting…</span>
+  <button id="new-btn">＋ Dispatch</button>
   <button id="pause" class="warn">Pause</button>
 </header>
+<section id="dispatch" hidden>
+  <div class="dform">
+    <input id="d-repo" placeholder="repo path (e.g. ~/repo/coxswain)" value="~/repo/coxswain">
+    <input id="d-title" placeholder="task title (one line)">
+    <textarea id="d-body" rows="3" placeholder="task details (optional — defaults to title)"></textarea>
+    <div class="drow">
+      <select id="d-lane"><option value="claude">claude · sonnet</option><option value="codex">codex · gpt-5.4</option></select>
+      <input id="d-model" placeholder="model override (opus:high)">
+      <button id="d-go">Dispatch</button>
+    </div>
+    <div id="d-msg" class="dmsg"></div>
+  </div>
+</section>
 <main id="board"><div class="empty">Loading…</div></main>
 <script>
 const TOKEN = "__TOKEN__";
@@ -154,6 +179,33 @@ function render(s){
 document.getElementById("pause").onclick = async (e) => {
   const resume = e.target.textContent === "Resume";
   await fetch(q(resume ? "/api/resume" : "/api/pause"), {method:"POST"});
+};
+
+// dispatch-from-UI (manual captain dispatch)
+const dpanel = document.getElementById("dispatch");
+document.getElementById("new-btn").onclick = () => {
+  dpanel.hidden = !dpanel.hidden;
+  if(!dpanel.hidden) document.getElementById("d-title").focus();
+};
+document.getElementById("d-go").onclick = async () => {
+  const msg = document.getElementById("d-msg");
+  const body = {
+    repo: document.getElementById("d-repo").value.trim(),
+    title: document.getElementById("d-title").value.trim(),
+    body: document.getElementById("d-body").value.trim(),
+    lane: document.getElementById("d-lane").value,
+    model: document.getElementById("d-model").value.trim(),
+  };
+  if(!body.repo || !body.title){ msg.textContent="repo and title are required"; msg.className="dmsg err"; return; }
+  msg.textContent="dispatching…"; msg.className="dmsg";
+  try {
+    const r = await fetch(q("/api/dispatch"), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    const d = await r.json();
+    if(d.error){ msg.textContent="✗ "+d.error; msg.className="dmsg err"; return; }
+    msg.textContent="✓ dispatched "+d.id+" on "+d.lane+"/"+d.model; msg.className="dmsg ok";
+    document.getElementById("d-title").value=""; document.getElementById("d-body").value=""; document.getElementById("d-model").value="";
+    lastSig=null;  // force a board rebuild so the new task appears immediately
+  } catch(e){ msg.textContent="✗ "+e; msg.className="dmsg err"; }
 };
 
 function connect(){
