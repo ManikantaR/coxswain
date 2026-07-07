@@ -40,6 +40,34 @@ Environment: Mac, `COX_HOME=~/cox-home`, claude lane, Python 3.11 venv.
 
 | 3 | 2026-07-06 | coxswain | broaden tool allowlist (mypy/python) + brief guidance | full | **claude-sonnet-4-6** | PASS | approve (0 findings) | 0 | $0.46 | — | **LANDED** ([PR #3](https://github.com/ManikantaR/coxswain/pull/3)) | first run on sonnet 4.6; **total $0.55** — ~3× cheaper than the sonnet-5 default; no tool-friction (dogfooded its own fix); watched live on `cox serve`. |
 
+| 4 | 2026-07-07 | coxswain | `cox models` routing command | full | **codex/gpt-5.4** | PASS | approve (1 no-op note) | 0 | $? (codex: tokens only) | — | **LANDED** ([PR #4](https://github.com/ManikantaR/coxswain/pull/4)) | **first codex-lane run**; surfaced + fixed BUG-07 (worktree .git not writable) & BUG-08 (resume flags); review flagged scope-creep as informational; captain landed as-is. 1.6M in / 25.8k out. |
+
+> **Run 4 = codex lane proven (M1/T-15 built ahead of schedule, captain-directed).** First
+> real codex/gpt-5.4 task through the full loop → landed. Multi-lane model routing live:
+> claude→sonnet-4.6, codex→gpt-5.4, reviewer→opus, hard tasks via `--model opus:high`.
+> Codex runs on the **Codex** quota — the quota-double-dip fix we identified. Two codex-only
+> bugs found + fixed (BUG-07/08). Notable: codex **scope-creeps** (refactored all cli.py
+> imports + a test beyond the ask) — the correctness-only opus review *surfaced* it as an
+> informational `no-op` finding without blocking, leaving the scope call to the captain
+> (design working as intended). Codex reports **no dollar cost** (tokens only) → cost shows `?`.
+
+### BUG-07 (run #4) — codex can't commit in a linked worktree (.git outside sandbox). FIXED.
+A linked worktree's index.lock + objects live in the PARENT repo's shared `.git`
+(git-common-dir), outside codex's `-C worktree` + `--add-dir data_dir` sandbox, so
+`git commit` failed. Fix: codex lane resolves `git rev-parse --git-common-dir` and
+grants it via `--add-dir`. Claude didn't hit this (different sandbox model).
+
+### BUG-08 (run #4) — `codex exec resume` rejects exec-only flags. FIXED (needs live validation).
+`resume` doesn't accept `-s`/`--add-dir`/`-C` (those are `codex exec`-only), so
+resume() now passes sandbox + writable_roots via `-c` config. Not yet exercised on a
+real fix round — validate when the first codex gate-red/review-fix happens.
+
+### OBS-codex (run #4) — codex is more autonomous/scope-creepy than claude.
+It refactored unrelated code + adapted a socket-binding test to its network sandbox.
+All behavior-preserving and green, but broader than the brief. The correctness-only
+review won't block this (by design) — it's the captain's call. Consider a tighter
+"minimal diff, do not refactor unrelated code" line in the brief for codex runs.
+
 > **FINDING — model choice is the biggest cost lever.** Run 3 (sonnet 4.6, `COX_MODEL_IMPL=claude-sonnet-4-6:medium`)
 > cost **$0.55 total** vs run 1 $1.95 / run 2 $1.44 on the `sonnet` alias (→ sonnet-5).
 > Task sizes differ, so it's not a clean apples-to-apples, but a ~3× gap is too big to
