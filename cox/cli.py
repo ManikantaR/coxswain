@@ -158,8 +158,13 @@ def _cmd_cost(args: argparse.Namespace) -> int:
 
 
 def _cmd_version(args: argparse.Namespace) -> int:
+    import os
+    import platform
+
     del args
     print(version("coxswain"))
+    print(platform.python_version())
+    print(os.environ.get("COX_HOME", ""))
     return 0
 
 

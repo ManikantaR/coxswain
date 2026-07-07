@@ -68,10 +68,13 @@ def test_cost_total_unknown_when_any_none():
 def test_version_command_prints_nonempty(monkeypatch, capsys):
     import cox.cli as cli_mod
     monkeypatch.setattr(cli_mod, "version", lambda _name: "1.2.3")
+    monkeypatch.setenv("COX_HOME", "/fake/cox-home")
     rc = main(["version"])
     assert rc == 0
-    out = capsys.readouterr().out.strip()
-    assert out  # non-empty version string
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0]  # package version non-empty
+    assert lines[1]  # python version non-empty
+    assert lines[2] == "/fake/cox-home"
 
 
 # --- T-03 models ---
