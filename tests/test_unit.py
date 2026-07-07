@@ -100,6 +100,23 @@ def test_models_bad_yaml_crashes(tmp_path):
         del os.environ["COX_MODELS_FILE"]
 
 
+def test_models_command_prints_resolved_routing(capsys):
+    rc = main(["models"])
+    assert rc == 0
+
+    impl_claude = models.resolve("implementer", lane="claude")
+    impl_codex = models.resolve("implementer", lane="codex")
+    impl_stub = models.resolve("implementer", lane="stub")
+    reviewer = models.resolve("reviewer")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [
+        f"implementer  claude -> {impl_claude.model}:{impl_claude.effort}",
+        f"implementer  codex  -> {impl_codex.model}:{impl_codex.effort}",
+        f"implementer  stub   -> {impl_stub.model}:{impl_stub.effort}",
+        f"reviewer     (all)  -> {reviewer.model}:{reviewer.effort}",
+    ]
+
+
 # --- T-04 proc ---
 def test_run_raises_on_nonzero():
     with pytest.raises(proc.BosunProcError):

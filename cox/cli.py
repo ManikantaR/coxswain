@@ -10,13 +10,24 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from importlib import import_module
 from pathlib import Path
+from typing import Any
 
-from . import home, store, wakequeue, watch
 from .model import DispatchPath
+
+_LANES: tuple[str, ...] = ("claude", "codex", "stub")
+
+
+def _pkg_mod(name: str) -> Any:
+    return import_module(f"{__package__}.{name}")
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
+    home = _pkg_mod("home")
+    store = _pkg_mod("store")
+    wakequeue = _pkg_mod("wakequeue")
+    watch = _pkg_mod("watch")
     ids = store.list_task_ids()
 
     if args.json:
@@ -66,6 +77,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_await_wake(args: argparse.Namespace) -> int:
     import time
+    wakequeue = _pkg_mod("wakequeue")
 
     deadline = time.time() + args.timeout if args.timeout else None
     while True:
@@ -82,6 +94,7 @@ def _cmd_await_wake(args: argparse.Namespace) -> int:
 
 
 def _cmd_watch(args: argparse.Namespace) -> int:
+    watch = _pkg_mod("watch")
     if args.once:
         n = watch.scan_once()
         print(f"scan enqueued {n} wake(s)")
@@ -91,6 +104,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _cmd_peek(args: argparse.Namespace) -> int:
+    store = _pkg_mod("store")
     log = store.task_data_dir(args.task_id) / "worker.log"
     if not log.exists():
         print(f"no worker log for {args.task_id}")
@@ -103,7 +117,7 @@ def _cmd_peek(args: argparse.Namespace) -> int:
     # default: compact narrated activity feed — cheap for the orchestrator to
     # read, and the same renderer the glance dashboard reuses (DESIGN: never
     # stream a whole log). Header line first for one-glance context.
-    from . import render
+    render = _pkg_mod("render")
 
     m = store.load_meta(args.task_id)
     _, _, cost = store.cost_total(args.task_id)
@@ -115,32 +129,46 @@ def _cmd_peek(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    from . import server
+    server = _pkg_mod("server")
 
     server.serve(host=args.host, port=args.port, token=args.token)
     return 0
 
 
 def _cmd_pause(args: argparse.Namespace) -> int:
+    home = _pkg_mod("home")
     home.set_paused(True)
     print("PAUSED")
     return 0
 
 
 def _cmd_resume_ops(args: argparse.Namespace) -> int:
+    home = _pkg_mod("home")
     home.set_paused(False)
     print("resumed")
     return 0
 
 
 def _cmd_cost(args: argparse.Namespace) -> int:
+    store = _pkg_mod("store")
     tin, tout, cost = store.cost_total(args.task_id)
     print(f"{args.task_id}: {tin} in / {tout} out / {f'${cost:.4f}' if cost is not None else '?'}")
     return 0
 
 
+def _cmd_models(args: argparse.Namespace) -> int:
+    del args
+    models = _pkg_mod("models")
+    for lane in _LANES:
+        spec = models.resolve("implementer", lane=lane)
+        print(f"implementer  {lane:<6} -> {spec.model}:{spec.effort}")
+    spec = models.resolve("reviewer")
+    print(f"reviewer     {'(all)':<6} -> {spec.model}:{spec.effort}")
+    return 0
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
-    from . import dispatch as disp
+    disp = _pkg_mod("dispatch")
 
     meta = disp.dispatch(
         repo_path=Path(args.repo),
@@ -155,7 +183,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
 
 
 def _cmd_gate(args: argparse.Namespace) -> int:
-    from . import gate
+    gate = _pkg_mod("gate")
 
     report = gate.run_gate(args.task_id)
     verdict = "PASS" if report.passed else f"RED@{report.failing_step or ''}"
@@ -164,7 +192,7 @@ def _cmd_gate(args: argparse.Namespace) -> int:
 
 
 def _cmd_fix(args: argparse.Namespace) -> int:
-    from . import fix as fixmod
+    fixmod = _pkg_mod("fix")
 
     try:
         meta = fixmod.fix(args.task_id, notes=args.notes)
@@ -176,7 +204,7 @@ def _cmd_fix(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
-    from . import review
+    review = _pkg_mod("review")
 
     outcome = review.review(args.task_id)
     n = len(outcome.findings)
@@ -185,7 +213,7 @@ def _cmd_review(args: argparse.Namespace) -> int:
 
 
 def _cmd_ship(args: argparse.Namespace) -> int:
-    from . import ship
+    ship = _pkg_mod("ship")
 
     meta = ship.ship(args.task_id, Path(args.repo), args.title)
     print(f"ship {args.task_id}: {meta.state.value} pr={meta.pr_url or '-'}")
@@ -193,7 +221,7 @@ def _cmd_ship(args: argparse.Namespace) -> int:
 
 
 def _cmd_merge(args: argparse.Namespace) -> int:
-    from . import ship
+    ship = _pkg_mod("ship")
 
     meta = ship.merge(args.task_id, Path(args.repo))
     print(f"merged {args.task_id}: {meta.state.value}")
@@ -201,12 +229,12 @@ def _cmd_merge(args: argparse.Namespace) -> int:
 
 
 def _cmd_teardown(args: argparse.Namespace) -> int:
-    from . import worktree
-
+    store = _pkg_mod("store")
+    worktree = _pkg_mod("worktree")
     meta = store.load_meta(args.task_id)
-    from .repoconfig import load_repo_config
+    repoconfig = _pkg_mod("repoconfig")
 
-    cfg = load_repo_config(Path(meta.worktree))
+    cfg = repoconfig.load_repo_config(Path(meta.worktree))
     wt = worktree.Worktree(path=Path(meta.worktree), branch=meta.branch)
     try:
         worktree.remove(Path(args.repo), wt, cfg.target_branch, force=args.force)
@@ -243,12 +271,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--raw", action="store_true", help="dump last 40 raw stream-json lines instead")
     s.set_defaults(func=_cmd_peek)
 
+    s = sub.add_parser("models", help="show resolved model routing by lane")
+    s.set_defaults(func=_cmd_models)
+
     s = sub.add_parser("dispatch", help="spawn a worker task")
     s.add_argument("repo")
     s.add_argument("title")
     s.add_argument("--body", default=None)
     s.add_argument("--path", choices=[p.value for p in DispatchPath], default="full")
-    s.add_argument("--lane", default="claude", choices=["claude", "codex", "stub"])
+    s.add_argument("--lane", default="claude", choices=list(_LANES))
     s.add_argument("--model", default=None, help="override impl model, e.g. opus:high (hard tasks)")
     s.set_defaults(func=_cmd_dispatch)
 
