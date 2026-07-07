@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 from importlib import import_module
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +157,17 @@ def _cmd_cost(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_version(args: argparse.Namespace) -> int:
+    import os
+    import platform
+
+    del args
+    print(version("coxswain"))
+    print(platform.python_version())
+    print(os.environ.get("COX_HOME", ""))
+    return 0
+
+
 def _cmd_models(args: argparse.Namespace) -> int:
     del args
     models = _pkg_mod("models")
@@ -270,6 +282,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--lines", type=int, default=15, help="feed events to show (default 15)")
     s.add_argument("--raw", action="store_true", help="dump last 40 raw stream-json lines instead")
     s.set_defaults(func=_cmd_peek)
+
+    s = sub.add_parser("version", help="print installed coxswain package version")
+    s.set_defaults(func=_cmd_version)
 
     s = sub.add_parser("models", help="show resolved model routing by lane")
     s.set_defaults(func=_cmd_models)
