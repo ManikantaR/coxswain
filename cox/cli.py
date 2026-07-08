@@ -179,6 +179,26 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_repos(args: argparse.Namespace) -> int:
+    repos = _pkg_mod("repos")
+
+    if args.action == "add":
+        res = repos.resolve(args.ref)
+        flag = "cloned" if res.cloned else "found"
+        trust = "trusted" if res.trusted else "UNTRUSTED (run `cox repos trust <path>`)"
+        print(f"{flag}: {res.path}  [{trust}]")
+        return 0
+    if args.action == "trust":
+        repos.mark_trusted(Path(args.ref))
+        print(f"trusted: {Path(args.ref).expanduser().resolve()}")
+        return 0
+    # default: list
+    print(f"clone-root: {repos.repo_root()}")
+    for r in repos.list_local_repos():
+        print(f"  {'ok ' if r.trusted else '⚠  '} {r.name:<28} {r.path}")
+    return 0
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     disp = _pkg_mod("dispatch")
 
@@ -288,6 +308,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("models", help="show resolved model routing by lane")
     s.set_defaults(func=_cmd_models)
+
+    s = sub.add_parser("repos", help="list / add / trust repos in the clone-root")
+    s.add_argument("action", nargs="?", default="list", choices=["list", "add", "trust"])
+    s.add_argument("ref", nargs="?", default="", help="git URL / local path (add) or path (trust)")
+    s.set_defaults(func=_cmd_repos)
 
     s = sub.add_parser("dispatch", help="spawn a worker task")
     s.add_argument("repo")

@@ -155,6 +155,50 @@ def set_paused(paused: bool) -> dict:
     return {"paused": paused}
 
 
+def list_repos() -> dict:
+    """Git repos in the clone-root, for the dispatch picker (DESIGN-VNEXT D17)."""
+    from . import repos
+
+    return {
+        "root": str(repos.repo_root()),
+        "repos": [
+            {"name": r.name, "path": str(r.path), "trusted": r.trusted}
+            for r in repos.list_local_repos()
+        ],
+    }
+
+
+def add_repo(ref: str) -> dict:
+    """Resolve a picker entry — clone a git URL (deduped, defanged) or accept a
+    local path. A freshly cloned repo comes back needs_trust=True."""
+    from . import repos
+
+    ref = (ref or "").strip()
+    if not ref:
+        return {"error": "paste a git URL or a local repo path/name"}
+    try:
+        res = repos.resolve(ref)
+    except Exception as e:  # noqa: BLE001 - surface any clone/resolve failure to the UI
+        return {"error": f"{type(e).__name__}: {e}"}
+    return {
+        "path": str(res.path),
+        "name": res.path.name,
+        "cloned": res.cloned,
+        "trusted": res.trusted,
+        "needs_trust": not res.trusted,
+    }
+
+
+def trust_repo(path: str) -> dict:
+    """Captain confirms a freshly cloned repo so dispatch will accept it."""
+    from . import repos
+
+    if not (path or "").strip():
+        return {"error": "repo path required"}
+    repos.mark_trusted(Path(path))
+    return {"path": path, "trusted": True}
+
+
 def list_issues(repo_path: str) -> dict:
     """Open GitHub issues for the repo, for the dispatch picker (via `gh`)."""
     from . import proc
@@ -283,6 +327,8 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/feed"):
                 tid = u.path[len("/api/task/") : -len("/feed")]
                 self._json(feed_payload(tid))
+            elif u.path == "/api/repos":
+                self._json(list_repos())
             elif u.path == "/api/issues":
                 out = list_issues(q.get("repo", [""])[0])
                 self._json(out, 400 if out.get("error") else 200)
@@ -321,6 +367,12 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/stop"):
                 tid = u.path[len("/api/task/") : -len("/stop")]
                 self._json(stop_task(tid))
+            elif u.path == "/api/repos/add":
+                out = add_repo(self._read_json().get("ref", ""))
+                self._json(out, 400 if out.get("error") else 200)
+            elif u.path == "/api/repos/trust":
+                out = trust_repo(self._read_json().get("path", ""))
+                self._json(out, 400 if out.get("error") else 200)
             elif u.path == "/api/dispatch":
                 out = dispatch_task(self._read_json())
                 self._json(out, 400 if out.get("error") else 200)

@@ -102,7 +102,15 @@
 </header>
 <section id="dispatch" hidden>
   <div class="dform">
-    <input id="d-repo" placeholder="repo path (e.g. ~/repo/coxswain)" value="~/repo/coxswain">
+    <div class="drow">
+      <select id="d-repo"><option value="">— pick a repo —</option></select>
+      <button id="d-repo-refresh" title="rescan clone-root">⟳</button>
+    </div>
+    <div class="drow">
+      <input id="d-repo-add" placeholder="＋ clone a git URL, or add a local path">
+      <button id="d-repo-go">Add</button>
+    </div>
+    <div id="d-repo-msg" class="dmsg"></div>
     <div class="drow">
       <input id="d-issue" placeholder="GitHub issue URL or # (auto-fills title + details)">
       <button id="d-load">📋 List issues</button>
@@ -241,8 +249,51 @@ document.getElementById("pause").onclick = async (e) => {
 const dpanel = document.getElementById("dispatch");
 document.getElementById("new-btn").onclick = () => {
   dpanel.hidden = !dpanel.hidden;
-  if(!dpanel.hidden) document.getElementById("d-title").focus();
+  if(!dpanel.hidden){ loadRepos(); document.getElementById("d-title").focus(); }
 };
+
+// repo picker: dropdown of repos in the clone-root + add/clone
+const repoSel = document.getElementById("d-repo");
+async function loadRepos(keep){
+  try {
+    const r = await fetch(q("/api/repos"));
+    const d = await r.json();
+    const want = keep || repoSel.value;
+    repoSel.innerHTML = '<option value="">— pick a repo —</option>' +
+      (d.repos||[]).map(x => '<option value="'+esc(x.path)+'">'+esc(x.name)+
+        (x.trusted?"":" ⚠ untrusted")+'</option>').join("");
+    if(want) repoSel.value = want;
+  } catch(e){ /* leave the placeholder */ }
+}
+const repoMsg = document.getElementById("d-repo-msg");
+document.getElementById("d-repo-refresh").onclick = () => loadRepos();
+document.getElementById("d-repo-go").onclick = async () => {
+  const ref = document.getElementById("d-repo-add").value.trim();
+  if(!ref){ repoMsg.textContent="paste a git URL or a local path"; repoMsg.className="dmsg err"; return; }
+  repoMsg.textContent = "resolving…"; repoMsg.className = "dmsg";
+  try {
+    const r = await fetch(q("/api/repos/add"), {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({ref})});
+    const d = await r.json();
+    if(d.error){ repoMsg.textContent="✗ "+d.error; repoMsg.className="dmsg err"; return; }
+    await loadRepos(d.path);
+    document.getElementById("d-repo-add").value = "";
+    if(d.needs_trust){
+      repoMsg.innerHTML = (d.cloned?"cloned ":"")+esc(d.name)+
+        " — new repo, review it then <button id='d-trust'>Trust &amp; use</button>";
+      repoMsg.className = "dmsg";
+      document.getElementById("d-trust").onclick = async () => {
+        await fetch(q("/api/repos/trust"), {method:"POST",
+          headers:{"Content-Type":"application/json"}, body:JSON.stringify({path:d.path})});
+        await loadRepos(d.path);
+        repoMsg.textContent = "✓ trusted "+d.name; repoMsg.className = "dmsg ok";
+      };
+    } else {
+      repoMsg.textContent = "✓ "+d.name+" ready"; repoMsg.className = "dmsg ok";
+    }
+  } catch(e){ repoMsg.textContent="✗ "+e; repoMsg.className="dmsg err"; }
+};
+
 // load open issues for the repo into the picker
 const issueSel = document.getElementById("d-issue-list");
 document.getElementById("d-load").onclick = async () => {

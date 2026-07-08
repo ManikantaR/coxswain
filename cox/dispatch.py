@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import home, models, store, worktree
+from . import home, models, repos, store, worktree
 from .lanes import get_lane
 from .model import DispatchPath, TaskMeta, TaskState
 
@@ -66,6 +66,11 @@ def dispatch(
         raise DispatchError(f"worker cap {MAX_WORKERS} reached — finish or pause a task first")
 
     repo_path = repo_path.expanduser().resolve()
+    if not repos.is_trusted(repo_path):
+        raise DispatchError(
+            f"repo {repo_path} was cloned by coxswain but not yet trusted — "
+            "confirm it in the UI (or `cox repos trust`) before dispatching"
+        )
     repo = repo_name or repo_path.name
     task_id = store.new_task_id(repo, title)
 
