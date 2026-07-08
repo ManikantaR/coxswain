@@ -38,6 +38,15 @@
 > last unbuilt V0 piece. Harness: dashboard ＋Dispatch button, or `cox dispatch <repo>
 > "<t>" [--lane codex] [--model opus:high]` → `cox gate` → `cox review` → `cox ship` → `cox merge`.
 >
+> **v-next design LOCKED 2026-07-08 → [docs/DESIGN-VNEXT.md](docs/DESIGN-VNEXT.md)** (decisions
+> D14–D18; D6 superseded). Dispatch UX upgrade: three model slots (plan/implement+fix/review, each
+> pinned; implement+fix welded to one provider, review defaults cross-provider), plan-approval as a
+> per-dispatch toggle default-OFF, repo clone-picker (curated clone-root + dedup + always-worktree +
+> defanged clone), glance-home+drill-in with repo→task→fix-round nesting, per-lane quota surfaced
+> (captain picks, no auto-reroute). **Candidate build slices (pick one):** (a) repo clone-picker —
+> self-contained, unblocks second-repo shakedown; (b) three-slot model picker in the dispatch form —
+> small, serves the quota concern directly. Not yet sequenced into a milestone.
+>
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).
 >
