@@ -77,6 +77,60 @@ def _collapse_duplicates(lines: list[str]) -> list[str]:
     return result
 
 
+def _claude_event(obj: dict, out: list[str]) -> None:
+    """Narrate one claude stream-json event (assistant turns + result)."""
+    kind = obj.get("type")
+    if kind == "assistant":
+        for c in obj.get("message", {}).get("content", []) or []:
+            ctype = c.get("type")
+            if ctype == "text":
+                txt = " ".join(str(c.get("text", "")).split())
+                if txt:
+                    out.append(f"· {txt[:100]}")
+            elif ctype == "tool_use":
+                name = str(c.get("name", "tool"))
+                out.append("→ " + _tool_summary(name, c.get("input") or {}))
+    elif kind == "result":
+        usage = obj.get("usage", {}) or {}
+        tin = int(usage.get("input_tokens", 0)) + int(usage.get("cache_read_input_tokens", 0))
+        tout = int(usage.get("output_tokens", 0))
+        cost = obj.get("total_cost_usd")
+        cost_str = f"${cost:.2f}" if isinstance(cost, (int, float)) else "$?"
+        verdict = "done" if not obj.get("is_error") else "error"
+        out.append(f"■ {verdict}  {cost_str} · {tin} in / {tout} out")
+
+
+def _codex_event(obj: dict, out: list[str]) -> None:
+    """Narrate one codex `exec --json` JSONL event.
+
+    Codex uses a different schema than claude: work arrives as `item.completed`
+    envelopes (agent_message / command_execution / file_change / reasoning) and
+    the turn closes with `turn.completed` carrying token usage but no cost.
+    """
+    kind = obj.get("type")
+    if kind == "item.completed":
+        item = obj.get("item") or {}
+        itype = item.get("type")
+        if itype == "agent_message":
+            txt = " ".join(str(item.get("text", "")).split())
+            if txt:
+                out.append(f"· {txt[:100]}")
+        elif itype == "command_execution":
+            cmd = " ".join(str(item.get("command", "")).split())
+            out.append("→ " + (f"exec  {_shorten_paths(cmd)[:80]}" if cmd else "exec"))
+        elif itype == "file_change":
+            changes = item.get("changes") or []
+            path = changes[0].get("path", "") if changes else ""
+            more = f" (+{len(changes) - 1})" if len(changes) > 1 else ""
+            out.append("→ " + (f"edit  {_shorten_paths(str(path))[:80]}{more}" if path else "edit"))
+        # reasoning / other item types are internal — skip
+    elif kind == "turn.completed":
+        usage = obj.get("usage", {}) or {}
+        tin = int(usage.get("input_tokens", 0)) + int(usage.get("cached_input_tokens", 0))
+        tout = int(usage.get("output_tokens", 0)) + int(usage.get("reasoning_output_tokens", 0))
+        out.append(f"■ done  $? · {tin} in / {tout} out")
+
+
 def _events(log_path: Path) -> list[str]:
     out: list[str] = []
     for raw in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -90,24 +144,12 @@ def _events(log_path: Path) -> list[str]:
         if not isinstance(obj, dict):
             continue
         kind = obj.get("type")
-        if kind == "assistant":
-            for c in obj.get("message", {}).get("content", []) or []:
-                ctype = c.get("type")
-                if ctype == "text":
-                    txt = " ".join(str(c.get("text", "")).split())
-                    if txt:
-                        out.append(f"· {txt[:100]}")
-                elif ctype == "tool_use":
-                    name = str(c.get("name", "tool"))
-                    out.append("→ " + _tool_summary(name, c.get("input") or {}))
-        elif kind == "result":
-            cost = obj.get("total_cost_usd")
-            usage = obj.get("usage", {}) or {}
-            tin = int(usage.get("input_tokens", 0)) + int(usage.get("cache_read_input_tokens", 0))
-            tout = int(usage.get("output_tokens", 0))
-            verdict = "done" if not obj.get("is_error") else "error"
-            cost_str = f"${cost:.2f}" if isinstance(cost, (int, float)) else "$?"
-            out.append(f"■ {verdict}  {cost_str} · {tin} in / {tout} out")
+        # codex event types carry a dotted namespace (item.*/turn.*/thread.*);
+        # claude's are bare words (assistant/result/system). Branch on that.
+        if isinstance(kind, str) and "." in kind:
+            _codex_event(obj, out)
+        else:
+            _claude_event(obj, out)
     return _collapse_duplicates(out)
 
 

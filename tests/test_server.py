@@ -44,6 +44,24 @@ def test_tasks_payload_orders_needs_you_first_and_totals_cost():
     assert p["tasks"][0]["needs_you"] is True
 
 
+def test_tasks_payload_reports_pipeline_stage():
+    from cox.model import CostEntry
+
+    _mk("t-work2", TaskState.GATING)
+    _mk("t-land2", TaskState.LANDED)
+    _mk("t-review", TaskState.NEEDS_HUMAN, NeedsHumanReason.REVIEW_FINDINGS)
+    # a resumed fix round should be counted onto the review stage
+    store.append_cost(
+        "t-review", CostEntry(phase="fix", tokens_in=1, tokens_out=1, cost_usd=0.1)
+    )
+
+    by_id = {t["id"]: t for t in server.tasks_payload()["tasks"]}
+    assert server.tasks_payload()["stages"] == ["Code", "Gate", "Review", "PR", "Merged"]
+    assert by_id["t-work2"]["stage"] == {"i": 1, "status": "active", "fix_rounds": 0}
+    assert by_id["t-land2"]["stage"] == {"i": 4, "status": "done", "fix_rounds": 0}
+    assert by_id["t-review"]["stage"] == {"i": 2, "status": "error", "fix_rounds": 1}
+
+
 def test_feed_payload_uses_renderer():
     _mk("t-feed", TaskState.WORKING)
     log = store.task_data_dir("t-feed") / "worker.log"

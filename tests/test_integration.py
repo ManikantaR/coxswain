@@ -182,6 +182,39 @@ def test_summarize_stream_renders_compact_feed(tmp_path):
     assert render.summarize_stream(tmp_path / "nope.log") == ["(no worker log yet)"]
 
 
+# --- codex JSONL renders through the same feed (different schema) ---
+def test_summarize_stream_renders_codex_jsonl(tmp_path):
+    import json
+
+    from cox import render
+
+    lines = [
+        json.dumps({"type": "thread.started", "thread_id": "abc"}),  # skipped
+        json.dumps({"type": "turn.started"}),  # skipped
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "reasoning", "text": "thinking"}}),  # skipped
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "Implemented the feature."}}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "command_execution", "command": "pytest -q"}}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "file_change",
+                             "changes": [{"path": "cox/gate.py", "kind": "modified"},
+                                         {"path": "cox/fix.py", "kind": "modified"}]}}),
+        json.dumps({"type": "turn.completed",
+                    "usage": {"input_tokens": 100, "cached_input_tokens": 8000,
+                              "output_tokens": 42, "reasoning_output_tokens": 8}}),
+    ]
+    log = tmp_path / "worker.log"
+    log.write_text("\n".join(lines), encoding="utf-8")
+
+    feed = render.summarize_stream(log, n=15)
+    assert feed[0] == "· Implemented the feature."
+    assert feed[1] == "→ exec  pytest -q"
+    assert feed[2] == "→ edit  cox/gate.py (+1)"
+    assert feed[3] == "■ done  $? · 8100 in / 50 out"
+
+
 # --- collapse duplicate adjacent tool lines ---
 def test_summarize_stream_collapses_adjacent_duplicates(tmp_path):
     import json

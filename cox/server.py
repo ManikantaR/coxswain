@@ -29,6 +29,56 @@ _ACTIVE = {TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
 _NEEDS_YOU = {TaskState.NEEDS_HUMAN, TaskState.PR_OPEN}
 _TEMPLATE = Path(__file__).parent / "templates" / "dashboard.html"
 
+# The pipeline the human watches loop: Code → Gate → Review → PR → Merged.
+# The stepper on each card lights the stage a task is in; a review-findings loop
+# (FIXING) sits back at Review with a fix-round counter — that's the "looping".
+STAGES = ["Code", "Gate", "Review", "PR", "Merged"]
+
+# Which stage a live state occupies (index into STAGES).
+_STATE_STAGE = {
+    TaskState.QUEUED: 0,
+    TaskState.WORKING: 0,
+    TaskState.GATING: 1,
+    TaskState.FIXING: 2,
+    TaskState.PR_OPEN: 3,
+    TaskState.LANDED: 4,
+}
+# When a task stalls needing a human, the reason tells us which stage went red.
+_REASON_STAGE = {
+    NeedsHumanReason.WORKER_ERROR: 0,
+    NeedsHumanReason.WORKER_STALE: 0,
+    NeedsHumanReason.RATE_LIMITED: 0,
+    NeedsHumanReason.GATE_RED: 1,
+    NeedsHumanReason.EVIDENCE_MISSING: 1,
+    NeedsHumanReason.REVIEW_FINDINGS: 2,
+    NeedsHumanReason.PUSH_REJECTED: 3,
+    NeedsHumanReason.PR_ERROR: 3,
+    NeedsHumanReason.CI_RED: 3,
+}
+
+
+def _stage(meta, fix_rounds: int) -> dict:
+    """Where this task sits on the Code→Merged pipeline, for the card stepper.
+
+    Returns {i, status, fix_rounds}: stages before `i` render done, stage `i`
+    renders `status` (active | error | done), stages after render pending.
+    """
+    state = meta.state
+    if state is TaskState.LANDED:
+        return {"i": 4, "status": "done", "fix_rounds": fix_rounds}
+    if state is TaskState.NEEDS_HUMAN:
+        i = _REASON_STAGE.get(meta.reason, 0)
+        return {"i": i, "status": "error", "fix_rounds": fix_rounds}
+    if state is TaskState.FAILED:
+        return {"i": 0, "status": "error", "fix_rounds": fix_rounds}
+    i = _STATE_STAGE.get(state, 0)
+    return {"i": i, "status": "active", "fix_rounds": fix_rounds}
+
+
+def _fix_rounds(task_id: str) -> int:
+    """How many resumed fix rounds this task has run (cost.jsonl phases)."""
+    return sum(1 for e in store.read_cost(task_id) if "fix" in e.phase)
+
 
 def _last_status(task_id: str) -> str:
     p = store.task_data_dir(task_id) / "status.log"
@@ -62,6 +112,7 @@ def tasks_payload() -> dict:
                 "last_status": _last_status(tid),
                 "active": m.state in _ACTIVE,
                 "needs_you": m.state in _NEEDS_YOU,
+                "stage": _stage(m, _fix_rounds(tid)),
             }
         )
     # needs-you first, then active, then the rest — the "alert" ordering
@@ -71,6 +122,7 @@ def tasks_payload() -> dict:
         "total_cost_usd": total_cost if have_cost else None,
         "needs_you": sum(1 for r in rows if r["needs_you"]),
         "active": sum(1 for r in rows if r["active"]),
+        "stages": STAGES,
         "tasks": rows,
     }
 

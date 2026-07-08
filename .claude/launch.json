@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo-dashboard",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["scripts/demo-dashboard.sh"],
+      "port": 8792
+    }
+  ]
+}

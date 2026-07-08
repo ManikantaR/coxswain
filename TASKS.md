@@ -27,8 +27,13 @@
 > **SECOND repo** (smartocr/relay) — all 5 so far were coxswain; (b) a **parallel AFK
 > batch** (2–3 at once) — the regime where the token premium pays off; (c) **crash-recovery
 > checks** (kill orchestrator/watcher mid-task, confirm recovery). ✅ done: fix-round/
-> `--resume` (run 5), codex lane (run 4). Known gaps: **BUG-09** fix-round cost not
-> auto-recorded; **codex JSONL feed** not rendered on dashboard (render.py claude-only);
+> `--resume` (run 5), codex lane (run 4). **2026-07-08 dashboard polish:** (a) **codex
+> JSONL feed now renders** — `render._events()` branches on schema (dotted codex types
+> vs bare claude types), maps item.completed agent_message/command_execution/file_change
+> → feed lines, turn.completed → token line (no cost); (b) **pipeline stepper on every
+> card** — Code→Gate→Review→PR→Merged with pulse-animated active stage, green/red/dim
+> coloring, ✓/✕/emoji icons, and a 🔁N fix-round loop counter at Review. 65 tests green.
+> Known gaps: **BUG-09** fix-round cost not auto-recorded;
 > **BUG-08 codex resume** still needs a real codex fix-round. Then M2 (Telegram) is the
 > last unbuilt V0 piece. Harness: dashboard ＋Dispatch button, or `cox dispatch <repo>
 > "<t>" [--lane codex] [--model opus:high]` → `cox gate` → `cox review` → `cox ship` → `cox merge`.
