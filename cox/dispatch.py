@@ -53,6 +53,8 @@ def dispatch(
     lane: str = "claude",
     repo_name: str | None = None,
     model_override: str | None = None,
+    review_lane: str | None = None,
+    review_model: str | None = None,
 ) -> TaskMeta:
     """Create and spawn a task. Returns its persisted meta (state=working)."""
     home.ensure_home()
@@ -97,6 +99,8 @@ def dispatch(
         model=f"{model.model}:{model.effort}",
         path=path,
         state=TaskState.QUEUED,
+        review_lane=review_lane or None,
+        review_model=review_model or None,
     )
     store.save_meta(meta)
 

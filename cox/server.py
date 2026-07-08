@@ -113,6 +113,7 @@ def tasks_payload() -> dict:
                 "active": m.state in _ACTIVE,
                 "needs_you": m.state in _NEEDS_YOU,
                 "stage": _stage(m, _fix_rounds(tid)),
+                "review": _review_label(m),
             }
         )
     # needs-you first, then active, then the rest — the "alert" ordering
@@ -274,6 +275,10 @@ def dispatch_task(payload: dict) -> dict:
         default = models.resolve("implementer", lane=lane)
         model = f"{default.model}:{effort}"
 
+    # review slot (DESIGN-VNEXT D14): pinned independently; blank = reviewer default
+    review_lane = str(payload.get("review_lane") or "").strip() or None
+    review_model = str(payload.get("review_model") or "").strip() or None
+
     try:
         meta = disp.dispatch(
             repo_path=Path(repo).expanduser(),
@@ -282,10 +287,23 @@ def dispatch_task(payload: dict) -> dict:
             path=DispatchPath(str(payload.get("path") or "full")),
             lane=lane,
             model_override=model,
+            review_lane=review_lane,
+            review_model=review_model,
         )
     except Exception as e:  # noqa: BLE001 - surface every dispatch failure to the UI
         return {"error": f"{type(e).__name__}: {e}"}
-    return {"id": meta.id, "lane": meta.lane, "model": meta.model, "state": meta.state.value}
+    return {
+        "id": meta.id, "lane": meta.lane, "model": meta.model, "state": meta.state.value,
+        "review": _review_label(meta),
+    }
+
+
+def _review_label(meta) -> str:
+    """Short 'lane/model' (or 'default') describing a task's review slot."""
+    if not meta.review_lane and not meta.review_model:
+        return "default"
+    lane = meta.review_lane or "claude"
+    return f"{lane}/{meta.review_model}" if meta.review_model else lane
 
 
 # --- HTTP shell -------------------------------------------------------------

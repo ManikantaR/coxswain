@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import models, proc, store
 from .lanes.claude import parse_stream_json
+from .lanes.codex import parse_codex_jsonl
 from .repoconfig import load_repo_config
 
 _CRITERIA = (
@@ -38,6 +39,25 @@ class ReviewOutcome:
 
 def build_prompt(diff: str, brief: str) -> str:
     return f"# Brief\n{brief}\n\n# Diff\n```diff\n{diff}\n```\n\n# Instructions\n{_CRITERIA}\n"
+
+
+def _review_argv(lane: str, spec: models.ModelSpec, prompt: str, worktree: Path) -> list[str]:
+    """Read-only reviewer invocation for the chosen lane. The prompt embeds the
+    diff, so the reviewer needs no write access — both lanes run sandboxed."""
+    if lane == "codex":
+        # codex exec, read-only sandbox, never-approve; brief is the lone trailing
+        # positional (BUG-02). The diff is in the prompt, so no --add-dir needed.
+        return [
+            "codex", "exec", "--json", "-m", spec.model,
+            "-c", f"model_reasoning_effort={spec.effort}",
+            "-c", "approval_policy=never",
+            "-s", "read-only", "-C", str(worktree), prompt,
+        ]  # fmt: skip
+    return [
+        "claude", "-p", "--model", spec.model,
+        "--permission-mode", "plan",  # read-only: the reviewer never edits
+        "--output-format", "stream-json", "--verbose", prompt,
+    ]  # fmt: skip
 
 
 def _diff(worktree: Path, target: str) -> str:
@@ -82,15 +102,18 @@ def review(task_id: str) -> ReviewOutcome:
 
     brief = (store.task_data_dir(task_id) / "brief.md").read_text(encoding="utf-8")
     prompt = build_prompt(_diff(worktree, cfg.target_branch), brief)
-    spec = models.resolve("reviewer", repo_path=worktree)  # pinned (P8)
+    # Review slot is pinned independently of implement (DESIGN-VNEXT D14): the
+    # task's review_lane/review_model win; else the resolved reviewer default.
+    review_lane = meta.review_lane or "claude"
+    spec = (
+        models.parse_spec(meta.review_model)
+        if meta.review_model
+        else models.resolve("reviewer", repo_path=worktree)  # pinned (P8)
+    )
 
     log_path = store.task_data_dir(task_id) / "review.log"
     pid_path = store.task_state_dir(task_id) / "review.pid"
-    argv = [
-        "claude", "-p", "--model", spec.model,
-        "--permission-mode", "plan",  # read-only: the reviewer never edits
-        "--output-format", "stream-json", "--verbose", prompt,
-    ]  # fmt: skip
+    argv = _review_argv(review_lane, spec, prompt, worktree)
     pid = proc.spawn_detached(argv, log_path=log_path, pid_path=pid_path, cwd=worktree)
     # The review is one bounded read-only pass whose verdict the orchestrator
     # needs before it can proceed, so block until the reviewer exits, then parse
@@ -98,10 +121,16 @@ def review(task_id: str) -> ReviewOutcome:
     # written it, always yielding worker-error). An incomplete log after the
     # timeout still parses to the typed worker-error route, never a silent pass.
     _wait_for_exit(pid)
-    result = parse_stream_json(log_path, phase="review")
-    if result.cost:
-        store.append_cost(task_id, result.cost)
-    raw = _final_text(log_path)
+    if review_lane == "codex":
+        rr = parse_codex_jsonl(log_path, phase="review")
+        raw = rr.raw_tail
+        result_cost = rr.cost
+    else:
+        result = parse_stream_json(log_path, phase="review")
+        raw = _final_text(log_path)
+        result_cost = result.cost
+    if result_cost:
+        store.append_cost(task_id, result_cost)
     outcome = parse_review(raw)
     if outcome is None:
         (store.task_data_dir(task_id) / "review.json").write_text(

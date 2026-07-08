@@ -93,6 +93,11 @@ class TaskMeta:
     pr_url: str | None = None
     fix_rounds: int = 0
     dispatched_at: float = field(default_factory=time.time)
+    # Review slot (DESIGN-VNEXT D14): pinned independently of implement. None =
+    # fall back to the resolved reviewer default (currently opus). review can
+    # cross providers freely (it is stateless — reads only the diff).
+    review_lane: str | None = None
+    review_model: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
@@ -117,4 +122,6 @@ class TaskMeta:
             pr_url=d.get("pr_url"),
             fix_rounds=d.get("fix_rounds", 0),
             dispatched_at=d.get("dispatched_at", 0.0),
+            review_lane=d.get("review_lane"),
+            review_model=d.get("review_model"),
         )

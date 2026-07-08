@@ -143,6 +143,64 @@ def test_review_returns_cached_verdict_without_respawn(tmp_path, monkeypatch):
     assert out.route == "approve"
 
 
+def test_review_argv_is_lane_aware(tmp_path):
+    from cox import review
+    from cox.model import ModelSpec
+
+    wt = tmp_path / "wt"
+    claude = review._review_argv("claude", ModelSpec("anthropic", "opus", "medium"), "P", wt)
+    assert claude[0] == "claude" and "--permission-mode" in claude and "plan" in claude
+    codex = review._review_argv("codex", ModelSpec("openai", "gpt-5.4", "high"), "P", wt)
+    assert codex[:3] == ["codex", "exec", "--json"]
+    assert "-s" in codex and codex[codex.index("-s") + 1] == "read-only"  # never edits
+    assert "model_reasoning_effort=high" in codex
+    assert codex[-1] == "P"  # brief is the lone trailing positional
+
+
+def test_review_runs_on_codex_lane_when_selected(tmp_path, monkeypatch):
+    import json as _json
+
+    from cox import review
+
+    tid = "repo-rev-codex"
+    wt = tmp_path / "wt"
+    (wt / ".cox").mkdir(parents=True)
+    (wt / ".cox" / "repo.yml").write_text("review: full\n", encoding="utf-8")
+    meta = TaskMeta(
+        id=tid, repo="repo", worktree=str(wt), branch="cox/x", lane="claude",
+        model="sonnet:medium", path=DispatchPath.FULL, state=TaskState.GATING,
+        review_lane="codex", review_model="gpt-5.4:high",
+    )
+    store.save_meta(meta)
+    store.task_data_dir(tid).mkdir(parents=True, exist_ok=True)
+    (store.task_data_dir(tid) / "brief.md").write_text("do the thing", encoding="utf-8")
+
+    captured = {}
+
+    def fake_spawn(argv, *, log_path, pid_path, cwd, env=None):
+        captured["argv"] = argv
+        # a codex reviewer emits its verdict as the final agent_message
+        log_path.write_text("\n".join([
+            _json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            _json.dumps({"type": "item.completed", "item": {"type": "agent_message",
+                "text": _json.dumps({"findings": [], "verdict": "approve"})}}),
+            _json.dumps({"type": "turn.completed",
+                         "usage": {"input_tokens": 5, "output_tokens": 2}}),
+        ]), encoding="utf-8")
+        return 4321
+
+    monkeypatch.setattr(review, "_diff", lambda *a, **k: "")
+    monkeypatch.setattr(review.proc, "spawn_detached", fake_spawn)
+    monkeypatch.setattr(review, "_wait_for_exit", lambda *a, **k: None)
+
+    out = review.review(tid)
+    assert captured["argv"][0] == "codex"  # routed to the codex lane
+    assert out.route == "approve"
+    # codex reports tokens (no cost) — the review token draw is still recorded
+    _, tout, cost = store.cost_total(tid)
+    assert tout == 2 and cost is None
+
+
 # --- narrated activity feed renderer (frugal peek + dashboard brick) ---
 def test_summarize_stream_renders_compact_feed(tmp_path):
     import json

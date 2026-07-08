@@ -46,8 +46,11 @@
 > (captain picks, no auto-reroute). **Build slices:** (a) ✅ **repo clone-picker SHIPPED 2026-07-08** —
 > cox/repos.py (clone-root COX_REPO_ROOT default ~/repo, dedup, defanged non-recursive+hooks-off clone,
 > untrusted-until-confirmed), dispatch trust guard, /api/repos[/add,/trust], dashboard dropdown +
-> add/clone + Trust-&-use, `cox repos` CLI; 72 tests green. (b) three-slot model picker — NEXT, serves
-> the quota concern directly. Not yet sequenced into a milestone.
+> add/clone + Trust-&-use, `cox repos` CLI. (b) ✅ **review-slot picker SHIPPED 2026-07-08** —
+> TaskMeta.review_lane/review_model; review.py lane-aware (claude --permission-mode plan OR codex
+> exec -s read-only), pinned per task, default opus (cross-provider on demand, not forced — D14
+> refined); dispatch form reframed into IMPLEMENT/REVIEW slots; card + toast show the review slot.
+> 75 tests green. (Plan phase/architect + plan-approval toggle still DEFERRED — needs new machinery.)
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).

@@ -112,6 +112,33 @@ def test_dispatch_task_calls_dispatch(monkeypatch):
     assert captured["path"] is DispatchPath.FULL
 
 
+def test_dispatch_task_passes_review_slot(monkeypatch):
+    from cox import dispatch as disp
+    from cox.model import TaskMeta
+
+    captured = {}
+
+    def fake_dispatch(**kw):
+        captured.update(kw)
+        return TaskMeta(
+            id="r-x-1", repo="repo", worktree="/w", branch="cox/x", lane=kw["lane"],
+            model="sonnet:medium", path=kw["path"], state=TaskState.WORKING,
+            review_lane=kw["review_lane"], review_model=kw["review_model"],
+        )
+
+    monkeypatch.setattr(disp, "dispatch", fake_dispatch)
+    out = server.dispatch_task(
+        {"repo": "~/r", "title": "t", "lane": "claude",
+         "review_lane": "codex", "review_model": "gpt-5.4:high"}
+    )
+    assert captured["review_lane"] == "codex"
+    assert captured["review_model"] == "gpt-5.4:high"
+    assert out["review"] == "codex/gpt-5.4:high"
+    # blank review slot -> None (falls back to the reviewer default) and "default" label
+    server.dispatch_task({"repo": "~/r", "title": "t", "lane": "claude"})
+    assert captured["review_lane"] is None and captured["review_model"] is None
+
+
 def _fake_dispatch(captured):
     from cox.model import DispatchPath, TaskMeta
 

@@ -33,7 +33,15 @@ existing per-role resolution (`implementer` / `reviewer` in `cox/models.py`).
 |------|--------------|-------|----------------------|---------|
 | **plan** (architect) | once, up front | stateless — emits `plan.md` | **yes**, freely | opus |
 | **implement** (+ fix) | fix rounds *resume* it | **stateful** — one live session | **no — welded to fix** | sonnet or codex |
-| **review** | once, on the diff | stateless | **yes** (default *different* provider) | different-provider vs implement |
+| **review** | once, on the diff | stateless | **yes**, freely | opus (see note) |
+
+> Review-default refinement (2026-07-08, shipped): D14 proposed a *different-provider*
+> default. Softened to **default = opus (cross-model, same provider — no second-
+> subscription quota draw), cross-provider on demand**. The captain's stated need is
+> "*select* codex for review when Claude is spent," not a forced cross-provider default
+> that doubles quota use on every task. The mechanism (per-task review lane+model) ships
+> now; the default policy can flip to cross-provider later once quota behaviour is
+> observed. See DECISIONS.md D14.
 
 **Why the architect split is safe** (I initially over-cautioned against it): the plan
 is a **written artifact handed off as a file**, not a resumed session. The architect
