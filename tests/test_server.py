@@ -94,6 +94,61 @@ def test_dispatch_task_calls_dispatch(monkeypatch):
     assert captured["path"] is DispatchPath.FULL
 
 
+def _fake_dispatch(captured):
+    from cox.model import DispatchPath, TaskMeta
+
+    def fake(**kw):
+        captured.update(kw)
+        return TaskMeta(
+            id="repo-x-2601010000", repo="repo", worktree="/w", branch="cox/x",
+            lane=kw["lane"], model="m:e", path=DispatchPath.FULL, state=TaskState.WORKING,
+        )
+
+    return fake
+
+
+def test_dispatch_effort_tunes_lane_default_model(monkeypatch):
+    from cox import dispatch as disp
+
+    captured = {}
+    monkeypatch.setattr(disp, "dispatch", _fake_dispatch(captured))
+    # effort with no explicit model -> lane default model + chosen effort
+    server.dispatch_task({"repo": "~/r", "title": "t", "lane": "claude", "effort": "high"})
+    assert captured["model_override"] == "claude-sonnet-4-6:high"
+
+
+def test_dispatch_from_issue_fills_title_and_body(monkeypatch):
+    from cox import dispatch as disp
+    from cox import proc
+
+    def fake_run(cmd, **kw):
+        assert cmd[:3] == ["gh", "issue", "view"]
+        payload = json.dumps(
+            {"number": 7, "title": "Fix the parser", "body": "It crashes on empty input.",
+             "url": "https://github.com/o/r/issues/7"}
+        )
+        return proc.ProcResult(0, payload, "")
+
+    monkeypatch.setattr(proc, "run", fake_run)
+    captured = {}
+    monkeypatch.setattr(disp, "dispatch", _fake_dispatch(captured))
+    out = server.dispatch_task({"repo": "~/r", "issue": "https://github.com/o/r/issues/7"})
+    assert "id" in out
+    assert captured["title"] == "Fix the parser"
+    assert "It crashes on empty input." in captured["body"]
+    assert "issues/7" in captured["body"]  # issue link appended
+
+
+def test_list_issues_surfaces_gh_error(monkeypatch):
+    from cox import proc
+
+    def boom(cmd, **kw):
+        raise proc.BosunProcError(cmd, 1, "", "not a gh repo")
+
+    monkeypatch.setattr(proc, "run", boom)
+    assert "error" in server.list_issues("~/r")
+
+
 class _FakeSocket:
     def __init__(self, request: bytes) -> None:
         self._rfile = io.BytesIO(request)

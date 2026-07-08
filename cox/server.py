@@ -103,27 +103,87 @@ def set_paused(paused: bool) -> dict:
     return {"paused": paused}
 
 
+def list_issues(repo_path: str) -> dict:
+    """Open GitHub issues for the repo, for the dispatch picker (via `gh`)."""
+    from . import proc
+
+    if not repo_path.strip():
+        return {"error": "repo path required"}
+    try:
+        r = proc.run(
+            ["gh", "issue", "list", "--json", "number,title,url", "--limit", "30"],
+            cwd=Path(repo_path).expanduser(),
+        )
+    except proc.BosunProcError as e:
+        return {"error": f"gh issue list failed: {(e.err or e.out).strip()[:200]}"}
+    try:
+        return {"issues": json.loads(r.out or "[]")}
+    except json.JSONDecodeError:
+        return {"error": "could not parse gh output"}
+
+
+def resolve_issue(ref: str, repo_path: str | None) -> dict:
+    """Fetch an issue's title + body by URL or number (via `gh issue view`)."""
+    from . import proc
+
+    ref = ref.strip()
+    # a bare number needs repo context; a URL is self-contained
+    cwd = Path(repo_path).expanduser() if (repo_path and "://" not in ref) else None
+    try:
+        r = proc.run(
+            ["gh", "issue", "view", ref, "--json", "number,title,body,url"], cwd=cwd
+        )
+    except proc.BosunProcError as e:
+        return {"error": f"gh issue view failed: {(e.err or e.out).strip()[:200]}"}
+    try:
+        d = json.loads(r.out)
+    except json.JSONDecodeError:
+        return {"error": "could not parse gh output"}
+    return {"title": d.get("title", ""), "body": d.get("body") or "", "url": d.get("url", "")}
+
+
 def dispatch_task(payload: dict) -> dict:
     """Captain dispatch from the UI. Manual only (never auto-dispatch, DESIGN).
 
-    Mirrors `cox dispatch`; any dispatch failure (paused, worker cap, unpinned
-    model, bad repo) is surfaced to the UI rather than raised."""
+    Accepts either typed title/body OR a GitHub `issue` (URL/number) whose title
+    and body populate the task. `effort` (low|medium|high) tunes the lane's default
+    model; an explicit `model` override still wins. Any dispatch failure (paused,
+    worker cap, unpinned model, bad repo, gh error) is surfaced to the UI."""
     from . import dispatch as disp
+    from . import models
     from .model import DispatchPath
 
     repo = str(payload.get("repo") or "").strip()
-    title = str(payload.get("title") or "").strip()
-    if not repo or not title:
-        return {"error": "repo and title are required"}
+    if not repo:
+        return {"error": "repo path is required"}
     lane = str(payload.get("lane") or "claude")
-    path_val = str(payload.get("path") or "full")
+    title = str(payload.get("title") or "").strip()
+    body = str(payload.get("body") or "").strip()
+
+    issue_ref = str(payload.get("issue") or "").strip()
+    if issue_ref:
+        info = resolve_issue(issue_ref, repo)
+        if info.get("error"):
+            return info
+        title = title or info["title"]
+        issue_block = f"{info['body']}\n\nGitHub issue: {info['url']}".strip()
+        body = f"{body}\n\n{issue_block}".strip() if body else issue_block
+    if not title:
+        return {"error": "provide a title or a GitHub issue"}
+
+    # model precedence: explicit override > lane default with chosen effort
     model = str(payload.get("model") or "").strip() or None
+    effort = str(payload.get("effort") or "").strip() or None
+    if not model and effort:
+        default = models.resolve("implementer", lane=lane)
+        model = f"{default.model}:{effort}"
+
     try:
         meta = disp.dispatch(
             repo_path=Path(repo).expanduser(),
             title=title,
-            body=str(payload.get("body") or title),
-            path=DispatchPath(path_val),
+            body=body or title,
+            path=DispatchPath(str(payload.get("path") or "full")),
             lane=lane,
             model_override=model,
         )
@@ -171,6 +231,9 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/feed"):
                 tid = u.path[len("/api/task/") : -len("/feed")]
                 self._json(feed_payload(tid))
+            elif u.path == "/api/issues":
+                out = list_issues(q.get("repo", [""])[0])
+                self._json(out, 400 if out.get("error") else 200)
             elif u.path == "/events":
                 self._sse()
             else:

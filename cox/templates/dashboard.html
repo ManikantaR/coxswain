@@ -60,7 +60,9 @@
     border-radius:8px; padding:8px 10px; width:100%; }
   .dform textarea { resize:vertical; font-family:inherit; }
   .drow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .drow select { flex:1; min-width:140px; } .drow input { flex:1; min-width:140px; }
+  .drow select { flex:1; min-width:120px; } .drow input { flex:1; min-width:120px; }
+  #d-effort { flex:0 0 auto; min-width:0; width:auto; }
+  #d-issue-list { width:100%; }
   #d-go { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
   .dmsg { font-size:13px; color:var(--dim); min-height:18px; }
   .dmsg.ok { color:var(--ok); } .dmsg.err { color:var(--bad); }
@@ -80,10 +82,16 @@
 <section id="dispatch" hidden>
   <div class="dform">
     <input id="d-repo" placeholder="repo path (e.g. ~/repo/coxswain)" value="~/repo/coxswain">
-    <input id="d-title" placeholder="task title (one line)">
-    <textarea id="d-body" rows="3" placeholder="task details (optional — defaults to title)"></textarea>
+    <div class="drow">
+      <input id="d-issue" placeholder="GitHub issue URL or # (auto-fills title + details)">
+      <button id="d-load">📋 List issues</button>
+    </div>
+    <select id="d-issue-list" hidden></select>
+    <input id="d-title" placeholder="task title (blank = use the issue title)">
+    <textarea id="d-body" rows="3" placeholder="task details (blank = use the issue body)"></textarea>
     <div class="drow">
       <select id="d-lane"><option value="claude">claude · sonnet</option><option value="codex">codex · gpt-5.4</option></select>
+      <select id="d-effort" title="reasoning effort"><option value="medium">med</option><option value="low">low</option><option value="high">high</option></select>
       <input id="d-model" placeholder="model override (opus:high)">
       <button id="d-go">Dispatch</button>
     </div>
@@ -187,23 +195,44 @@ document.getElementById("new-btn").onclick = () => {
   dpanel.hidden = !dpanel.hidden;
   if(!dpanel.hidden) document.getElementById("d-title").focus();
 };
+// load open issues for the repo into the picker
+const issueSel = document.getElementById("d-issue-list");
+document.getElementById("d-load").onclick = async () => {
+  const msg = document.getElementById("d-msg");
+  const repo = document.getElementById("d-repo").value.trim();
+  msg.textContent = "loading issues…"; msg.className = "dmsg";
+  try {
+    const r = await fetch(q("/api/issues") + "&repo=" + encodeURIComponent(repo));
+    const d = await r.json();
+    if(d.error){ msg.textContent="✗ "+d.error; msg.className="dmsg err"; return; }
+    if(!d.issues.length){ msg.textContent="no open issues"; msg.className="dmsg"; issueSel.hidden=true; return; }
+    issueSel.innerHTML = '<option value="">— pick an issue (' + d.issues.length + ') —</option>' +
+      d.issues.map(i => '<option value="'+esc(i.url)+'">#'+i.number+' '+esc(i.title)+'</option>').join("");
+    issueSel.hidden = false; msg.textContent = "";
+  } catch(e){ msg.textContent="✗ "+e; msg.className="dmsg err"; }
+};
+issueSel.onchange = () => { if(issueSel.value) document.getElementById("d-issue").value = issueSel.value; };
+
 document.getElementById("d-go").onclick = async () => {
   const msg = document.getElementById("d-msg");
   const body = {
     repo: document.getElementById("d-repo").value.trim(),
+    issue: document.getElementById("d-issue").value.trim(),
     title: document.getElementById("d-title").value.trim(),
     body: document.getElementById("d-body").value.trim(),
     lane: document.getElementById("d-lane").value,
+    effort: document.getElementById("d-effort").value,
     model: document.getElementById("d-model").value.trim(),
   };
-  if(!body.repo || !body.title){ msg.textContent="repo and title are required"; msg.className="dmsg err"; return; }
+  if(!body.repo || (!body.title && !body.issue)){ msg.textContent="need a repo and a title or issue"; msg.className="dmsg err"; return; }
   msg.textContent="dispatching…"; msg.className="dmsg";
   try {
     const r = await fetch(q("/api/dispatch"), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     const d = await r.json();
     if(d.error){ msg.textContent="✗ "+d.error; msg.className="dmsg err"; return; }
     msg.textContent="✓ dispatched "+d.id+" on "+d.lane+"/"+d.model; msg.className="dmsg ok";
-    document.getElementById("d-title").value=""; document.getElementById("d-body").value=""; document.getElementById("d-model").value="";
+    for(const id of ["d-issue","d-title","d-body","d-model"]) document.getElementById(id).value="";
+    issueSel.hidden=true;
     lastSig=null;  // force a board rebuild so the new task appears immediately
   } catch(e){ msg.textContent="✗ "+e; msg.className="dmsg err"; }
 };
