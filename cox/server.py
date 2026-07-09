@@ -329,7 +329,13 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             u = urlparse(self.path)
             q = parse_qs(u.query)
             if u.path == "/" and self._authed(q):
-                html = _TEMPLATE.read_text(encoding="utf-8").replace("__TOKEN__", token)
+                from . import models
+
+                html = (
+                    _TEMPLATE.read_text(encoding="utf-8")
+                    .replace("__TOKEN__", token)
+                    .replace("__CATALOG__", json.dumps(models.CATALOG))
+                )
                 body = html.encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")

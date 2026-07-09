@@ -85,6 +85,20 @@ def test_models_default_pinned():
     assert models.resolve("reviewer").model == "opus"
 
 
+def test_catalog_is_well_formed_and_matches_lane_defaults():
+    # every lane in the picker has exactly one default, valid efforts, and its
+    # default model is the same one models.resolve() pins for that lane.
+    for lane, items in models.CATALOG.items():
+        assert items, f"{lane} catalog is empty"
+        defaults = [m for m in items if m.get("default")]
+        assert len(defaults) == 1, f"{lane} needs exactly one default"
+        for m in items:
+            assert m["model"] and m["label"] and m["efforts"]
+            assert set(m["efforts"]) <= {"low", "medium", "high"}
+        if lane in models._LANE_IMPL_DEFAULT:
+            assert defaults[0]["model"] == models._LANE_IMPL_DEFAULT[lane].model
+
+
 def test_models_env_override(monkeypatch):
     monkeypatch.setenv("COX_MODEL_REVIEW", "haiku:low")
     spec = models.resolve("reviewer")

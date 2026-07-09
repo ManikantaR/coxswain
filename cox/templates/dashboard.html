@@ -123,14 +123,15 @@
     <textarea id="d-body" rows="3" placeholder="task details (blank = use the issue body)"></textarea>
     <div class="slot">implement <span class="slot-note">· fix rounds reuse this</span></div>
     <div class="drow">
-      <select id="d-lane"><option value="claude">claude · sonnet</option><option value="codex">codex · gpt-5.4</option></select>
-      <select id="d-effort" title="reasoning effort"><option value="medium">med</option><option value="low">low</option><option value="high">high</option></select>
-      <input id="d-model" placeholder="model override (opus:high)">
+      <select id="d-lane"><option value="claude">claude</option><option value="codex">codex</option></select>
+      <select id="d-model"></select>
+      <select id="d-effort" title="reasoning effort"></select>
     </div>
     <div class="slot">review <span class="slot-note">· stateless — fresh eyes on the diff</span></div>
     <div class="drow">
       <select id="d-review-lane"><option value="">default · opus</option><option value="claude">claude</option><option value="codex">codex</option></select>
-      <input id="d-review-model" placeholder="review model (blank = opus)">
+      <select id="d-review-model" hidden></select>
+      <select id="d-review-effort" hidden></select>
       <button id="d-go">Dispatch</button>
     </div>
     <div id="d-msg" class="dmsg"></div>
@@ -139,8 +140,23 @@
 <main id="board"><div class="empty">Loading…</div></main>
 <script>
 const TOKEN = "__TOKEN__";
+const CATALOG = __CATALOG__;
 const q = (p) => p + (p.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN);
 const open = new Set();
+
+// model + effort dropdowns, driven by the per-lane CATALOG
+const EFF_LABEL = {low:"low", medium:"med", high:"high"};
+function fillEfforts(lane, modelSel, effSel){
+  const m = (CATALOG[lane]||[]).find(x=>x.model===modelSel.value) || {efforts:["low","medium","high"]};
+  effSel.innerHTML = m.efforts.map(e =>
+    '<option value="'+e+'"'+(e==="medium"?" selected":"")+'>'+(EFF_LABEL[e]||e)+'</option>').join("");
+}
+function fillModels(lane, modelSel, effSel){
+  const items = CATALOG[lane]||[];
+  modelSel.innerHTML = items.map(m =>
+    '<option value="'+m.model+'"'+(m.default?" selected":"")+'>'+esc(m.label)+'</option>').join("");
+  fillEfforts(lane, modelSel, effSel);
+}
 
 const BADGE = {
   working:["b-work","working"], gating:["b-work","gating"], fixing:["b-work","fixing"],
@@ -262,6 +278,23 @@ document.getElementById("new-btn").onclick = () => {
   if(!dpanel.hidden){ loadRepos(); document.getElementById("d-title").focus(); }
 };
 
+// implement + review model/effort dropdowns (CATALOG-driven)
+const dLane = document.getElementById("d-lane");
+const dModel = document.getElementById("d-model");
+const dEffort = document.getElementById("d-effort");
+const rLane = document.getElementById("d-review-lane");
+const rModel = document.getElementById("d-review-model");
+const rEffort = document.getElementById("d-review-effort");
+fillModels(dLane.value, dModel, dEffort);
+dLane.onchange = () => fillModels(dLane.value, dModel, dEffort);
+dModel.onchange = () => fillEfforts(dLane.value, dModel, dEffort);
+rLane.onchange = () => {
+  const on = !!rLane.value;
+  rModel.hidden = rEffort.hidden = !on;
+  if(on) fillModels(rLane.value, rModel, rEffort);
+};
+rModel.onchange = () => fillEfforts(rLane.value, rModel, rEffort);
+
 // repo picker: dropdown of repos in the clone-root + add/clone
 const repoSel = document.getElementById("d-repo");
 async function loadRepos(keep){
@@ -329,11 +362,10 @@ document.getElementById("d-go").onclick = async () => {
     issue: document.getElementById("d-issue").value.trim(),
     title: document.getElementById("d-title").value.trim(),
     body: document.getElementById("d-body").value.trim(),
-    lane: document.getElementById("d-lane").value,
-    effort: document.getElementById("d-effort").value,
-    model: document.getElementById("d-model").value.trim(),
-    review_lane: document.getElementById("d-review-lane").value,
-    review_model: document.getElementById("d-review-model").value.trim(),
+    lane: dLane.value,
+    model: dModel.value + ":" + dEffort.value,
+    review_lane: rLane.value,
+    review_model: rLane.value ? (rModel.value + ":" + rEffort.value) : "",
   };
   if(!body.repo || (!body.title && !body.issue)){ msg.textContent="need a repo and a title or issue"; msg.className="dmsg err"; return; }
   msg.textContent="dispatching…"; msg.className="dmsg";
@@ -343,7 +375,7 @@ document.getElementById("d-go").onclick = async () => {
     if(d.error){ msg.textContent="✗ "+d.error; msg.className="dmsg err"; return; }
     msg.textContent="✓ dispatched "+d.id+" on "+d.lane+"/"+d.model+
       (d.review&&d.review!=="default"?" · review "+d.review:""); msg.className="dmsg ok";
-    for(const id of ["d-issue","d-title","d-body","d-model","d-review-model"]) document.getElementById(id).value="";
+    for(const id of ["d-issue","d-title","d-body"]) document.getElementById(id).value="";
     issueSel.hidden=true;
     lastSig=null;  // force a board rebuild so the new task appears immediately
   } catch(e){ msg.textContent="✗ "+e; msg.className="dmsg err"; }

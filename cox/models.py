@@ -49,6 +49,28 @@ _LANE_IMPL_DEFAULT: dict[str, ModelSpec] = {
 
 _ENV_KEY = {"implementer": "COX_MODEL_IMPL", "reviewer": "COX_MODEL_REVIEW"}
 
+# UI catalog: the models the dispatch picker offers per lane, with the effort
+# levels each is worth running at. This is an OPERATOR list for the dropdown —
+# edit it here as models ship/retire; a repo/global policy can still pin anything
+# outside it. `default: True` marks the lane's pre-selected model. (Codex model
+# ids follow the existing gpt-5.4 pattern — adjust if the CLI names differ.)
+CATALOG: dict[str, list[dict[str, Any]]] = {
+    "claude": [
+        {"model": "claude-opus-4-8", "label": "opus 4.8", "efforts": ["medium", "high"]},
+        {"model": "claude-sonnet-5", "label": "sonnet 5", "efforts": ["low", "medium", "high"]},
+        {"model": "claude-sonnet-4-6", "label": "sonnet 4.6",
+         "efforts": ["low", "medium", "high"], "default": True},
+    ],
+    "codex": [
+        {"model": "gpt-5.6", "label": "gpt 5.6", "efforts": ["low", "medium", "high"]},
+        {"model": "gpt-5.5", "label": "gpt 5.5", "efforts": ["low", "medium", "high"]},
+        {"model": "gpt-5.5-mini", "label": "gpt 5.5 mini", "efforts": ["low", "medium", "high"]},
+        {"model": "gpt-5.4", "label": "gpt 5.4",
+         "efforts": ["low", "medium", "high"], "default": True},
+        {"model": "gpt-5.4-mini", "label": "gpt 5.4 mini", "efforts": ["low", "medium", "high"]},
+    ],
+}
+
 
 class BosunConfigError(RuntimeError):
     """A config file exists but is unusable — crash rather than silently default."""

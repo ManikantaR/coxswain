@@ -228,6 +228,19 @@ def _http_get(path: str) -> tuple[int, dict[str, object]]:
     return code, json.loads(body)
 
 
+def test_index_injects_model_catalog():
+    from cox import models
+
+    handler_cls = server._make_handler("secret")
+    sock = _FakeSocket(
+        b"GET /?t=secret HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    handler_cls(sock, ("127.0.0.1", 0), SimpleNamespace(server_name="localhost", server_port=80))
+    body = sock.value().split(b"\r\n\r\n", 1)[1].decode()
+    assert "__CATALOG__" not in body  # placeholder was substituted
+    assert json.dumps(models.CATALOG) in body  # real catalog embedded for the picker
+
+
 def test_http_requires_token_and_serves_tasks():
     _mk("t-http", TaskState.WORKING)
     code, body = _http_get("/api/tasks")
