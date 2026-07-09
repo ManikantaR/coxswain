@@ -63,10 +63,10 @@ CATALOG: dict[str, list[dict[str, Any]]] = {
          "efforts": ["low", "medium", "high"], "default": True},
         {"model": "claude-haiku-4-5", "label": "haiku 4.5", "efforts": ["low", "medium"]},
     ],
+    # Verified against OpenAI Codex docs (2026-07): gpt-5.6 and gpt-5.5-mini do
+    # NOT exist — the earlier guesses. Real ids: gpt-5.5, gpt-5.4, gpt-5.4-mini.
     "codex": [
-        {"model": "gpt-5.6", "label": "gpt 5.6", "efforts": ["low", "medium", "high"]},
         {"model": "gpt-5.5", "label": "gpt 5.5", "efforts": ["low", "medium", "high"]},
-        {"model": "gpt-5.5-mini", "label": "gpt 5.5 mini", "efforts": ["low", "medium", "high"]},
         {"model": "gpt-5.4", "label": "gpt 5.4",
          "efforts": ["low", "medium", "high"], "default": True},
         {"model": "gpt-5.4-mini", "label": "gpt 5.4 mini", "efforts": ["low", "medium", "high"]},

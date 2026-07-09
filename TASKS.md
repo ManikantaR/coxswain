@@ -64,8 +64,21 @@
 > (mattpocock/handoff shape: approach/files/decisions+why/assumptions/how-to-verify/open-questions);
 > (3) dashboard: stall alerts (idle>900s → ⚠ pill+marker), artifact viewer (Feed/Diff/Plan/Evidence per
 > card via /api/task/<id>/artifact), per-lane quota burn-down pills (tokens+$ in last ~5h). 85 tests green.
-> **Owed:** re-run the sourced loop-eng research after the usage window resets. Remaining M0 exit criteria:
-> second-repo run, parallel AFK batch, crash-recovery, + first real-agent plan-phase run.
+> **2026-07-09 research landed** ([docs/RESEARCH-loop-engineering.md](docs/RESEARCH-loop-engineering.md),
+> sourced from Karpathy/Cherny/Osmani/Steinberger + handoff/model passes). Applied: corrected codex ids
+> (gpt-5.6 / gpt-5.5-mini don't exist → gpt-5.5 / gpt-5.4 / gpt-5.4-mini); plan.md "open questions" now
+> required. **Ranked backlog (P1≈D1≈D2 > P2 > D3 > P3 > P4≈D4 > P5≈D5 > P6 > P7):**
+> - **P1** compounding repo-rules (review findings → git-tracked AGENTS.md, injected into future prompts) — **BUILDING FIRST**
+> - **P2**+**D2** per-task acceptance criteria + implementer self-check before gate + card checklist
+> - **D1** per-stage timing + fix-round/cycle-time sparkline (per-task JSON history)
+> - **D3** findings→rules one-click promote · **P3** mechanical auto-STOP on 🚫-boundary/budget
+> - **P4** plan.md quality lint (Boundaries + criteria) · **D4** blast-radius/boundary badge
+> - **P5** context-rot-aware fix resume (findings-only) · **D5** context-fill % vs ~300–400k rot line
+> - **P6** autonomy presets (plan-gate+effort only) · **P7** blast-radius/task-split advisory
+> - **cox-models-refresh skill** (mirror relay-models-refresh: `ant models list`/`codex debug models` → diff → write ~/.config/cox/models.json)
+> - **re-run this research** ~every 2 months (models + practices shift)
+> Rejected (validated our design): parallel-on-main, auto-merge, reviewer retry loops, impl→review handoff.
+> **Owed M0 exit criteria:** second-repo run, parallel AFK batch, crash-recovery, first real-agent plan-phase run.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).

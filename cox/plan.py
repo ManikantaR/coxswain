@@ -42,7 +42,9 @@ _PROMPT = (
     "You are the ARCHITECT. Read the task and the repository (read-only) and write an "
     "implementation plan that a SEPARATE engineer — with none of your context — will "
     "execute. Be concrete and reference repo paths; do not paste large code. Do NOT edit "
-    "anything. Output ONLY markdown with exactly these sections:\n" + _HANDOFF_SECTIONS
+    "anything. Output ONLY markdown with exactly these sections, and include EVERY section "
+    "— never omit 'Open questions'; write 'none' explicitly if there are none:\n"
+    + _HANDOFF_SECTIONS
 )
 
 
