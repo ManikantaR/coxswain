@@ -16,7 +16,7 @@ from .model import DispatchPath, TaskMeta, TaskState
 MAX_WORKERS = 3
 HARD_MAX_WORKERS = 5
 
-_ACTIVE = {TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
+_ACTIVE = {TaskState.PLANNING, TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
 _TEMPLATE = Path(__file__).parent / "templates" / "brief.md"
 
 
@@ -32,8 +32,16 @@ def active_worker_count() -> int:
     return n
 
 
-def render_brief(*, title: str, body: str, lane: str, worktree_path: Path, task_id: str) -> str:
+def render_brief(
+    *, title: str, body: str, lane: str, worktree_path: Path, task_id: str, with_plan: bool = False
+) -> str:
     tpl = _TEMPLATE.read_text(encoding="utf-8")
+    if with_plan:
+        body = (
+            f"{body}\n\n## Approved plan\n"
+            "An architect drafted an implementation plan at `plan.md` in the worktree "
+            "root. Read it first and follow it; deviate only where it is clearly wrong."
+        )
     return tpl.format(
         title=title,
         body=body,
@@ -42,6 +50,36 @@ def render_brief(*, title: str, body: str, lane: str, worktree_path: Path, task_
         status_log=store.task_data_dir(task_id) / "status.log",
         evidence_dir=store.task_data_dir(task_id) / "evidence",
     )
+
+
+def spawn_implementer(
+    meta: TaskMeta, *, title: str, body: str, with_plan: bool = False
+) -> TaskMeta:
+    """Render the implementer brief, spawn the worker, move to WORKING.
+
+    Shared by a plain dispatch and by the plan phase (plan.py) once the plan is
+    approved — the implement slot is welded to one provider (DESIGN-VNEXT D15),
+    so both paths spawn the same lane/model recorded on the task."""
+    task_id = meta.id
+    model = models.parse_spec(meta.model)
+    brief_text = render_brief(
+        title=title, body=body, lane=meta.lane,
+        worktree_path=Path(meta.worktree), task_id=task_id, with_plan=with_plan,
+    )
+    brief_path = store.task_data_dir(task_id) / "brief.md"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text(brief_text, encoding="utf-8")
+
+    log_path = store.task_data_dir(task_id) / "worker.log"
+    pid_path = store.task_state_dir(task_id) / "pid"
+    get_lane(meta.lane).spawn(
+        brief_path=brief_path, worktree=Path(meta.worktree), model=model,
+        log_path=log_path, pid_path=pid_path,
+    )
+    meta = _with_state(meta, TaskState.WORKING)
+    store.save_meta(meta)
+    store.append_status(task_id, f"working: dispatched on {meta.lane} ({model.model})")
+    return meta
 
 
 def dispatch(
@@ -55,6 +93,9 @@ def dispatch(
     model_override: str | None = None,
     review_lane: str | None = None,
     review_model: str | None = None,
+    plan_lane: str | None = None,
+    plan_model: str | None = None,
+    plan_approval: bool = False,
 ) -> TaskMeta:
     """Create and spawn a task. Returns its persisted meta (state=working)."""
     home.ensure_home()
@@ -82,13 +123,7 @@ def dispatch(
     else:
         model = models.resolve("implementer", repo_path=repo_path, lane=lane)  # crashes if unpinned
     wt = worktree.create(repo_path, task_id)
-
-    brief_text = render_brief(
-        title=title, body=body, lane=lane, worktree_path=wt.path, task_id=task_id
-    )
-    brief_path = store.task_data_dir(task_id) / "brief.md"
-    brief_path.parent.mkdir(parents=True, exist_ok=True)
-    brief_path.write_text(brief_text, encoding="utf-8")
+    store.task_data_dir(task_id).mkdir(parents=True, exist_ok=True)
 
     meta = TaskMeta(
         id=task_id,
@@ -101,19 +136,45 @@ def dispatch(
         state=TaskState.QUEUED,
         review_lane=review_lane or None,
         review_model=review_model or None,
+        plan_lane=plan_lane or None,
+        plan_model=plan_model or None,
+        plan_approval=bool(plan_approval),
     )
+    # Keep the raw task text for the (possibly deferred) implementer brief.
     store.save_meta(meta)
+    _save_task_text(task_id, title, body)
 
-    log_path = store.task_data_dir(task_id) / "worker.log"
-    pid_path = store.task_state_dir(task_id) / "pid"
-    get_lane(lane).spawn(
-        brief_path=brief_path, worktree=wt.path, model=model, log_path=log_path, pid_path=pid_path
+    # Plan phase first (DESIGN-VNEXT D14): an architect drafts plan.md, then the
+    # implementer runs. Without a plan slot, dispatch straight to the implementer.
+    if plan_lane:
+        from . import plan
+
+        meta = _with_state(meta, TaskState.PLANNING)
+        store.save_meta(meta)
+        store.append_status(task_id, f"planning: architect drafting on {plan_lane}")
+        plan.start(task_id)
+        return meta
+    return spawn_implementer(meta, title=title, body=body)
+
+
+def _save_task_text(task_id: str, title: str, body: str) -> None:
+    import json
+
+    (store.task_data_dir(task_id) / "task.json").write_text(
+        json.dumps({"title": title, "body": body}), encoding="utf-8"
     )
 
-    meta = _with_state(meta, TaskState.WORKING)
-    store.save_meta(meta)
-    store.append_status(task_id, f"working: dispatched on {lane} ({model.model})")
-    return meta
+
+def load_task_text(task_id: str) -> tuple[str, str]:
+    """The original title/body, for a brief rendered after the plan phase."""
+    import json
+
+    p = store.task_data_dir(task_id) / "task.json"
+    if not p.exists():
+        m = store.load_meta(task_id)
+        return m.id, ""
+    d = json.loads(p.read_text(encoding="utf-8"))
+    return d.get("title", ""), d.get("body", "")
 
 
 def _with_state(meta: TaskMeta, state: TaskState) -> TaskMeta:

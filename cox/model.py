@@ -15,6 +15,7 @@ from typing import Any
 
 class TaskState(StrEnum):
     QUEUED = "queued"
+    PLANNING = "planning"
     WORKING = "working"
     GATING = "gating"
     FIXING = "fixing"
@@ -41,6 +42,7 @@ class NeedsHumanReason(StrEnum):
     CI_RED = "ci-red"
     RATE_LIMITED = "rate-limited"
     EVIDENCE_MISSING = "evidence-missing"
+    PLAN_REVIEW = "plan-review"  # architect drafted a plan; captain must approve it
 
 
 class DispatchPath(StrEnum):
@@ -98,6 +100,12 @@ class TaskMeta:
     # cross providers freely (it is stateless — reads only the diff).
     review_lane: str | None = None
     review_model: str | None = None
+    # Plan slot (DESIGN-VNEXT D14/D16): an architect drafts plan.md before the
+    # implementer starts. plan_lane None = no plan phase (dispatch straight to
+    # implement). plan_approval gates the implement start on captain sign-off.
+    plan_lane: str | None = None
+    plan_model: str | None = None
+    plan_approval: bool = False
 
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
@@ -124,4 +132,7 @@ class TaskMeta:
             dispatched_at=d.get("dispatched_at", 0.0),
             review_lane=d.get("review_lane"),
             review_model=d.get("review_model"),
+            plan_lane=d.get("plan_lane"),
+            plan_model=d.get("plan_model"),
+            plan_approval=d.get("plan_approval", False),
         )

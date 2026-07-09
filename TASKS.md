@@ -50,7 +50,14 @@
 > TaskMeta.review_lane/review_model; review.py lane-aware (claude --permission-mode plan OR codex
 > exec -s read-only), pinned per task, default opus (cross-provider on demand, not forced — D14
 > refined); dispatch form reframed into IMPLEMENT/REVIEW slots; card + toast show the review slot.
-> 75 tests green. (Plan phase/architect + plan-approval toggle still DEFERRED — needs new machinery.)
+> 75 tests green. (c) ✅ **model catalog + plan phase SHIPPED 2026-07-08** — models.CATALOG (opus 4.8 /
+> sonnet 5 / sonnet 4.6; gpt 5.6/5.5/5.5-mini/5.4/5.4-mini) drives lane→model→effort dropdowns for all
+> slots; cox/plan.py = PLANNING state + read-only lane-aware architect → plan.md handoff → optional
+> approval gate (needs-human plan-review) → implementer with plan pointer; `cox plan-finalize`/`approve-plan`
+> + /api/task/<id>/approve-plan + dashboard plan slot & Approve-plan button; stub e2e proves
+> dispatch→plan→approve→gate→ship→merge. 81 tests green. Real-agent architect validation pending a
+> shakedown run (orchestrator drives plan-finalize, blocks on architect pid like `cox review`).
+> **All v-next slices shipped.** Remaining M0 exit criteria: second-repo run, parallel AFK batch, crash-recovery.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).

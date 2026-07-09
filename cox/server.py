@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse
 from . import home, render, store
 from .model import NeedsHumanReason, TaskState
 
-_ACTIVE = {TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
+_ACTIVE = {TaskState.PLANNING, TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
 _NEEDS_YOU = {TaskState.NEEDS_HUMAN, TaskState.PR_OPEN}
 _TEMPLATE = Path(__file__).parent / "templates" / "dashboard.html"
 
@@ -37,6 +37,7 @@ STAGES = ["Code", "Gate", "Review", "PR", "Merged"]
 # Which stage a live state occupies (index into STAGES).
 _STATE_STAGE = {
     TaskState.QUEUED: 0,
+    TaskState.PLANNING: 0,  # architect drafting — still the Code stage
     TaskState.WORKING: 0,
     TaskState.GATING: 1,
     TaskState.FIXING: 2,
@@ -48,6 +49,7 @@ _REASON_STAGE = {
     NeedsHumanReason.WORKER_ERROR: 0,
     NeedsHumanReason.WORKER_STALE: 0,
     NeedsHumanReason.RATE_LIMITED: 0,
+    NeedsHumanReason.PLAN_REVIEW: 0,  # plan awaits approval, before code
     NeedsHumanReason.GATE_RED: 1,
     NeedsHumanReason.EVIDENCE_MISSING: 1,
     NeedsHumanReason.REVIEW_FINDINGS: 2,
@@ -114,6 +116,7 @@ def tasks_payload() -> dict:
                 "needs_you": m.state in _NEEDS_YOU,
                 "stage": _stage(m, _fix_rounds(tid)),
                 "review": _review_label(m),
+                "plan": _plan_label(m),
             }
         )
     # needs-you first, then active, then the rest — the "alert" ordering
@@ -278,6 +281,10 @@ def dispatch_task(payload: dict) -> dict:
     # review slot (DESIGN-VNEXT D14): pinned independently; blank = reviewer default
     review_lane = str(payload.get("review_lane") or "").strip() or None
     review_model = str(payload.get("review_model") or "").strip() or None
+    # plan slot (D14/D16): blank plan_lane = no plan phase; approval is opt-in
+    plan_lane = str(payload.get("plan_lane") or "").strip() or None
+    plan_model = str(payload.get("plan_model") or "").strip() or None
+    plan_approval = bool(payload.get("plan_approval"))
 
     try:
         meta = disp.dispatch(
@@ -289,13 +296,36 @@ def dispatch_task(payload: dict) -> dict:
             model_override=model,
             review_lane=review_lane,
             review_model=review_model,
+            plan_lane=plan_lane,
+            plan_model=plan_model,
+            plan_approval=plan_approval,
         )
     except Exception as e:  # noqa: BLE001 - surface every dispatch failure to the UI
         return {"error": f"{type(e).__name__}: {e}"}
     return {
         "id": meta.id, "lane": meta.lane, "model": meta.model, "state": meta.state.value,
-        "review": _review_label(meta),
+        "review": _review_label(meta), "plan": _plan_label(meta),
     }
+
+
+def _plan_label(meta) -> str:
+    """Short 'lane/model[+approval]' describing a task's plan slot, or ''."""
+    if not meta.plan_lane:
+        return ""
+    lane = meta.plan_lane
+    base = f"{lane}/{meta.plan_model}" if meta.plan_model else lane
+    return base + (" +approve" if meta.plan_approval else "")
+
+
+def approve_plan(task_id: str) -> dict:
+    """Captain approves a parked plan → the implementer starts."""
+    from . import plan
+
+    try:
+        meta = plan.approve(task_id)
+    except Exception as e:  # noqa: BLE001 - surface plan errors to the UI
+        return {"error": f"{type(e).__name__}: {e}"}
+    return {"id": task_id, "state": meta.state.value}
 
 
 def _review_label(meta) -> str:
@@ -391,6 +421,10 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/stop"):
                 tid = u.path[len("/api/task/") : -len("/stop")]
                 self._json(stop_task(tid))
+            elif u.path.startswith("/api/task/") and u.path.endswith("/approve-plan"):
+                tid = u.path[len("/api/task/") : -len("/approve-plan")]
+                out = approve_plan(tid)
+                self._json(out, 400 if out.get("error") else 200)
             elif u.path == "/api/repos/add":
                 out = add_repo(self._read_json().get("ref", ""))
                 self._json(out, 400 if out.get("error") else 200)

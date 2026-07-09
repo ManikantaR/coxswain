@@ -27,6 +27,7 @@
   button:active { transform:translateY(1px); }
   button.warn { border-color:#3d2f12; color:var(--warn); }
   button.stop { border-color:#4a1d1d; color:var(--bad); }
+  button.approve { border-color:#12331f; color:var(--ok); }
   main { padding:16px; display:grid; gap:12px; max-width:820px; margin:0 auto; }
   .alert { border:1px solid #4a1d1d; background:#1a1113;
     border-radius:10px; padding:10px 14px; color:var(--warn); font-size:13px; }
@@ -88,6 +89,8 @@
   .slot { font-size:11px; font-weight:600; color:var(--fg); text-transform:uppercase;
     letter-spacing:.4px; margin-top:4px; }
   .slot-note { font-weight:400; text-transform:none; letter-spacing:0; color:var(--dim); }
+  .chk { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim);
+    flex:0 0 auto; white-space:nowrap; }
   .dmsg { font-size:13px; color:var(--dim); min-height:18px; }
   .dmsg.ok { color:var(--ok); } .dmsg.err { color:var(--bad); }
 </style>
@@ -121,6 +124,13 @@
     <select id="d-issue-list" hidden></select>
     <input id="d-title" placeholder="task title (blank = use the issue title)">
     <textarea id="d-body" rows="3" placeholder="task details (blank = use the issue body)"></textarea>
+    <div class="slot">plan <span class="slot-note">· architect drafts plan.md first (optional)</span></div>
+    <div class="drow">
+      <select id="d-plan-lane"><option value="">none · skip planning</option><option value="claude">claude</option><option value="codex">codex</option></select>
+      <select id="d-plan-model" hidden></select>
+      <select id="d-plan-effort" hidden></select>
+      <label id="d-plan-approve-l" class="chk" hidden><input type="checkbox" id="d-plan-approve"> approve first</label>
+    </div>
     <div class="slot">implement <span class="slot-note">· fix rounds reuse this</span></div>
     <div class="drow">
       <select id="d-lane"><option value="claude">claude</option><option value="codex">codex</option></select>
@@ -159,6 +169,7 @@ function fillModels(lane, modelSel, effSel){
 }
 
 const BADGE = {
+  planning:["b-work","planning"],
   working:["b-work","working"], gating:["b-work","gating"], fixing:["b-work","fixing"],
   pr_open:["b-warn","pr open"], needs_human:["b-warn","needs you"],
   landed:["b-ok","landed"], failed:["b-bad","failed"], queued:["b-idle","queued"],
@@ -222,7 +233,7 @@ function render(s){
   // 2s SSE tick would nuke open feeds and scroll. When unchanged, just refresh
   // any open feeds (the thing you're actively watching).
   const sig = JSON.stringify(s.paused) + "|" + JSON.stringify(
-    s.tasks.map(t => [t.id, t.state, t.cost_usd, t.last_status, t.pr_url, t.active,
+    s.tasks.map(t => [t.id, t.state, t.reason, t.cost_usd, t.last_status, t.pr_url, t.active,
       t.stage && [t.stage.i, t.stage.status, t.stage.fix_rounds]]));
   if(sig === lastSig){ refreshOpenFeeds(); return; }
   lastSig = sig;
@@ -235,15 +246,18 @@ function render(s){
     const [cls,label] = BADGE[t.state] || ["b-idle", t.state];
     const cost = t.cost_usd==null ? "" : " · $"+t.cost_usd.toFixed(2);
     const rev = (t.review && t.review!=="default") ? " · review "+esc(t.review) : "";
+    const pl = t.plan ? " · plan "+esc(t.plan) : "";
     const pr = t.pr_url ? ' · <a href="'+t.pr_url+'" target="_blank">PR</a>' : "";
+    const needsPlan = t.state==="needs_human" && t.reason==="plan-review";
     html += '<div class="card'+(t.needs_you?' needs':'')+'" data-id="'+esc(t.id)+'">'
       + '<div class="row"><span class="badge '+cls+'">'+label+'</span>'
       + '<span class="tid">'+esc(t.id)+'</span></div>'
-      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+rev+cost+pr+'</div>'
+      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+pl+rev+cost+pr+'</div>'
       + pipeHTML(t.stage)
       + (t.last_status ? '<div class="last">'+esc(t.last_status)+'</div>' : '')
       + '<div class="actions">'
       +   '<button class="feed-btn">'+(open.has(t.id)?"Hide feed":"Show feed")+'</button>'
+      +   (needsPlan ? '<button class="approve approve-btn">Approve plan</button>' : '')
       +   (t.active ? '<button class="stop stop-btn">Stop</button>' : '')
       + '</div>'
       + '<div class="feed'+(open.has(t.id)?' open':'')+'"></div>'
@@ -262,6 +276,12 @@ function render(s){
     if(stop) stop.onclick = async () => {
       if(!confirm("Stop "+id+"? This kills the worker.")) return;
       await fetch(q("/api/task/"+id+"/stop"), {method:"POST"});
+    };
+    const appr = card.querySelector(".approve-btn");
+    if(appr) appr.onclick = async () => {
+      appr.disabled = true;
+      await fetch(q("/api/task/"+id+"/approve-plan"), {method:"POST"});
+      lastSig = null;  // force a rebuild so it flips to working
     };
   }
 }
@@ -294,6 +314,16 @@ rLane.onchange = () => {
   if(on) fillModels(rLane.value, rModel, rEffort);
 };
 rModel.onchange = () => fillEfforts(rLane.value, rModel, rEffort);
+const pLane = document.getElementById("d-plan-lane");
+const pModel = document.getElementById("d-plan-model");
+const pEffort = document.getElementById("d-plan-effort");
+const pApproveL = document.getElementById("d-plan-approve-l");
+pLane.onchange = () => {
+  const on = !!pLane.value;
+  pModel.hidden = pEffort.hidden = pApproveL.hidden = !on;
+  if(on) fillModels(pLane.value, pModel, pEffort);
+};
+pModel.onchange = () => fillEfforts(pLane.value, pModel, pEffort);
 
 // repo picker: dropdown of repos in the clone-root + add/clone
 const repoSel = document.getElementById("d-repo");
@@ -366,6 +396,9 @@ document.getElementById("d-go").onclick = async () => {
     model: dModel.value + ":" + dEffort.value,
     review_lane: rLane.value,
     review_model: rLane.value ? (rModel.value + ":" + rEffort.value) : "",
+    plan_lane: pLane.value,
+    plan_model: pLane.value ? (pModel.value + ":" + pEffort.value) : "",
+    plan_approval: pLane.value && document.getElementById("d-plan-approve").checked,
   };
   if(!body.repo || (!body.title && !body.issue)){ msg.textContent="need a repo and a title or issue"; msg.className="dmsg err"; return; }
   msg.textContent="dispatching…"; msg.className="dmsg";
@@ -374,6 +407,7 @@ document.getElementById("d-go").onclick = async () => {
     const d = await r.json();
     if(d.error){ msg.textContent="✗ "+d.error; msg.className="dmsg err"; return; }
     msg.textContent="✓ dispatched "+d.id+" on "+d.lane+"/"+d.model+
+      (d.plan?" · plan "+d.plan:"")+
       (d.review&&d.review!=="default"?" · review "+d.review:""); msg.className="dmsg ok";
     for(const id of ["d-issue","d-title","d-body"]) document.getElementById(id).value="";
     issueSel.hidden=true;

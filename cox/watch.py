@@ -19,7 +19,7 @@ from .model import TaskState
 
 POLL_SECS = 15
 STALE_SECS = 900
-_ACTIVE = {TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
+_ACTIVE = {TaskState.PLANNING, TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
 _TERMINAL_VERBS = {"done", "failed", "blocked"}
 
 

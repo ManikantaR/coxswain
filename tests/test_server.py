@@ -162,6 +162,51 @@ def test_dispatch_effort_tunes_lane_default_model(monkeypatch):
     assert captured["model_override"] == "claude-sonnet-4-6:high"
 
 
+def test_dispatch_task_passes_plan_slot(monkeypatch):
+    from cox import dispatch as disp
+    from cox.model import TaskMeta
+
+    captured = {}
+
+    def fake_dispatch(**kw):
+        captured.update(kw)
+        return TaskMeta(
+            id="r-p-1", repo="repo", worktree="/w", branch="cox/x", lane=kw["lane"],
+            model="sonnet:medium", path=kw["path"], state=TaskState.PLANNING,
+            plan_lane=kw["plan_lane"], plan_model=kw["plan_model"],
+            plan_approval=kw["plan_approval"],
+        )
+
+    monkeypatch.setattr(disp, "dispatch", fake_dispatch)
+    out = server.dispatch_task(
+        {"repo": "~/r", "title": "t", "lane": "claude",
+         "plan_lane": "claude", "plan_model": "claude-opus-4-8:high", "plan_approval": True}
+    )
+    assert captured["plan_lane"] == "claude"
+    assert captured["plan_model"] == "claude-opus-4-8:high"
+    assert captured["plan_approval"] is True
+    assert out["plan"] == "claude/claude-opus-4-8:high +approve"
+    assert out["state"] == "planning"
+
+
+def test_approve_plan_surfaces_and_routes(monkeypatch):
+    from cox import plan
+
+    # no plan awaiting approval -> error surfaced, not raised
+    _mk("t-noplan", TaskState.WORKING)
+    assert "error" in server.approve_plan("t-noplan")
+
+    called = {}
+
+    def fake_approve(tid):
+        called["tid"] = tid
+        return SimpleNamespace(state=TaskState.WORKING)
+
+    monkeypatch.setattr(plan, "approve", fake_approve)
+    out = server.approve_plan("t-x")
+    assert out["state"] == "working" and called["tid"] == "t-x"
+
+
 def test_dispatch_from_issue_fills_title_and_body(monkeypatch):
     from cox import dispatch as disp
     from cox import proc

@@ -179,6 +179,21 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_plan_finalize(args: argparse.Namespace) -> int:
+    plan = _pkg_mod("plan")
+    meta = plan.finalize(args.task_id)
+    print(f"{args.task_id}: {meta.state.value}"
+          + (f" ({meta.reason.value})" if meta.reason else ""))
+    return 0
+
+
+def _cmd_approve_plan(args: argparse.Namespace) -> int:
+    plan = _pkg_mod("plan")
+    meta = plan.approve(args.task_id)
+    print(f"{args.task_id}: plan approved -> {meta.state.value}")
+    return 0
+
+
 def _cmd_repos(args: argparse.Namespace) -> int:
     repos = _pkg_mod("repos")
 
@@ -322,6 +337,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--lane", default="claude", choices=list(_LANES))
     s.add_argument("--model", default=None, help="override impl model, e.g. opus:high (hard tasks)")
     s.set_defaults(func=_cmd_dispatch)
+
+    s = sub.add_parser("plan-finalize", help="capture the architect's plan.md, then gate/implement")
+    s.add_argument("task_id")
+    s.set_defaults(func=_cmd_plan_finalize)
+
+    s = sub.add_parser("approve-plan", help="captain approves a parked plan -> implement starts")
+    s.add_argument("task_id")
+    s.set_defaults(func=_cmd_approve_plan)
 
     s = sub.add_parser("gate", help="run deterministic gate steps 1-4")
     s.add_argument("task_id")

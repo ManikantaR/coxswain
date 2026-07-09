@@ -67,6 +67,15 @@ avoid. There is no mechanism to resume a Claude session inside Codex or vice-ver
 (separate CLIs, separate on-disk session stores). No escape hatch; restart-cold-in-
 the-other-lane is a new *dispatch*, not a fix.
 
+> Plan phase shipped 2026-07-08 (`cox/plan.py`): dispatch with a plan slot →
+> `PLANNING` (architect spawned, read-only, lane-aware) → `cox plan-finalize`
+> captures `plan.md` and, if approval is on, parks at `needs-human(plan-review)`
+> until `cox approve-plan` / the dashboard "Approve plan" button → implementer
+> starts with the plan pointer in its brief. Proven tokenlessly via the stub
+> lane (full dispatch→plan→approve→gate→ship→merge). Real-agent architect
+> completion is orchestrator-driven (`plan-finalize` blocks on the architect
+> pid, like `cox review`); real-agent validation pending a shakedown run.
+
 ### 2. Plan-approval checkpoint — optional, default OFF
 
 A per-dispatch toggle. Off by default; flip on for large/ambiguous work. When on,

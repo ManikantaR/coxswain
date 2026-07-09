@@ -11,8 +11,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from cox import dispatch, gate, ship, store, watch
-from cox.model import DispatchPath, TaskState
+from cox import dispatch, gate, plan, ship, store, watch
+from cox.model import DispatchPath, NeedsHumanReason, TaskState
 
 
 def _add_repo_config(repo: Path) -> None:
@@ -74,6 +74,48 @@ def test_full_loop_stub_lane(git_repo):
     assert m2.pr_url and m2.pr_url.startswith("local://")
     m3 = ship.merge(meta.id, repo)
     assert m3.state is TaskState.LANDED
+
+
+def test_plan_phase_with_approval_then_full_loop(git_repo):
+    repo = git_repo()
+    _add_repo_config(repo)
+
+    # dispatch with a plan slot + approval gate -> PLANNING, not WORKING
+    meta = dispatch.dispatch(
+        repo_path=repo, title="planned change", body="Do the thing.",
+        path=DispatchPath.FULL, lane="stub", plan_lane="stub", plan_approval=True,
+    )
+    assert meta.state is TaskState.PLANNING
+    assert (Path(meta.worktree) / "plan.md").exists()  # architect drafted it
+
+    # finalize -> parks for approval (no implementer yet)
+    parked = plan.finalize(meta.id)
+    assert parked.state is TaskState.NEEDS_HUMAN
+    assert parked.reason is NeedsHumanReason.PLAN_REVIEW
+
+    # captain approves -> implementer starts, brief carries the plan pointer
+    approved = plan.approve(meta.id)
+    assert approved.state is TaskState.WORKING
+    brief = (store.task_data_dir(meta.id) / "brief.md").read_text()
+    assert "plan.md" in brief
+
+    _wait_for_done(meta.id)
+    report = gate.run_gate(meta.id)
+    assert report.passed, report.steps
+    ship.ship(meta.id, repo, "planned change")
+    assert ship.merge(meta.id, repo).state is TaskState.LANDED
+
+
+def test_plan_phase_without_approval_goes_straight_to_working(git_repo):
+    repo = git_repo()
+    _add_repo_config(repo)
+    meta = dispatch.dispatch(
+        repo_path=repo, title="planned no-gate", body="Do it.",
+        path=DispatchPath.FULL, lane="stub", plan_lane="stub", plan_approval=False,
+    )
+    assert meta.state is TaskState.PLANNING
+    # finalize with approval off -> implementer starts immediately
+    assert plan.finalize(meta.id).state is TaskState.WORKING
 
 
 def test_pause_blocks_dispatch(git_repo):
