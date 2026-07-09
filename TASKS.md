@@ -57,7 +57,15 @@
 > + /api/task/<id>/approve-plan + dashboard plan slot & Approve-plan button; stub e2e proves
 > dispatch→plan→approve→gate→ship→merge. 81 tests green. Real-agent architect validation pending a
 > shakedown run (orchestrator drives plan-finalize, blocks on architect pid like `cox review`).
-> **All v-next slices shipped.** Remaining M0 exit criteria: second-repo run, parallel AFK batch, crash-recovery.
+> **All v-next slices shipped.** **2026-07-09 process+dashboard round** (loop-eng research from
+> Karpathy/Cherny/Osmani/Steinberger — agents hit the account session limit before finishing; my
+> synthesis, re-run when it resets): (1) models.catalog() = optional ~/.config/cox/models.json overlay
+> over CATALOG (add future models via JSON, no code edit) + Haiku 4.5; (2) structured plan.md handoff
+> (mattpocock/handoff shape: approach/files/decisions+why/assumptions/how-to-verify/open-questions);
+> (3) dashboard: stall alerts (idle>900s → ⚠ pill+marker), artifact viewer (Feed/Diff/Plan/Evidence per
+> card via /api/task/<id>/artifact), per-lane quota burn-down pills (tokens+$ in last ~5h). 85 tests green.
+> **Owed:** re-run the sourced loop-eng research after the usage window resets. Remaining M0 exit criteria:
+> second-repo run, parallel AFK batch, crash-recovery, + first real-agent plan-phase run.
 >
 > **After M0 ships:** M1 → **T-15** (codex lane), then M2 → **T-16** (Telegram). Do NOT start
 > M1/M2 until M0's exit criteria are met (strict order, DESIGN P10).
