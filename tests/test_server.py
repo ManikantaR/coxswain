@@ -62,6 +62,28 @@ def test_tasks_payload_reports_pipeline_stage():
     assert by_id["t-review"]["stage"] == {"i": 2, "status": "error", "fix_rounds": 1}
 
 
+def test_tasks_payload_flags_stalled_active_task():
+    import os
+    import time
+
+    _mk("t-fresh", TaskState.WORKING)
+    _mk("t-stuck", TaskState.WORKING)
+    _mk("t-done", TaskState.LANDED)  # not active -> never stale
+    for tid in ("t-fresh", "t-stuck", "t-done"):
+        d = store.task_data_dir(tid)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "worker.log").write_text("x", encoding="utf-8")
+    old = time.time() - 3600  # 1h idle, past the 900s threshold
+    log = store.task_data_dir("t-stuck") / "worker.log"
+    os.utime(log, (old, old))
+
+    by_id = {t["id"]: t for t in server.tasks_payload()["tasks"]}
+    assert by_id["t-stuck"]["stale"] is True and by_id["t-stuck"]["idle_secs"] >= 900
+    assert by_id["t-fresh"]["stale"] is False
+    assert by_id["t-done"]["stale"] is False  # landed tasks are never "stalled"
+    assert server.tasks_payload()["stalled"] == 1
+
+
 def test_feed_payload_uses_renderer():
     _mk("t-feed", TaskState.WORKING)
     log = store.task_data_dir("t-feed") / "worker.log"
@@ -73,6 +95,55 @@ def test_feed_payload_uses_renderer():
         encoding="utf-8",
     )
     assert server.feed_payload("t-feed")["feed"] == ["· hello"]
+
+
+def test_lane_burn_attributes_phases_and_windows():
+    import time
+
+    from cox.model import CostEntry
+
+    # implement on claude, review on codex; a plan entry on codex
+    store.save_meta(TaskMeta(
+        id="t-burn", repo="r", worktree="/w", branch="cox/x", lane="claude",
+        model="sonnet:medium", path=DispatchPath.FULL, state=TaskState.GATING,
+        review_lane="codex", plan_lane="codex",
+    ))
+    now = time.time()
+
+    def ce(phase, tin, tout, cost, ts):
+        return CostEntry(phase=phase, tokens_in=tin, tokens_out=tout, cost_usd=cost, ts=ts)
+
+    store.append_cost("t-burn", ce("implement", 1000, 100, 0.5, now))       # claude
+    store.append_cost("t-burn", ce("review", 200, 20, None, now))           # codex (no $)
+    store.append_cost("t-burn", ce("plan", 300, 30, None, now))             # codex
+    store.append_cost("t-burn", ce("implement", 9999, 9999, 9.9, now - 6 * 3600))  # stale, excluded
+
+    burn = server.tasks_payload()["burn"]
+    assert burn["claude"]["tokens"] == 1100 and burn["claude"]["priced"] is True
+    assert burn["codex"]["tokens"] == 550 and burn["codex"]["priced"] is False  # codex has no $
+    assert burn["claude"]["cost"] == pytest.approx(0.5)  # 6h-old entry not counted
+
+
+def test_artifact_payload_plan_evidence_and_unknown(tmp_path):
+    from cox.model import DispatchPath, TaskMeta
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / "plan.md").write_text("## Approach\ndo it", encoding="utf-8")
+    store.save_meta(TaskMeta(
+        id="t-art", repo="r", worktree=str(wt), branch="cox/x", lane="claude",
+        model="sonnet:medium", path=DispatchPath.FULL, state=TaskState.GATING,
+    ))
+    ev = store.task_data_dir("t-art") / "evidence"
+    ev.mkdir(parents=True, exist_ok=True)
+    (ev / "test-output.txt").write_text("3 passed", encoding="utf-8")
+
+    assert "do it" in server.artifact_payload("t-art", "plan")["text"]
+    evd = server.artifact_payload("t-art", "evidence")["text"]
+    assert "test-output.txt" in evd and "3 passed" in evd
+    assert "error" in server.artifact_payload("t-art", "bogus")
+    # a diff with no real git repo degrades to a message, never a crash
+    assert "text" in server.artifact_payload("t-art", "diff")
 
 
 def test_stop_task_marks_failed_when_no_live_pid():

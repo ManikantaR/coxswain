@@ -22,12 +22,19 @@
   .pill { font-size:12px; color:var(--dim); background:var(--panel2);
     border:1px solid var(--line); border-radius:999px; padding:3px 10px; }
   .pill b { color:var(--fg); }
+  .warnpill { color:var(--warn); border-color:#3d2f12; }
+  #burn { display:inline-flex; gap:6px; flex-wrap:wrap; }
+  .burnpill { color:var(--dim); } .burnpill b { color:#6cb6ff; }
+  .stale { color:var(--warn); }
+  .card.stalled { border-color:#3d2f12; }
   button { font:inherit; cursor:pointer; border:1px solid var(--line);
     background:var(--panel2); color:var(--fg); border-radius:8px; padding:6px 12px; }
   button:active { transform:translateY(1px); }
   button.warn { border-color:#3d2f12; color:var(--warn); }
   button.stop { border-color:#4a1d1d; color:var(--bad); }
   button.approve { border-color:#12331f; color:var(--ok); }
+  .view-btn { font-size:12px; padding:4px 9px; text-transform:capitalize; }
+  .view-btn.on { border-color:var(--accent); color:#6cb6ff; }
   main { padding:16px; display:grid; gap:12px; max-width:820px; margin:0 auto; }
   .alert { border:1px solid #4a1d1d; background:#1a1113;
     border-radius:10px; padding:10px 14px; color:var(--warn); font-size:13px; }
@@ -100,7 +107,9 @@
   <h1><span class="dot">▟</span> coxswain</h1>
   <span class="pill" id="p-needs">needs you <b>0</b></span>
   <span class="pill" id="p-active">running <b>0</b></span>
+  <span class="pill warnpill" id="p-stalled" hidden>⚠ stalled <b>0</b></span>
   <span class="pill" id="p-cost">$<b>0.00</b></span>
+  <span id="burn"></span>
   <span class="spacer"></span>
   <span id="conn" class="pill">connecting…</span>
   <button id="new-btn">＋ Dispatch</button>
@@ -152,7 +161,7 @@
 const TOKEN = "__TOKEN__";
 const CATALOG = __CATALOG__;
 const q = (p) => p + (p.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN);
-const open = new Set();
+const VIEWS = ["feed","diff","plan","evidence"];
 
 // model + effort dropdowns, driven by the per-lane CATALOG
 const EFF_LABEL = {low:"low", medium:"med", high:"high"};
@@ -175,6 +184,7 @@ const BADGE = {
   landed:["b-ok","landed"], failed:["b-bad","failed"], queued:["b-idle","queued"],
 };
 const esc = (s) => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const fmtTok = (n) => n>=1e6 ? (n/1e6).toFixed(1)+"M" : n>=1e3 ? (n/1e3).toFixed(n>=1e4?0:1)+"k" : ""+n;
 
 // pipeline stepper: Code → Gate → Review → PR → Merged, lit to the task's stage
 let STAGES = ["Code","Gate","Review","PR","Merged"];
@@ -206,15 +216,23 @@ function feedHTML(lines){
   }).join("\n");
 }
 
-async function loadFeed(id, el){
-  const r = await fetch(q("/api/task/"+id+"/feed"));
-  const d = await r.json();
-  el.innerHTML = feedHTML(d.feed || []);
+// one drill-in panel per card showing a chosen view: feed | diff | plan | evidence
+const view = new Map();  // id -> kind (absent = closed)
+async function loadView(id, el, kind){
+  if(kind === "feed"){
+    const d = await (await fetch(q("/api/task/"+id+"/feed"))).json();
+    el.innerHTML = feedHTML(d.feed || []);
+  } else {
+    el.textContent = "loading "+kind+"…";
+    const d = await (await fetch(q("/api/task/"+id+"/artifact?kind="+kind))).json();
+    el.textContent = d.text || d.error || "(empty)";
+  }
 }
-function refreshOpenFeeds(){
-  for(const id of open){
+function refreshOpen(){  // only the live feed needs re-polling; artifacts are snapshots
+  for(const [id, kind] of view){
+    if(kind !== "feed") continue;
     const el = document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');
-    if(el) loadFeed(id, el);
+    if(el) loadView(id, el, "feed");
   }
 }
 
@@ -223,6 +241,15 @@ function render(s){
   if(s.stages) STAGES = s.stages;
   document.querySelector("#p-needs b").textContent = s.needs_you;
   document.querySelector("#p-active b").textContent = s.active;
+  const stp = document.getElementById("p-stalled");
+  stp.hidden = !s.stalled; stp.querySelector("b").textContent = s.stalled || 0;
+  const burn = s.burn || {}, wh = s.burn_window_h || 5;
+  document.getElementById("burn").innerHTML = Object.keys(burn).sort().map(lane => {
+    const b = burn[lane];
+    const c = b.priced && b.cost ? " · $"+b.cost.toFixed(2) : "";
+    return '<span class="pill burnpill" title="'+lane+' usage in the last '+wh+'h">'+
+      esc(lane)+' <b>'+fmtTok(b.tokens)+'</b>'+c+' /'+wh+'h</span>';
+  }).join("");
   document.querySelector("#p-cost b").textContent =
     s.total_cost_usd==null ? "?" : s.total_cost_usd.toFixed(2);
   const pauseBtn = document.getElementById("pause");
@@ -233,9 +260,9 @@ function render(s){
   // 2s SSE tick would nuke open feeds and scroll. When unchanged, just refresh
   // any open feeds (the thing you're actively watching).
   const sig = JSON.stringify(s.paused) + "|" + JSON.stringify(
-    s.tasks.map(t => [t.id, t.state, t.reason, t.cost_usd, t.last_status, t.pr_url, t.active,
+    s.tasks.map(t => [t.id, t.state, t.reason, t.cost_usd, t.last_status, t.pr_url, t.active, t.stale,
       t.stage && [t.stage.i, t.stage.status, t.stage.fix_rounds]]));
-  if(sig === lastSig){ refreshOpenFeeds(); return; }
+  if(sig === lastSig){ refreshOpen(); return; }
   lastSig = sig;
 
   const board = document.getElementById("board");
@@ -248,30 +275,39 @@ function render(s){
     const rev = (t.review && t.review!=="default") ? " · review "+esc(t.review) : "";
     const pl = t.plan ? " · plan "+esc(t.plan) : "";
     const pr = t.pr_url ? ' · <a href="'+t.pr_url+'" target="_blank">PR</a>' : "";
+    const stale = t.stale ? ' · <span class="stale">⚠ stalled '+Math.round(t.idle_secs/60)+'m</span>' : "";
     const needsPlan = t.state==="needs_human" && t.reason==="plan-review";
-    html += '<div class="card'+(t.needs_you?' needs':'')+'" data-id="'+esc(t.id)+'">'
+    html += '<div class="card'+(t.needs_you?' needs':'')+(t.stale?' stalled':'')+'" data-id="'+esc(t.id)+'">'
       + '<div class="row"><span class="badge '+cls+'">'+label+'</span>'
       + '<span class="tid">'+esc(t.id)+'</span></div>'
-      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+pl+rev+cost+pr+'</div>'
+      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+pl+rev+cost+stale+pr+'</div>'
       + pipeHTML(t.stage)
       + (t.last_status ? '<div class="last">'+esc(t.last_status)+'</div>' : '')
       + '<div class="actions">'
-      +   '<button class="feed-btn">'+(open.has(t.id)?"Hide feed":"Show feed")+'</button>'
+      +   VIEWS.map(v => '<button class="view-btn" data-kind="'+v+'">'+v+'</button>').join('')
       +   (needsPlan ? '<button class="approve approve-btn">Approve plan</button>' : '')
       +   (t.active ? '<button class="stop stop-btn">Stop</button>' : '')
       + '</div>'
-      + '<div class="feed'+(open.has(t.id)?' open':'')+'"></div>'
+      + '<div class="feed'+(view.has(t.id)?' open':'')+'"></div>'
       + '</div>';
   }
   board.innerHTML = html;
   for(const card of board.querySelectorAll(".card")){
-    const id = card.dataset.id, feed = card.querySelector(".feed");
-    if(open.has(id)) loadFeed(id, feed);
-    card.querySelector(".feed-btn").onclick = () => {
-      if(open.has(id)){ open.delete(id); feed.classList.remove("open"); }
-      else { open.add(id); feed.classList.add("open"); loadFeed(id, feed); }
-      card.querySelector(".feed-btn").textContent = open.has(id)?"Hide feed":"Show feed";
+    const id = card.dataset.id, panel = card.querySelector(".feed");
+    const paint = () => {
+      const cur = view.get(id);
+      panel.classList.toggle("open", !!cur);
+      card.querySelectorAll(".view-btn").forEach(b =>
+        b.classList.toggle("on", b.dataset.kind === cur));
     };
+    if(view.has(id)) loadView(id, panel, view.get(id));
+    paint();
+    card.querySelectorAll(".view-btn").forEach(btn => btn.onclick = () => {
+      const kind = btn.dataset.kind;
+      if(view.get(id) === kind){ view.delete(id); }
+      else { view.set(id, kind); loadView(id, panel, kind); }
+      paint();
+    });
     const stop = card.querySelector(".stop-btn");
     if(stop) stop.onclick = async () => {
       if(!confirm("Stop "+id+"? This kills the worker.")) return;

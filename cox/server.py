@@ -82,6 +82,57 @@ def _fix_rounds(task_id: str) -> int:
     return sum(1 for e in store.read_cost(task_id) if "fix" in e.phase)
 
 
+_STALE_SECS = 900  # matches watch.STALE_SECS — an active task idle this long has stalled
+_BURN_WINDOW = 5 * 3600  # the flat-rate ~5h usage window; burn resets across it
+
+
+def _cost_lane(meta, phase: str) -> str:
+    """Which lane a cost entry drew from — review/plan can differ from implement."""
+    if phase == "review":
+        return meta.review_lane or "claude"
+    if phase == "plan":
+        return meta.plan_lane or meta.lane
+    return meta.lane  # implement / fix are welded to the task lane
+
+
+def _lane_burn() -> dict:
+    """Tokens (and $ where known) spent per lane in the last ~5h window.
+
+    On flat-rate plans the scarce resource is the rolling window, not dollars —
+    this is the 'how close am I to the wall' gauge, per lane (Claude vs Codex
+    windows are independent). We show the burn, not a %, since the ceiling is
+    opaque."""
+    import time
+
+    now = time.time()
+    burn: dict[str, dict] = {}
+    for tid in store.list_task_ids():
+        m = store.load_meta(tid)
+        for e in store.read_cost(tid):
+            if now - getattr(e, "ts", now) > _BURN_WINDOW:
+                continue
+            b = burn.setdefault(_cost_lane(m, e.phase), {"tokens": 0, "cost": 0.0, "priced": True})
+            b["tokens"] += e.tokens_in + e.tokens_out
+            if e.cost_usd is None:
+                b["priced"] = False
+            else:
+                b["cost"] += e.cost_usd
+    return burn
+
+
+def _idle_secs(task_id: str) -> float | None:
+    """Seconds since the worker last wrote anything, or None if it never has."""
+    import time
+
+    data = store.task_data_dir(task_id)
+    mtimes = [
+        (data / f).stat().st_mtime
+        for f in ("worker.log", "status.log")
+        if (data / f).exists()
+    ]
+    return (time.time() - max(mtimes)) if mtimes else None
+
+
 def _last_status(task_id: str) -> str:
     p = store.task_data_dir(task_id) / "status.log"
     if not p.exists():
@@ -95,12 +146,18 @@ def tasks_payload() -> dict:
     rows = []
     total_cost = 0.0
     have_cost = False
+    stalled = 0
     for tid in store.list_task_ids():
         m = store.load_meta(tid)
         _, _, cost = store.cost_total(tid)
         if cost is not None:
             total_cost += cost
             have_cost = True
+        active = m.state in _ACTIVE
+        idle = _idle_secs(tid) if active else None
+        stale = bool(idle is not None and idle > _STALE_SECS)
+        if stale:
+            stalled += 1
         rows.append(
             {
                 "id": m.id,
@@ -112,11 +169,13 @@ def tasks_payload() -> dict:
                 "cost_usd": cost,
                 "pr_url": m.pr_url,
                 "last_status": _last_status(tid),
-                "active": m.state in _ACTIVE,
+                "active": active,
                 "needs_you": m.state in _NEEDS_YOU,
                 "stage": _stage(m, _fix_rounds(tid)),
                 "review": _review_label(m),
                 "plan": _plan_label(m),
+                "stale": stale,
+                "idle_secs": int(idle) if idle is not None else None,
             }
         )
     # needs-you first, then active, then the rest — the "alert" ordering
@@ -126,6 +185,9 @@ def tasks_payload() -> dict:
         "total_cost_usd": total_cost if have_cost else None,
         "needs_you": sum(1 for r in rows if r["needs_you"]),
         "active": sum(1 for r in rows if r["active"]),
+        "stalled": stalled,
+        "burn": _lane_burn(),
+        "burn_window_h": _BURN_WINDOW // 3600,
         "stages": STAGES,
         "tasks": rows,
     }
@@ -134,6 +196,41 @@ def tasks_payload() -> dict:
 def feed_payload(task_id: str, n: int = 20) -> dict:
     log = store.task_data_dir(task_id) / "worker.log"
     return {"id": task_id, "feed": render.summarize_stream(log, n=n)}
+
+
+_MAX_ARTIFACT = 24000  # cap what the board ships per artifact view
+
+
+def artifact_payload(task_id: str, kind: str) -> dict:
+    """A read-only artifact for the card drill-in: the diff, plan.md, or evidence."""
+    meta = store.load_meta(task_id)
+    wt = Path(meta.worktree)
+    try:
+        if kind == "plan":
+            p = wt / "plan.md"
+            text = p.read_text(encoding="utf-8", errors="replace") if p.exists() else "(no plan.md)"
+        elif kind == "diff":
+            from . import proc
+            from .repoconfig import load_repo_config
+
+            target = load_repo_config(wt).target_branch
+            r = proc.run(
+                ["git", "diff", f"origin/{target}...HEAD"], cwd=wt, ok_rc=(0, 1, 128)
+            )
+            text = r.out or "(no diff vs origin/" + target + ")"
+        elif kind == "evidence":
+            ev = store.task_data_dir(task_id) / "evidence"
+            files = sorted(f for f in ev.iterdir() if f.is_file()) if ev.exists() else []
+            parts = [
+                f"### {f.name}\n{f.read_text(encoding='utf-8', errors='replace')[:4000]}"
+                for f in files
+            ]
+            text = "\n\n".join(parts) or "(no evidence files)"
+        else:
+            return {"error": f"unknown artifact {kind!r}"}
+    except Exception as e:  # noqa: BLE001 - a missing worktree/file must not 500 the board
+        text = f"({kind} unavailable: {type(e).__name__}: {e})"
+    return {"id": task_id, "kind": kind, "text": text[:_MAX_ARTIFACT]}
 
 
 def stop_task(task_id: str) -> dict:
@@ -381,6 +478,9 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/feed"):
                 tid = u.path[len("/api/task/") : -len("/feed")]
                 self._json(feed_payload(tid))
+            elif u.path.startswith("/api/task/") and u.path.endswith("/artifact"):
+                tid = u.path[len("/api/task/") : -len("/artifact")]
+                self._json(artifact_payload(tid, q.get("kind", ["diff"])[0]))
             elif u.path == "/api/repos":
                 self._json(list_repos())
             elif u.path == "/api/issues":
