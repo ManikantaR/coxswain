@@ -99,6 +99,24 @@ def test_catalog_is_well_formed_and_matches_lane_defaults():
             assert defaults[0]["model"] == models._LANE_IMPL_DEFAULT[lane].model
 
 
+def test_catalog_overlay_adds_and_overrides(tmp_path, monkeypatch):
+    overlay = tmp_path / "models.json"
+    overlay.write_text(json.dumps({
+        "claude": [
+            {"model": "claude-sonnet-4-6", "label": "sonnet 4.6 (fast)", "efforts": ["low"]},
+            {"model": "claude-future-9", "label": "future 9", "efforts": ["high"]},
+        ],
+    }), encoding="utf-8")
+    monkeypatch.setenv("COX_MODELS_CATALOG", str(overlay))
+
+    claude = {m["model"]: m for m in models.catalog()["claude"]}
+    assert claude["claude-future-9"]["label"] == "future 9"  # appended
+    assert claude["claude-sonnet-4-6"]["efforts"] == ["low"]  # overridden in place
+    # a missing/broken overlay just falls back to the built-in catalog
+    monkeypatch.setenv("COX_MODELS_CATALOG", str(tmp_path / "nope.json"))
+    assert models.catalog()["claude"] == models.CATALOG["claude"]
+
+
 def test_models_env_override(monkeypatch):
     monkeypatch.setenv("COX_MODEL_REVIEW", "haiku:low")
     spec = models.resolve("reviewer")

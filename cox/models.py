@@ -23,6 +23,7 @@ fallback: silent degradation is how relay shipped Opus when it meant Sonnet.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,7 @@ CATALOG: dict[str, list[dict[str, Any]]] = {
         {"model": "claude-sonnet-5", "label": "sonnet 5", "efforts": ["low", "medium", "high"]},
         {"model": "claude-sonnet-4-6", "label": "sonnet 4.6",
          "efforts": ["low", "medium", "high"], "default": True},
+        {"model": "claude-haiku-4-5", "label": "haiku 4.5", "efforts": ["low", "medium"]},
     ],
     "codex": [
         {"model": "gpt-5.6", "label": "gpt 5.6", "efforts": ["low", "medium", "high"]},
@@ -70,6 +72,50 @@ CATALOG: dict[str, list[dict[str, Any]]] = {
         {"model": "gpt-5.4-mini", "label": "gpt 5.4 mini", "efforts": ["low", "medium", "high"]},
     ],
 }
+
+
+def _catalog_overlay_path() -> Path:
+    raw = os.environ.get("COX_MODELS_CATALOG")
+    return Path(raw).expanduser() if raw else Path.home() / ".config" / "cox" / "models.json"
+
+
+def catalog() -> dict[str, list[dict[str, Any]]]:
+    """CATALOG merged with an optional ~/.config/cox/models.json overlay.
+
+    Stdlib JSON only (no yaml dep). An overlay entry with a new `model` id is
+    appended to that lane; one matching an existing id overrides it (change
+    efforts/default). This is how future models are added without a code change.
+    A malformed overlay falls back to the built-in catalog — it is a UI dropdown
+    list, not the pinning path (models.resolve stays strict), so a typo must not
+    break the dashboard.
+    """
+    merged: dict[str, list[dict[str, Any]]] = {
+        lane: [dict(m) for m in items] for lane, items in CATALOG.items()
+    }
+    path = _catalog_overlay_path()
+    if not path.exists():
+        return merged
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return merged
+    if not isinstance(data, dict):
+        return merged
+    for lane, items in data.items():
+        if not isinstance(items, list):
+            continue
+        base = merged.setdefault(lane, [])
+        by_id = {m.get("model"): i for i, m in enumerate(base)}
+        for entry in items:
+            if not (isinstance(entry, dict) and entry.get("model")):
+                continue
+            mid = entry["model"]
+            if mid in by_id:
+                base[by_id[mid]] = entry
+            else:
+                by_id[mid] = len(base)
+                base.append(entry)
+    return merged
 
 
 class BosunConfigError(RuntimeError):

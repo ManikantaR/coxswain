@@ -21,13 +21,28 @@ from .lanes.codex import parse_codex_jsonl
 from .model import NeedsHumanReason, TaskState
 from .review import _final_text, _review_argv, _wait_for_exit
 
-_STUB_PLAN = "# Plan (stub)\n1. Make the change described in the brief.\n2. Write evidence.\n"
+# Structured handoff shape (mattpocock/handoff pattern): a DIFFERENT engineer,
+# with no shared session, executes this — so the plan is the whole context they
+# get. Reference repo paths rather than pasting code.
+_HANDOFF_SECTIONS = (
+    "## Approach — the strategy in 2-4 sentences.\n"
+    "## Files to touch — bullet list of paths and what changes in each.\n"
+    "## Key decisions — each decision and WHY (the non-obvious choices).\n"
+    "## Assumptions — what you took as given; call out anything uncertain.\n"
+    "## How to verify — the exact commands/checks that prove it works.\n"
+    "## Open questions — anything the implementer or captain must resolve (or 'none')."
+)
+
+_STUB_PLAN = (
+    "# Plan (stub)\n\n## Approach\nMake the change described in the brief.\n\n"
+    "## Files to touch\n- as needed\n\n## How to verify\n- tests pass\n"
+)
 
 _PROMPT = (
-    "You are the ARCHITECT. Read the task and the repository (read-only) and write a "
-    "concise, concrete implementation plan a separate engineer will follow: the files to "
-    "change, the approach, and how to verify. Do NOT write code or make edits. Output ONLY "
-    "the plan as markdown."
+    "You are the ARCHITECT. Read the task and the repository (read-only) and write an "
+    "implementation plan that a SEPARATE engineer — with none of your context — will "
+    "execute. Be concrete and reference repo paths; do not paste large code. Do NOT edit "
+    "anything. Output ONLY markdown with exactly these sections:\n" + _HANDOFF_SECTIONS
 )
 
 

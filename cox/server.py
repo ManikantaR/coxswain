@@ -364,7 +364,7 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
                 html = (
                     _TEMPLATE.read_text(encoding="utf-8")
                     .replace("__TOKEN__", token)
-                    .replace("__CATALOG__", json.dumps(models.CATALOG))
+                    .replace("__CATALOG__", json.dumps(models.catalog()))
                 )
                 body = html.encode()
                 self.send_response(200)

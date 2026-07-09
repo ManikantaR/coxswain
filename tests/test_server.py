@@ -283,7 +283,7 @@ def test_index_injects_model_catalog():
     handler_cls(sock, ("127.0.0.1", 0), SimpleNamespace(server_name="localhost", server_port=80))
     body = sock.value().split(b"\r\n\r\n", 1)[1].decode()
     assert "__CATALOG__" not in body  # placeholder was substituted
-    assert json.dumps(models.CATALOG) in body  # real catalog embedded for the picker
+    assert json.dumps(models.catalog()) in body  # merged catalog embedded for the picker
 
 
 def test_http_requires_token_and_serves_tasks():
