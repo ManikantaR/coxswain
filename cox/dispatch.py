@@ -33,8 +33,11 @@ def active_worker_count() -> int:
 
 
 def render_brief(
-    *, title: str, body: str, lane: str, worktree_path: Path, task_id: str, with_plan: bool = False
+    *, title: str, body: str, lane: str, worktree_path: Path, task_id: str,
+    repo: str = "", with_plan: bool = False,
 ) -> str:
+    from . import rules
+
     tpl = _TEMPLATE.read_text(encoding="utf-8")
     if with_plan:
         body = (
@@ -42,6 +45,9 @@ def render_brief(
             "An architect drafted an implementation plan at `plan.md` in the worktree "
             "root. Read it first and follow it; deviate only where it is clearly wrong."
         )
+    rb = rules.rules_block(repo) if repo else ""
+    if rb:  # compounding lessons first, so the implementer reads them up front (P1)
+        body = f"{rb}\n\n{body}"
     return tpl.format(
         title=title,
         body=body,
@@ -63,8 +69,8 @@ def spawn_implementer(
     task_id = meta.id
     model = models.parse_spec(meta.model)
     brief_text = render_brief(
-        title=title, body=body, lane=meta.lane,
-        worktree_path=Path(meta.worktree), task_id=task_id, with_plan=with_plan,
+        title=title, body=body, lane=meta.lane, worktree_path=Path(meta.worktree),
+        task_id=task_id, repo=meta.repo, with_plan=with_plan,
     )
     brief_path = store.task_data_dir(task_id) / "brief.md"
     brief_path.parent.mkdir(parents=True, exist_ok=True)

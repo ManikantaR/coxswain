@@ -286,6 +286,7 @@ function render(s){
       + '<div class="actions">'
       +   VIEWS.map(v => '<button class="view-btn" data-kind="'+v+'">'+v+'</button>').join('')
       +   (needsPlan ? '<button class="approve approve-btn">Approve plan</button>' : '')
+      +   (t.state==="needs_human" ? '<button class="rule-btn" title="capture a lesson so it is not repeated">+ rule</button>' : '')
       +   (t.active ? '<button class="stop stop-btn">Stop</button>' : '')
       + '</div>'
       + '<div class="feed'+(view.has(t.id)?' open':'')+'"></div>'
@@ -312,6 +313,14 @@ function render(s){
     if(stop) stop.onclick = async () => {
       if(!confirm("Stop "+id+"? This kills the worker.")) return;
       await fetch(q("/api/task/"+id+"/stop"), {method:"POST"});
+    };
+    const rule = card.querySelector(".rule-btn");
+    if(rule) rule.onclick = async () => {
+      const text = prompt("New rule for this repo — a one-line lesson the implementer must not repeat:");
+      if(!text || !text.trim()) return;
+      const d = await (await fetch(q("/api/task/"+id+"/promote-rule"),
+        {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({text})})).json();
+      rule.textContent = d.added ? "✓ rule ("+d.count+")" : "· dup";
     };
     const appr = card.querySelector(".approve-btn");
     if(appr) appr.onclick = async () => {

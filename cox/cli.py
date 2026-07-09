@@ -179,6 +179,17 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rule(args: argparse.Namespace) -> int:
+    rules = _pkg_mod("rules")
+    if args.action == "add":
+        ok = rules.add_rule(args.repo, args.text)
+        print(("added" if ok else "skipped (empty/duplicate)") + f" rule for {args.repo}")
+        return 0
+    for ln in rules.list_rules(args.repo) or ["(no rules yet)"]:
+        print(ln)
+    return 0
+
+
 def _cmd_plan_finalize(args: argparse.Namespace) -> int:
     plan = _pkg_mod("plan")
     meta = plan.finalize(args.task_id)
@@ -337,6 +348,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--lane", default="claude", choices=list(_LANES))
     s.add_argument("--model", default=None, help="override impl model, e.g. opus:high (hard tasks)")
     s.set_defaults(func=_cmd_dispatch)
+
+    s = sub.add_parser("rule", help="compounding repo-rules injected into future briefs (P1)")
+    s.add_argument("action", nargs="?", default="list", choices=["list", "add"])
+    s.add_argument("repo", help="repo name (matches TaskMeta.repo)")
+    s.add_argument("text", nargs="?", default="", help="the one-line rule (for add)")
+    s.set_defaults(func=_cmd_rule)
 
     s = sub.add_parser("plan-finalize", help="capture the architect's plan.md, then gate/implement")
     s.add_argument("task_id")

@@ -414,6 +414,17 @@ def _plan_label(meta) -> str:
     return base + (" +approve" if meta.plan_approval else "")
 
 
+def promote_rule(task_id: str, text: str) -> dict:
+    """Add a captain-approved compounding rule for this task's repo (P1)."""
+    from . import rules
+
+    meta = store.load_meta(task_id)
+    if not (text or "").strip():
+        return {"error": "rule text required"}
+    added = rules.add_rule(meta.repo, text)
+    return {"repo": meta.repo, "added": added, "count": len(rules.list_rules(meta.repo))}
+
+
 def approve_plan(task_id: str) -> dict:
     """Captain approves a parked plan → the implementer starts."""
     from . import plan
@@ -524,6 +535,10 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/approve-plan"):
                 tid = u.path[len("/api/task/") : -len("/approve-plan")]
                 out = approve_plan(tid)
+                self._json(out, 400 if out.get("error") else 200)
+            elif u.path.startswith("/api/task/") and u.path.endswith("/promote-rule"):
+                tid = u.path[len("/api/task/") : -len("/promote-rule")]
+                out = promote_rule(tid, self._read_json().get("text", ""))
                 self._json(out, 400 if out.get("error") else 200)
             elif u.path == "/api/repos/add":
                 out = add_repo(self._read_json().get("ref", ""))

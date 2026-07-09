@@ -260,6 +260,37 @@ def test_dispatch_task_passes_plan_slot(monkeypatch):
     assert out["state"] == "planning"
 
 
+def test_promote_rule_and_brief_injection(tmp_path):
+    from cox import dispatch, rules
+    from cox.model import DispatchPath, TaskMeta
+
+    _mk("t-rule", TaskState.NEEDS_HUMAN, NeedsHumanReason.REVIEW_FINDINGS)
+    store.save_meta(TaskMeta(
+        id="t-rule", repo="myrepo", worktree=str(tmp_path), branch="cox/x", lane="claude",
+        model="sonnet:medium", path=DispatchPath.FULL, state=TaskState.NEEDS_HUMAN,
+        reason=NeedsHumanReason.REVIEW_FINDINGS,
+    ))
+    out = server.promote_rule("t-rule", "always run mypy before committing")
+    assert out["added"] is True and out["count"] == 1
+    dup = server.promote_rule("t-rule", "always run mypy before committing")
+    assert dup["added"] is False  # duplicate not re-added
+    assert "error" in server.promote_rule("t-rule", "   ")
+
+    # the rule is injected into a future implementer brief for that repo
+    brief = dispatch.render_brief(
+        title="t", body="do it", lane="claude", worktree_path=tmp_path,
+        task_id="t-rule", repo="myrepo",
+    )
+    assert "Learned rules" in brief and "always run mypy" in brief
+    # a repo with no rules injects nothing
+    plain = dispatch.render_brief(
+        title="t", body="b", lane="claude", worktree_path=tmp_path,
+        task_id="t-rule", repo="other",
+    )
+    assert "Learned rules" not in plain
+    assert rules.list_rules("myrepo")  # persisted in cox-home, survives the worktree
+
+
 def test_approve_plan_surfaces_and_routes(monkeypatch):
     from cox import plan
 
