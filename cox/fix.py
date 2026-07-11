@@ -53,6 +53,17 @@ def fix(task_id: str, notes: str | None = None) -> TaskMeta:
     feedback = assemble_feedback(task_id, notes)
     worktree = Path(meta.worktree)
     log_path = store.task_data_dir(task_id) / "worker.log"
+
+    # P5: resuming into a near-rot session degrades the fix — warn the captain.
+    # (feedback is already findings-only, so we add no context; but a bloated
+    # session should be finished with a fresh dispatch rather than more resumes.)
+    from . import context
+
+    fill = context.fill_pct(context.context_tokens(log_path))
+    if fill >= 80:
+        store.append_status(
+            task_id, f"warn: session context ~{fill}% of rot line — consider a fresh dispatch"
+        )
     pid_path = store.task_state_dir(task_id) / "pid"
     get_lane(meta.lane).resume(
         session_id=meta.session_id,

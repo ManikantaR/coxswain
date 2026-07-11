@@ -133,6 +133,14 @@ def _idle_secs(task_id: str) -> float | None:
     return (time.time() - max(mtimes)) if mtimes else None
 
 
+def _ctx_pct(task_id: str) -> int | None:
+    """Session context-fill % vs the rot line (D5), or None if unknown."""
+    from . import context
+
+    tokens = context.context_tokens(store.task_data_dir(task_id) / "worker.log")
+    return context.fill_pct(tokens) if tokens else None
+
+
 def _criteria_summary(task_id: str) -> dict | None:
     """Compact acceptance-criteria roll-up for the card, or None if none set."""
     from . import acceptance
@@ -191,6 +199,7 @@ def tasks_payload() -> dict:
                 "stale": stale,
                 "idle_secs": int(idle) if idle is not None else None,
                 "criteria": _criteria_summary(tid),
+                "ctx_pct": _ctx_pct(tid) if active else None,
             }
         )
     # needs-you first, then active, then the rest — the "alert" ordering

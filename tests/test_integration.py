@@ -201,6 +201,60 @@ def test_review_runs_on_codex_lane_when_selected(tmp_path, monkeypatch):
     assert tout == 2 and cost is None
 
 
+# --- context-fill estimate (P5/D5) ---
+def test_context_fill_from_claude_and_codex_logs(tmp_path):
+    import json
+
+    from cox import context
+
+    claude = tmp_path / "c.log"
+    claude.write_text("\n".join([
+        json.dumps({"type": "result", "usage": {"input_tokens": 120000,
+                                                 "cache_read_input_tokens": 60000}}),
+    ]), encoding="utf-8")
+    assert context.context_tokens(claude) == 180000
+    assert context.fill_pct(180000) == 51  # of the 350k rot line
+
+    codex = tmp_path / "x.log"
+    codex.write_text(json.dumps(
+        {"type": "turn.completed", "usage": {"input_tokens": 300000, "cached_input_tokens": 70000}}
+    ), encoding="utf-8")
+    assert context.context_tokens(codex) == 370000
+    assert context.fill_pct(370000) == 100  # capped at 100
+    assert context.fill_pct(0) == 0
+
+
+def test_fix_warns_on_near_rot_session(tmp_path, monkeypatch):
+    import json
+
+    from cox import fix, store
+    from cox.model import DispatchPath, TaskMeta, TaskState
+
+    tid = "repo-rot-1"
+    store.save_meta(TaskMeta(
+        id=tid, repo="r", worktree=str(tmp_path), branch="cox/x", lane="stub",
+        model="stub:medium", path=DispatchPath.FULL, state=TaskState.GATING,
+        session_id="s1", fix_rounds=0,
+    ))
+    log = store.task_data_dir(tid) / "worker.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        json.dumps({"type": "result", "usage": {"input_tokens": 320000}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(fix, "get_lane", lambda lane: _NoopLane())
+
+    fix.fix(tid)
+    status = (store.task_data_dir(tid) / "status.log").read_text()
+    assert "rot line" in status  # 320k/350k ~ 91% -> warned
+
+
+class _NoopLane:
+    def resume(self, **kw):
+        from cox.lanes.base import SpawnHandle
+
+        return SpawnHandle(pid=1, log_path=kw["log_path"])
+
+
 # --- boundaries + file-cap gate enforcement (P3) + config (P4) ---
 def test_repoconfig_parses_boundaries_and_max_files(tmp_path):
     from cox.repoconfig import load_repo_config

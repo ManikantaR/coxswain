@@ -27,6 +27,7 @@
   .burnpill { color:var(--dim); } .burnpill b { color:#6cb6ff; }
   .stale { color:var(--warn); }
   .crit { color:var(--ok); } .crit.bad { color:var(--bad); }
+  .ctx { color:var(--dim); } .ctx.bad { color:var(--warn); }
   .card.stalled { border-color:#3d2f12; }
   button { font:inherit; cursor:pointer; border:1px solid var(--line);
     background:var(--panel2); color:var(--fg); border-radius:8px; padding:6px 12px; }
@@ -270,7 +271,7 @@ function render(s){
   // any open feeds (the thing you're actively watching).
   const sig = JSON.stringify(s.paused) + "|" + JSON.stringify(
     s.tasks.map(t => [t.id, t.state, t.reason, t.cost_usd, t.last_status, t.pr_url, t.active, t.stale,
-      t.criteria, t.stage && [t.stage.i, t.stage.status, t.stage.fix_rounds]]));
+      t.criteria, t.ctx_pct, t.stage && [t.stage.i, t.stage.status, t.stage.fix_rounds]]));
   if(sig === lastSig){ refreshOpen(); return; }
   lastSig = sig;
 
@@ -287,11 +288,12 @@ function render(s){
     const stale = t.stale ? ' · <span class="stale">⚠ stalled '+Math.round(t.idle_secs/60)+'m</span>' : "";
     const crit = t.criteria ? ' · <span class="crit'+(t.criteria.failed?' bad':'')+'">'+
       (t.criteria.failed ? ('⚠ '+t.criteria.failed+' failed') : ('✓ '+t.criteria.passed+'/'+t.criteria.total))+'</span>' : "";
+    const ctx = (t.ctx_pct!=null) ? ' · <span class="ctx'+(t.ctx_pct>=70?' bad':'')+'">ctx '+t.ctx_pct+'%</span>' : "";
     const needsPlan = t.state==="needs_human" && t.reason==="plan-review";
     html += '<div class="card'+(t.needs_you?' needs':'')+(t.stale?' stalled':'')+'" data-id="'+esc(t.id)+'">'
       + '<div class="row"><span class="badge '+cls+'">'+label+'</span>'
       + '<span class="tid">'+esc(t.id)+'</span></div>'
-      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+pl+rev+cost+crit+stale+pr+'</div>'
+      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+pl+rev+cost+crit+ctx+stale+pr+'</div>'
       + pipeHTML(t.stage)
       + (t.last_status ? '<div class="last">'+esc(t.last_status)+'</div>' : '')
       + '<div class="actions">'
