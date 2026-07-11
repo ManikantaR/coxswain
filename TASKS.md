@@ -67,16 +67,16 @@
 > **2026-07-09 research landed** ([docs/RESEARCH-loop-engineering.md](docs/RESEARCH-loop-engineering.md),
 > sourced from Karpathy/Cherny/Osmani/Steinberger + handoff/model passes). Applied: corrected codex ids
 > (gpt-5.6 / gpt-5.5-mini don't exist → gpt-5.5 / gpt-5.4 / gpt-5.4-mini); plan.md "open questions" now
-> required. **Ranked backlog (P1≈D1≈D2 > P2 > D3 > P3 > P4≈D4 > P5≈D5 > P6 > P7):**
-> - **P1** compounding repo-rules (review findings → git-tracked AGENTS.md, injected into future prompts) — **BUILDING FIRST**
-> - **P2**+**D2** per-task acceptance criteria + implementer self-check before gate + card checklist
-> - **D1** per-stage timing + fix-round/cycle-time sparkline (per-task JSON history)
-> - **D3** findings→rules one-click promote · **P3** mechanical auto-STOP on 🚫-boundary/budget
-> - **P4** plan.md quality lint (Boundaries + criteria) · **D4** blast-radius/boundary badge
-> - **P5** context-rot-aware fix resume (findings-only) · **D5** context-fill % vs ~300–400k rot line
-> - **P6** autonomy presets (plan-gate+effort only) · **P7** blast-radius/task-split advisory
-> - **cox-models-refresh skill** (mirror relay-models-refresh: `ant models list`/`codex debug models` → diff → write ~/.config/cox/models.json)
-> - **re-run this research** ~every 2 months (models + practices shift)
+> required. **Ranked backlog — ALL SHIPPED 2026-07-09/11 (93 tests green):**
+> - ✅ **P1** compounding repo-rules (cox/rules.py; findings → ~/cox-home/rules/<repo>.md, injected into briefs; `cox rule`, `+ rule` btn)
+> - ✅ **P2**+**D2** acceptance criteria + self-check (cox/acceptance.py; from plan or dispatch; selfcheck.json; card ✓n/m + Checklist view)
+> - ✅ **D1** cycle-time + fix-round trend (store history.jsonl; 📈 sparklines + ↑ rising drift flag)
+> - ✅ **D3** findings view · ✅ **P3** gate boundary/max_files auto-red (repo.yml boundaries)
+> - ✅ **P4** plan.md section lint · ✅ **D4** blast-radius badge (git numstat, 🚫/over flag)
+> - ✅ **P5** near-rot fix-resume warning (cox/context.py) · ✅ **D5** ctx N% card gauge vs 350k rot line
+> - ✅ **P6** autonomy presets (fast/standard/high-scrutiny → effort+gate) · ✅ **P7** blast advisory at plan time
+> - ⏳ **cox-models-refresh skill** (mirror relay-models-refresh: `ant models list`/`codex debug models` → diff → write ~/.config/cox/models.json) — verify CLI names on target machine first
+> - ⏳ **re-run this research** ~every 2 months (models + practices shift)
 > Rejected (validated our design): parallel-on-main, auto-merge, reviewer retry loops, impl→review handoff.
 > **Owed M0 exit criteria:** second-repo run, parallel AFK batch, crash-recovery, first real-agent plan-phase run.
 >
