@@ -83,6 +83,11 @@
   a { color:var(--accent); }
   .empty { color:var(--dim); text-align:center; padding:40px 0; }
   .off { color:var(--bad); }
+  #trend { border-bottom:1px solid var(--line); background:var(--panel); padding:12px 16px;
+    display:flex; gap:22px; flex-wrap:wrap; align-items:center; }
+  .tstat { font-size:13px; color:var(--dim); display:flex; align-items:center; gap:8px; }
+  .tstat b { color:var(--fg); } .tstat b.bad { color:var(--bad); }
+  .tstat .dim { color:var(--dim); }
   #dispatch { border-bottom:1px solid var(--line); background:var(--panel); }
   .dform { max-width:820px; margin:0 auto; padding:14px 16px; display:grid; gap:8px; }
   .dform input, .dform textarea, .dform select {
@@ -114,8 +119,10 @@
   <span class="spacer"></span>
   <span id="conn" class="pill">connecting…</span>
   <button id="new-btn">＋ Dispatch</button>
+  <button id="trend-btn" title="cycle-time &amp; fix-round trend">📈</button>
   <button id="pause" class="warn">Pause</button>
 </header>
+<section id="trend" hidden></section>
 <section id="dispatch" hidden>
   <div class="dform">
     <div class="drow">
@@ -338,6 +345,32 @@ function render(s){
 document.getElementById("pause").onclick = async (e) => {
   const resume = e.target.textContent === "Resume";
   await fetch(q(resume ? "/api/resume" : "/api/pause"), {method:"POST"});
+};
+
+// cycle-time + fix-round trend (D1)
+function sparkline(vals, color){
+  if(!vals.length) return "";
+  const w=120, h=22, max=Math.max(...vals,1), min=Math.min(...vals,0), rng=(max-min)||1;
+  const pts=vals.map((v,i)=>{const x=vals.length>1?i/(vals.length-1)*w:0;
+    return x.toFixed(1)+","+(h-((v-min)/rng)*h).toFixed(1);}).join(" ");
+  return '<svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><polyline fill="none" stroke="'+
+    color+'" stroke-width="1.5" points="'+pts+'"/></svg>';
+}
+const mins = (s) => s>=60 ? (s/60).toFixed(s>=600?0:1)+"m" : s+"s";
+async function loadTrend(){
+  const el = document.getElementById("trend");
+  const d = await (await fetch(q("/api/history"))).json();
+  el.innerHTML = d.count ?
+    '<div class="tstat">landed <b>'+d.count+'</b></div>'+
+    '<div class="tstat">median cycle <b>'+mins(d.median_cycle_secs)+'</b>'+sparkline(d.cycles,"#6cb6ff")+'</div>'+
+    '<div class="tstat">fix rounds/task <b'+(d.fix_rounds_rising?' class="bad"':'')+'>'+d.avg_fix_rounds+
+      (d.fix_rounds_rising?" ↑ rising":"")+'</b>'+sparkline(d.fixes,d.fix_rounds_rising?"#f85149":"#3fb950")+'</div>'
+    : '<span class="dim">no landed tasks yet</span>';
+}
+document.getElementById("trend-btn").onclick = () => {
+  const s = document.getElementById("trend");
+  s.hidden = !s.hidden;
+  if(!s.hidden) loadTrend();
 };
 
 // dispatch-from-UI (manual captain dispatch)

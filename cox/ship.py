@@ -59,6 +59,20 @@ def ship(task_id: str, repo_path: Path, title: str) -> TaskMeta:
     return meta
 
 
+def _record_history(meta: TaskMeta) -> None:
+    """Log a landed task for the cross-task cycle-time / fix-round trend (D1)."""
+    import time
+
+    tin, tout, cost = store.cost_total(meta.id)
+    fix_rounds = sum(1 for e in store.read_cost(meta.id) if "fix" in e.phase)
+    cycle = max(0.0, time.time() - (meta.dispatched_at or time.time()))
+    store.append_history({
+        "id": meta.id, "repo": meta.repo, "lane": meta.lane, "ts": time.time(),
+        "cycle_secs": int(cycle), "fix_rounds": fix_rounds,
+        "tokens": tin + tout, "cost_usd": cost,
+    })
+
+
 def merge(task_id: str, repo_path: Path) -> TaskMeta:
     """Merge on the captain's word, then attempt fail-closed teardown."""
     meta = store.load_meta(task_id)
@@ -70,6 +84,7 @@ def merge(task_id: str, repo_path: Path) -> TaskMeta:
     meta = replace(meta, state=TaskState.LANDED)
     store.save_meta(meta)
     store.append_status(task_id, "done: merged")
+    _record_history(meta)
     try:
         worktree.remove(
             repo_path,

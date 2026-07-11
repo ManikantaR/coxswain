@@ -97,6 +97,20 @@ def test_feed_payload_uses_renderer():
     assert server.feed_payload("t-feed")["feed"] == ["· hello"]
 
 
+def test_trend_payload_summarizes_history():
+    for i in range(9):
+        store.append_history({
+            "id": f"t{i}", "repo": "r", "lane": "claude", "ts": 1000 + i,
+            "cycle_secs": 60 * (i + 1), "fix_rounds": (2 if i >= 6 else 0),  # rising late
+            "tokens": 100, "cost_usd": 0.1,
+        })
+    t = server.trend_payload()
+    assert t["count"] == 9
+    assert t["median_cycle_secs"] == 300  # median of 60..540
+    assert t["fix_rounds_rising"] is True  # last third jumped from 0 to 2
+    assert t["fixes"][-1] == 2
+
+
 def test_lane_burn_attributes_phases_and_windows():
     import time
 

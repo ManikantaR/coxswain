@@ -213,6 +213,37 @@ def feed_payload(task_id: str, n: int = 20) -> dict:
     return {"id": task_id, "feed": render.summarize_stream(log, n=n)}
 
 
+def _median(xs: list) -> float:
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return 0.0
+    return float(s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2)
+
+
+def trend_payload(n: int = 30) -> dict:
+    """Cross-task cycle-time + fix-round trend from history.jsonl (D1).
+
+    'rising' flags fix-rounds trending up (a quality-drift signal): mean of the
+    recent third vs the older two-thirds."""
+    rows = store.read_history(limit=n)
+    cycles = [int(r.get("cycle_secs", 0)) for r in rows]
+    fixes = [int(r.get("fix_rounds", 0)) for r in rows]
+    rising = False
+    if len(fixes) >= 6:
+        cut = len(fixes) * 2 // 3
+        older, recent = fixes[:cut], fixes[cut:]
+        rising = (sum(recent) / len(recent)) > (sum(older) / len(older)) + 0.5
+    return {
+        "count": len(rows),
+        "cycles": cycles,
+        "fixes": fixes,
+        "median_cycle_secs": _median(cycles),
+        "avg_fix_rounds": round(sum(fixes) / len(fixes), 2) if fixes else 0,
+        "fix_rounds_rising": rising,
+    }
+
+
 _MAX_ARTIFACT = 24000  # cap what the board ships per artifact view
 
 
@@ -522,6 +553,8 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
             elif u.path.startswith("/api/task/") and u.path.endswith("/artifact"):
                 tid = u.path[len("/api/task/") : -len("/artifact")]
                 self._json(artifact_payload(tid, q.get("kind", ["diff"])[0]))
+            elif u.path == "/api/history":
+                self._json(trend_payload())
             elif u.path == "/api/repos":
                 self._json(list_repos())
             elif u.path == "/api/issues":

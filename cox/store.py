@@ -113,3 +113,24 @@ def cost_total(task_id: str) -> tuple[int, int, float | None]:
     costs = [e.cost_usd for e in entries]
     total = sum(c for c in costs if c is not None) if all(c is not None for c in costs) else None
     return tin, tout, total
+
+
+def append_history(record: dict) -> None:
+    """Append one completed-task record to state/history.jsonl (D1 trend log)."""
+    home.ensure_home()
+    _append_line(home.state_dir() / "history.jsonl", json.dumps(record))
+
+
+def read_history(limit: int = 200) -> list[dict]:
+    """The last `limit` completed-task records, oldest→newest."""
+    p = home.state_dir() / "history.jsonl"
+    if not p.exists():
+        return []
+    rows: list[dict] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+    return rows[-limit:]

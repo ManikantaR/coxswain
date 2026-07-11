@@ -74,6 +74,9 @@ def test_full_loop_stub_lane(git_repo):
     assert m2.pr_url and m2.pr_url.startswith("local://")
     m3 = ship.merge(meta.id, repo)
     assert m3.state is TaskState.LANDED
+    # merge logs a cross-task history record for the trend (D1)
+    hist = store.read_history()
+    assert hist and hist[-1]["id"] == meta.id and "cycle_secs" in hist[-1]
 
 
 def test_plan_phase_with_approval_then_full_loop(git_repo):
