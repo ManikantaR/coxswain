@@ -133,6 +133,20 @@ def _idle_secs(task_id: str) -> float | None:
     return (time.time() - max(mtimes)) if mtimes else None
 
 
+def _criteria_summary(task_id: str) -> dict | None:
+    """Compact acceptance-criteria roll-up for the card, or None if none set."""
+    from . import acceptance
+
+    rows = acceptance.status(task_id)
+    if not rows:
+        return None
+    return {
+        "total": len(rows),
+        "passed": sum(1 for r in rows if r["self"] == "pass"),
+        "failed": sum(1 for r in rows if r["self"] == "fail"),
+    }
+
+
 def _last_status(task_id: str) -> str:
     p = store.task_data_dir(task_id) / "status.log"
     if not p.exists():
@@ -176,6 +190,7 @@ def tasks_payload() -> dict:
                 "plan": _plan_label(m),
                 "stale": stale,
                 "idle_secs": int(idle) if idle is not None else None,
+                "criteria": _criteria_summary(tid),
             }
         )
     # needs-you first, then active, then the rest — the "alert" ordering
@@ -218,6 +233,15 @@ def artifact_payload(task_id: str, kind: str) -> dict:
                 ["git", "diff", f"origin/{target}...HEAD"], cwd=wt, ok_rc=(0, 1, 128)
             )
             text = r.out or "(no diff vs origin/" + target + ")"
+        elif kind == "checklist":
+            from . import acceptance
+
+            rows = acceptance.status(task_id)
+            mark = {"pass": "[x]", "fail": "[FAIL]", "unchecked": "[ ]"}
+            text = "\n".join(
+                f"{mark[r['self']]} {r['item']}" + (f"  — {r['note']}" if r["note"] else "")
+                for r in rows
+            ) or "(no acceptance criteria)"
         elif kind == "evidence":
             ev = store.task_data_dir(task_id) / "evidence"
             files = sorted(f for f in ev.iterdir() if f.is_file()) if ev.exists() else []
@@ -382,6 +406,11 @@ def dispatch_task(payload: dict) -> dict:
     plan_lane = str(payload.get("plan_lane") or "").strip() or None
     plan_model = str(payload.get("plan_model") or "").strip() or None
     plan_approval = bool(payload.get("plan_approval"))
+    # acceptance criteria (P2): a list, or a newline-separated textarea string
+    raw_acc = payload.get("acceptance") or []
+    if isinstance(raw_acc, str):
+        raw_acc = raw_acc.splitlines()
+    acceptance = [s.strip() for s in raw_acc if isinstance(s, str) and s.strip()]
 
     try:
         meta = disp.dispatch(
@@ -396,6 +425,7 @@ def dispatch_task(payload: dict) -> dict:
             plan_lane=plan_lane,
             plan_model=plan_model,
             plan_approval=plan_approval,
+            acceptance=acceptance,
         )
     except Exception as e:  # noqa: BLE001 - surface every dispatch failure to the UI
         return {"error": f"{type(e).__name__}: {e}"}

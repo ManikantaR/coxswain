@@ -36,7 +36,7 @@ def render_brief(
     *, title: str, body: str, lane: str, worktree_path: Path, task_id: str,
     repo: str = "", with_plan: bool = False,
 ) -> str:
-    from . import rules
+    from . import acceptance, rules
 
     tpl = _TEMPLATE.read_text(encoding="utf-8")
     if with_plan:
@@ -45,6 +45,9 @@ def render_brief(
             "An architect drafted an implementation plan at `plan.md` in the worktree "
             "root. Read it first and follow it; deviate only where it is clearly wrong."
         )
+    ac = acceptance.criteria_block(task_id)  # definition-of-done + self-check (P2)
+    if ac:
+        body = f"{body}\n\n{ac}"
     rb = rules.rules_block(repo) if repo else ""
     if rb:  # compounding lessons first, so the implementer reads them up front (P1)
         body = f"{rb}\n\n{body}"
@@ -102,6 +105,7 @@ def dispatch(
     plan_lane: str | None = None,
     plan_model: str | None = None,
     plan_approval: bool = False,
+    acceptance: list[str] | None = None,
 ) -> TaskMeta:
     """Create and spawn a task. Returns its persisted meta (state=working)."""
     home.ensure_home()
@@ -149,6 +153,10 @@ def dispatch(
     # Keep the raw task text for the (possibly deferred) implementer brief.
     store.save_meta(meta)
     _save_task_text(task_id, title, body)
+    if acceptance:
+        from . import acceptance as accept
+
+        accept.save_criteria(task_id, acceptance)
 
     # Plan phase first (DESIGN-VNEXT D14): an architect drafts plan.md, then the
     # implementer runs. Without a plan slot, dispatch straight to the implementer.

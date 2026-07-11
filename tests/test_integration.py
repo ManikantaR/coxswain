@@ -201,6 +201,41 @@ def test_review_runs_on_codex_lane_when_selected(tmp_path, monkeypatch):
     assert tout == 2 and cost is None
 
 
+# --- acceptance criteria + self-check (P2/D2) ---
+def test_acceptance_parse_save_load_and_status():
+    from cox import acceptance, store
+
+    plan = (
+        "## Approach\ndo it\n\n## Acceptance criteria\n"
+        "- [ ] parser handles empty input\n- returns typed error on bad rows\n\n"
+        "## Open questions\nnone\n"
+    )
+    assert acceptance.parse_from_plan(plan) == [
+        "parser handles empty input", "returns typed error on bad rows"
+    ]
+
+    tid = "repo-acc-1"
+    store.task_data_dir(tid).mkdir(parents=True, exist_ok=True)
+    acceptance.save_criteria(tid, ["  a criterion  ", "", "another"])
+    assert acceptance.load_criteria(tid) == ["a criterion", "another"]
+    assert "Acceptance criteria" in acceptance.criteria_block(tid)
+    assert "selfcheck.json" in acceptance.criteria_block(tid)
+
+    # before any self-check, every item is 'unchecked'
+    st = acceptance.status(tid)
+    assert [r["self"] for r in st] == ["unchecked", "unchecked"]
+    # the implementer's self-check merges in by matching item text
+    import json as _json
+
+    acceptance.selfcheck_path(tid).parent.mkdir(parents=True, exist_ok=True)
+    acceptance.selfcheck_path(tid).write_text(_json.dumps([
+        {"item": "a criterion", "ok": True, "note": "verified"},
+        {"item": "another", "ok": False, "note": "still broken"},
+    ]))
+    st = {r["item"]: r["self"] for r in acceptance.status(tid)}
+    assert st == {"a criterion": "pass", "another": "fail"}
+
+
 # --- narrated activity feed renderer (frugal peek + dashboard brick) ---
 def test_summarize_stream_renders_compact_feed(tmp_path):
     import json

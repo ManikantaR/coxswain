@@ -16,13 +16,19 @@ from .base import RunResult, SpawnHandle
 
 # A self-contained worker: touch a file, add evidence, commit, log done.
 _WORKER = r"""
-import sys, subprocess, pathlib, datetime
+import sys, subprocess, pathlib, datetime, json
 wt = pathlib.Path.cwd()
 status = pathlib.Path(sys.argv[1])
 evidence = pathlib.Path(sys.argv[2])
 evidence.mkdir(parents=True, exist_ok=True)
 (wt / "STUB_CHANGE.txt").write_text("stub change %s\n" % datetime.datetime.now().isoformat())
 (evidence / "test-output.txt").write_text("1 passed\n")
+# self-verify against any acceptance criteria (P2)
+acc = status.parent / "acceptance.json"
+if acc.exists():
+    items = json.loads(acc.read_text())
+    (evidence / "selfcheck.json").write_text(json.dumps(
+        [{"item": c, "ok": True, "note": "stub verified"} for c in items]))
 subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
 subprocess.run(["git", "-c", "user.email=stub@cox", "-c", "user.name=stub",
                 "commit", "-q", "-m", "stub: implement brief"], cwd=wt, check=True)

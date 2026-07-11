@@ -99,7 +99,18 @@ def test_plan_phase_with_approval_then_full_loop(git_repo):
     brief = (store.task_data_dir(meta.id) / "brief.md").read_text()
     assert "plan.md" in brief
 
+    # the architect's plan.md carried a 'How to verify' section -> acceptance criteria
+    from cox import acceptance
+
+    assert acceptance.load_criteria(meta.id)  # lifted from the stub plan
+    brief = (store.task_data_dir(meta.id) / "brief.md").read_text()
+    assert "Acceptance criteria" in brief  # injected for the implementer
+
     _wait_for_done(meta.id)
+    # the stub implementer self-verified against the criteria before the gate
+    st = acceptance.status(meta.id)
+    assert st and all(r["self"] == "pass" for r in st)
+
     report = gate.run_gate(meta.id)
     assert report.passed, report.steps
     ship.ship(meta.id, repo, "planned change")

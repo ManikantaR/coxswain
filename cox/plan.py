@@ -104,6 +104,13 @@ def finalize(task_id: str) -> object:
         if cost:
             store.append_cost(task_id, cost)
 
+    # Lift acceptance criteria out of the plan (P2) unless the captain typed some.
+    from . import acceptance
+
+    if not acceptance.load_criteria(task_id):
+        acceptance.save_criteria(task_id, acceptance.parse_from_plan(plan_path.read_text(
+            encoding="utf-8") if plan_path.exists() else ""))
+
     if meta.plan_approval:
         parked = replace(meta, state=TaskState.NEEDS_HUMAN, reason=NeedsHumanReason.PLAN_REVIEW)
         store.save_meta(parked)
