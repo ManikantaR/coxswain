@@ -28,6 +28,7 @@
   .stale { color:var(--warn); }
   .crit { color:var(--ok); } .crit.bad { color:var(--bad); }
   .ctx { color:var(--dim); } .ctx.bad { color:var(--warn); }
+  .blast { color:var(--dim); } .blast.bad { color:var(--warn); }
   .card.stalled { border-color:#3d2f12; }
   button { font:inherit; cursor:pointer; border:1px solid var(--line);
     background:var(--panel2); color:var(--fg); border-radius:8px; padding:6px 12px; }
@@ -143,6 +144,13 @@
     <input id="d-title" placeholder="task title (blank = use the issue title)">
     <textarea id="d-body" rows="3" placeholder="task details (blank = use the issue body)"></textarea>
     <textarea id="d-acceptance" rows="2" placeholder="acceptance criteria — one per line (blank = derive from the plan)"></textarea>
+    <div class="drow">
+      <select id="d-preset" title="autonomy preset — tunes effort + the plan gate">
+        <option value="standard">autonomy · standard</option>
+        <option value="fast">autonomy · fast (low effort, no gate)</option>
+        <option value="careful">autonomy · high-scrutiny (high effort, approve plan)</option>
+      </select>
+    </div>
     <div class="slot">plan <span class="slot-note">· architect drafts plan.md first (optional)</span></div>
     <div class="drow">
       <select id="d-plan-lane"><option value="">none · skip planning</option><option value="claude">claude</option><option value="codex">codex</option></select>
@@ -271,7 +279,7 @@ function render(s){
   // any open feeds (the thing you're actively watching).
   const sig = JSON.stringify(s.paused) + "|" + JSON.stringify(
     s.tasks.map(t => [t.id, t.state, t.reason, t.cost_usd, t.last_status, t.pr_url, t.active, t.stale,
-      t.criteria, t.ctx_pct, t.stage && [t.stage.i, t.stage.status, t.stage.fix_rounds]]));
+      t.criteria, t.ctx_pct, t.blast, t.stage && [t.stage.i, t.stage.status, t.stage.fix_rounds]]));
   if(sig === lastSig){ refreshOpen(); return; }
   lastSig = sig;
 
@@ -289,11 +297,12 @@ function render(s){
     const crit = t.criteria ? ' · <span class="crit'+(t.criteria.failed?' bad':'')+'">'+
       (t.criteria.failed ? ('⚠ '+t.criteria.failed+' failed') : ('✓ '+t.criteria.passed+'/'+t.criteria.total))+'</span>' : "";
     const ctx = (t.ctx_pct!=null) ? ' · <span class="ctx'+(t.ctx_pct>=70?' bad':'')+'">ctx '+t.ctx_pct+'%</span>' : "";
+    const blast = t.blast ? ' · <span class="blast'+(t.blast.flag?' bad':'')+'">Δ '+t.blast.files+'f +'+t.blast.added+'/-'+t.blast.removed+'</span>' : "";
     const needsPlan = t.state==="needs_human" && t.reason==="plan-review";
     html += '<div class="card'+(t.needs_you?' needs':'')+(t.stale?' stalled':'')+'" data-id="'+esc(t.id)+'">'
       + '<div class="row"><span class="badge '+cls+'">'+label+'</span>'
       + '<span class="tid">'+esc(t.id)+'</span></div>'
-      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+pl+rev+cost+crit+ctx+stale+pr+'</div>'
+      + '<div class="meta">'+esc(t.lane)+'/'+esc(t.model)+pl+rev+cost+crit+ctx+blast+stale+pr+'</div>'
       + pipeHTML(t.stage)
       + (t.last_status ? '<div class="last">'+esc(t.last_status)+'</div>' : '')
       + '<div class="actions">'
@@ -408,6 +417,14 @@ pLane.onchange = () => {
   if(on) fillModels(pLane.value, pModel, pEffort);
 };
 pModel.onchange = () => fillEfforts(pLane.value, pModel, pEffort);
+// autonomy preset (P6): tunes ONLY effort + the plan-approval gate (never review count)
+function setEffort(sel, val){ if([...sel.options].some(o=>o.value===val)) sel.value=val; }
+document.getElementById("d-preset").onchange = (e) => {
+  const p = e.target.value, approve = document.getElementById("d-plan-approve");
+  if(p==="fast"){ setEffort(dEffort,"low"); if(approve) approve.checked=false; }
+  else if(p==="careful"){ setEffort(dEffort,"high"); if(approve) approve.checked=true; }
+  else { setEffort(dEffort,"medium"); }
+};
 
 // repo picker: dropdown of repos in the clone-root + add/clone
 const repoSel = document.getElementById("d-repo");

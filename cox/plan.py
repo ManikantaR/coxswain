@@ -112,6 +112,7 @@ def finalize(task_id: str) -> object:
         acceptance.save_criteria(task_id, acceptance.parse_from_plan(plan_path.read_text(
             encoding="utf-8") if plan_path.exists() else ""))
     _lint_plan(task_id, plan_path)  # P4: flag a thin plan before the captain approves
+    _blast_advisory(task_id, plan_path)  # P7: warn on an oversize planned change
 
     if meta.plan_approval:
         parked = replace(meta, state=TaskState.NEEDS_HUMAN, reason=NeedsHumanReason.PLAN_REVIEW)
@@ -149,6 +150,25 @@ def _lint_plan(task_id: str, plan_path: Path) -> None:
     missing = [s for s in _REQUIRED_SECTIONS if s not in text]
     if missing:
         store.append_status(task_id, "plan lint: thin plan — missing " + ", ".join(missing))
+
+
+_BLAST_WARN = 15
+
+
+def _blast_advisory(task_id: str, plan_path: Path) -> None:
+    """P7: count files listed under 'Files to touch'; warn if the change is big."""
+    if not plan_path.exists():
+        return
+    n, grab = 0, False
+    for line in plan_path.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            grab = "files to touch" in line.lower()
+        elif grab and line.strip().startswith(("-", "*")):
+            n += 1
+    if n > _BLAST_WARN:
+        store.append_status(
+            task_id, f"blast advisory: plan lists {n} files — consider splitting the task"
+        )
 
 
 def _task_text(task_id: str) -> tuple[str, str]:

@@ -97,6 +97,32 @@ def test_feed_payload_uses_renderer():
     assert server.feed_payload("t-feed")["feed"] == ["· hello"]
 
 
+def test_blast_radius_from_numstat(monkeypatch, tmp_path):
+    from cox import proc, server
+    from cox.model import DispatchPath, TaskMeta
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    meta = TaskMeta(
+        id="t-blast", repo="r", worktree=str(wt), branch="cox/x", lane="claude",
+        model="sonnet:medium", path=DispatchPath.FULL, state=TaskState.GATING,
+    )
+
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["git", "diff"]:
+            return proc.ProcResult(0, "10\t2\tsrc/a.py\n5\t0\tsecrets/key.pem\n", "")
+        return proc.ProcResult(0, "", "")
+
+    monkeypatch.setattr(server.proc if hasattr(server, "proc") else proc, "run", fake_run)
+    monkeypatch.setattr(proc, "run", fake_run)
+    b = server._blast(meta)
+    assert b["files"] == 2 and b["added"] == 15 and b["removed"] == 2
+
+    # a landed task is torn down -> no blast
+    from dataclasses import replace
+    assert server._blast(replace(meta, state=TaskState.LANDED)) is None
+
+
 def test_trend_payload_summarizes_history():
     for i in range(9):
         store.append_history({

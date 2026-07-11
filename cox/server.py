@@ -133,6 +133,45 @@ def _idle_secs(task_id: str) -> float | None:
     return (time.time() - max(mtimes)) if mtimes else None
 
 
+_TERMINAL = {TaskState.LANDED, TaskState.FAILED}
+
+
+def _blast(meta) -> dict | None:
+    """Blast radius (D4): files + ±lines of the task's diff, and a flag if it
+    touches a 🚫 boundary or exceeds max_files. None once torn down/terminal."""
+    import fnmatch
+
+    if meta.state in _TERMINAL:
+        return None
+    wt = Path(meta.worktree)
+    if not wt.exists():
+        return None
+    from . import proc
+    from .repoconfig import load_repo_config
+
+    try:
+        cfg = load_repo_config(wt)
+        r = proc.run(
+            ["git", "diff", "--numstat", f"origin/{cfg.target_branch}...HEAD"],
+            cwd=wt, ok_rc=(0, 1, 128),
+        )
+    except Exception:  # noqa: BLE001 - a missing/odd worktree must not break the board
+        return None
+    files, added, removed, names = 0, 0, 0, []
+    for ln in r.out.splitlines():
+        parts = ln.split("\t")
+        if len(parts) >= 3:
+            files += 1
+            added += int(parts[0]) if parts[0].isdigit() else 0
+            removed += int(parts[1]) if parts[1].isdigit() else 0
+            names.append(parts[2])
+    if files == 0:
+        return None
+    over = bool(cfg.max_files and files > cfg.max_files)
+    boundary = any(fnmatch.fnmatch(n, g) for n in names for g in cfg.boundaries)
+    return {"files": files, "added": added, "removed": removed, "flag": over or boundary}
+
+
 def _ctx_pct(task_id: str) -> int | None:
     """Session context-fill % vs the rot line (D5), or None if unknown."""
     from . import context
@@ -200,6 +239,7 @@ def tasks_payload() -> dict:
                 "idle_secs": int(idle) if idle is not None else None,
                 "criteria": _criteria_summary(tid),
                 "ctx_pct": _ctx_pct(tid) if active else None,
+                "blast": _blast(m),
             }
         )
     # needs-you first, then active, then the rest — the "alert" ordering
