@@ -81,6 +81,13 @@ def run_gate(task_id: str) -> GateReport:
     except proc.BosunProcError as e:
         return _fail(report, "rebase", str(e))
 
+    # 1b. boundaries (P3): the diff must not touch 🚫 paths or blow the files budget
+    viol = _boundary_violation(worktree, cfg)
+    if viol:
+        report.steps["boundaries"] = "red"
+        return _fail(report, "boundaries", viol)
+    report.steps["boundaries"] = "ok"
+
     # 2. test  3. lint  (configured commands are the strong, tokenless path)
     for step, cmd in (("test", cfg.test_cmd), ("lint", cfg.lint_cmd)):
         if not cmd:
@@ -100,6 +107,36 @@ def run_gate(task_id: str) -> GateReport:
 
     _write(task_id, report)
     return report
+
+
+def _changed_files(worktree: Path, target: str) -> list[str]:
+    r = proc.run(
+        ["git", "diff", "--name-only", f"origin/{target}...HEAD"],
+        cwd=worktree, ok_rc=(0, 1, 128),
+    )
+    return [ln.strip() for ln in r.out.splitlines() if ln.strip()]
+
+
+def _boundary_violation(worktree: Path, cfg: RepoConfig) -> str | None:
+    """Return a feedback string if the diff touches a 🚫 path or exceeds max_files."""
+    import fnmatch
+
+    if not cfg.boundaries and cfg.max_files is None:
+        return None
+    files = _changed_files(worktree, cfg.target_branch)
+    hit = [f for f in files if any(fnmatch.fnmatch(f, g) for g in cfg.boundaries)]
+    if hit:
+        return (
+            "the change touches forbidden (🚫 boundary) paths — revert them:\n"
+            + "\n".join(f"  - {f}" for f in hit)
+            + "\nBoundaries (repo.yml): " + ", ".join(cfg.boundaries)
+        )
+    if cfg.max_files is not None and len(files) > cfg.max_files:
+        return (
+            f"the change touches {len(files)} files, over the repo's max_files "
+            f"budget of {cfg.max_files} — split the task or reduce blast radius."
+        )
+    return None
 
 
 def _shell(cmd: str) -> list[str]:

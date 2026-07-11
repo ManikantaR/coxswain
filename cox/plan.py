@@ -35,7 +35,8 @@ _HANDOFF_SECTIONS = (
 
 _STUB_PLAN = (
     "# Plan (stub)\n\n## Approach\nMake the change described in the brief.\n\n"
-    "## Files to touch\n- as needed\n\n## How to verify\n- tests pass\n"
+    "## Files to touch\n- as needed\n\n## How to verify\n- tests pass\n\n"
+    "## Open questions\nnone\n"
 )
 
 _PROMPT = (
@@ -110,6 +111,7 @@ def finalize(task_id: str) -> object:
     if not acceptance.load_criteria(task_id):
         acceptance.save_criteria(task_id, acceptance.parse_from_plan(plan_path.read_text(
             encoding="utf-8") if plan_path.exists() else ""))
+    _lint_plan(task_id, plan_path)  # P4: flag a thin plan before the captain approves
 
     if meta.plan_approval:
         parked = replace(meta, state=TaskState.NEEDS_HUMAN, reason=NeedsHumanReason.PLAN_REVIEW)
@@ -134,6 +136,19 @@ def _proceed(task_id: str) -> object:
     meta = store.load_meta(task_id)
     title, body = _task_text(task_id)
     return dispatch.spawn_implementer(meta, title=title, body=body, with_plan=True)
+
+
+_REQUIRED_SECTIONS = ("approach", "files to touch", "how to verify", "open questions")
+
+
+def _lint_plan(task_id: str, plan_path: Path) -> None:
+    """Advisory: flag a plan missing load-bearing sections (P4) via a status line."""
+    if not plan_path.exists():
+        return
+    text = plan_path.read_text(encoding="utf-8").lower()
+    missing = [s for s in _REQUIRED_SECTIONS if s not in text]
+    if missing:
+        store.append_status(task_id, "plan lint: thin plan — missing " + ", ".join(missing))
 
 
 def _task_text(task_id: str) -> tuple[str, str]:

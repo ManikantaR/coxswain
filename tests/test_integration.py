@@ -201,6 +201,42 @@ def test_review_runs_on_codex_lane_when_selected(tmp_path, monkeypatch):
     assert tout == 2 and cost is None
 
 
+# --- boundaries + file-cap gate enforcement (P3) + config (P4) ---
+def test_repoconfig_parses_boundaries_and_max_files(tmp_path):
+    from cox.repoconfig import load_repo_config
+
+    (tmp_path / ".cox").mkdir()
+    (tmp_path / ".cox" / "repo.yml").write_text(
+        "boundaries:\n  - 'secrets/*'\n  - '*.env'\nmax_files: 5\n", encoding="utf-8"
+    )
+    cfg = load_repo_config(tmp_path)
+    assert cfg.boundaries == ("secrets/*", "*.env") and cfg.max_files == 5
+
+
+def test_gate_boundary_violation(monkeypatch, tmp_path):
+    from cox import gate
+    from cox.repoconfig import RepoConfig
+
+    cfg = RepoConfig(
+        test_cmd=None, lint_cmd=None, review="none", target_branch="main", scm="local",
+        boundaries=("secrets/*", "*.env"), max_files=3,
+    )
+    monkeypatch.setattr(gate, "_changed_files", lambda wt, t: ["src/app.py", "secrets/key.pem"])
+    v = gate._boundary_violation(tmp_path, cfg)
+    assert v and "secrets/key.pem" in v  # 🚫 path touched
+
+    monkeypatch.setattr(gate, "_changed_files", lambda wt, t: ["a", "b", "c", "d"])
+    assert "max_files" in gate._boundary_violation(tmp_path, cfg)  # over budget
+
+    monkeypatch.setattr(gate, "_changed_files", lambda wt, t: ["a", "b"])
+    assert gate._boundary_violation(tmp_path, cfg) is None  # clean
+
+    plain = RepoConfig(
+        test_cmd=None, lint_cmd=None, review="none", target_branch="main", scm="local"
+    )
+    assert gate._boundary_violation(tmp_path, plain) is None  # nothing configured
+
+
 # --- acceptance criteria + self-check (P2/D2) ---
 def test_acceptance_parse_save_load_and_status():
     from cox import acceptance, store

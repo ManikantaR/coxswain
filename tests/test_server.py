@@ -156,6 +156,17 @@ def test_artifact_payload_plan_evidence_and_unknown(tmp_path):
     evd = server.artifact_payload("t-art", "evidence")["text"]
     assert "test-output.txt" in evd and "3 passed" in evd
     assert "error" in server.artifact_payload("t-art", "bogus")
+    # findings view (D3) reads review.json
+    import json as _json
+    (store.task_data_dir("t-art") / "review.json").write_text(_json.dumps({
+        "verdict": "fix",
+        "findings": [{
+            "severity": "high", "action": "auto-fix",
+            "summary": "null deref", "file": "a.py", "line": 7,
+        }],
+    }), encoding="utf-8")
+    fnd = server.artifact_payload("t-art", "findings")["text"]
+    assert "null deref" in fnd and "a.py:7" in fnd
     # a diff with no real git repo degrades to a message, never a crash
     assert "text" in server.artifact_payload("t-art", "diff")
 

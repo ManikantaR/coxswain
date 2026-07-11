@@ -170,7 +170,7 @@
 const TOKEN = "__TOKEN__";
 const CATALOG = __CATALOG__;
 const q = (p) => p + (p.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN);
-const VIEWS = ["feed","diff","plan","checklist","evidence"];
+const VIEWS = ["feed","diff","plan","checklist","findings","evidence"];
 
 // model + effort dropdowns, driven by the per-lane CATALOG
 const EFF_LABEL = {low:"low", medium:"med", high:"high"};

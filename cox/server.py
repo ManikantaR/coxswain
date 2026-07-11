@@ -264,6 +264,15 @@ def artifact_payload(task_id: str, kind: str) -> dict:
                 ["git", "diff", f"origin/{target}...HEAD"], cwd=wt, ok_rc=(0, 1, 128)
             )
             text = r.out or "(no diff vs origin/" + target + ")"
+        elif kind == "findings":
+            p = store.task_data_dir(task_id) / "review.json"
+            data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+            fs = data.get("findings") or []
+            text = "\n".join(
+                f"[{f.get('severity', '?')}/{f.get('action', '?')}] {f.get('summary', '')}"
+                + (f"  ({f.get('file', '')}:{f.get('line', '')})" if f.get("file") else "")
+                for f in fs
+            ) or ("verdict: " + str(data.get("verdict", "(no review yet)")))
         elif kind == "checklist":
             from . import acceptance
 

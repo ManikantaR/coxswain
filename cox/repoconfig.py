@@ -17,6 +17,8 @@ class RepoConfig:
     review: str  # "full" | "none"
     target_branch: str
     scm: str  # github | azdevops | tfs | local
+    boundaries: tuple[str, ...] = ()  # 🚫 never-touch path globs (P3, gate-enforced)
+    max_files: int | None = None  # gate-red if the diff touches more files than this
 
 
 _DEFAULT = RepoConfig(
@@ -37,10 +39,14 @@ def load_repo_config(repo_or_worktree: Path) -> RepoConfig:
         raise BosunConfigError(f"{cfg_path} exists but PyYAML is missing") from None
     data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     commands = data.get("commands", {}) or {}
+    bounds = data.get("boundaries") or []
+    max_files = data.get("max_files")
     return RepoConfig(
         test_cmd=commands.get("test"),
         lint_cmd=commands.get("lint"),
         review=str(data.get("review", "full")),
         target_branch=str(data.get("target_branch", "main")),
         scm=str(data.get("scm", "github")),
+        boundaries=tuple(str(b) for b in bounds if str(b).strip()),
+        max_files=int(max_files) if isinstance(max_files, int) else None,
     )

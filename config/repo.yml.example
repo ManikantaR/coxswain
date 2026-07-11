@@ -11,6 +11,14 @@ review: full                 # full | none  (none = quick-style gate only; docs 
 target_branch: main
 scm: github                  # github | azdevops (V1) | tfs (V1) | local (tests)
 
+# Guardrails (P3): the gate goes RED if the diff touches a 🚫 boundary path or
+# exceeds the files budget — a deterministic leash, zero tokens.
+# boundaries:               # never-touch path globs (fnmatch against changed files)
+#   - "secrets/*"
+#   - "*.env"
+#   - ".github/workflows/*"
+# max_files: 30             # gate-red if the change touches more files than this
+
 # Optional model overrides for this repo (else ~/.config/cox/models.yml):
 # models:
 #   implementer: { model: claude-sonnet-5, effort: medium }
