@@ -120,6 +120,37 @@ def test_plan_phase_with_approval_then_full_loop(git_repo):
     assert ship.merge(meta.id, repo).state is TaskState.LANDED
 
 
+def test_watcher_auto_advances_plan(git_repo):
+    # the stall the MyMoney run hit: a PLANNING task must not sit forever —
+    # the watcher finalizes it once the architect is done (approval OFF -> WORKING).
+    from cox import watch
+
+    repo = git_repo()
+    _add_repo_config(repo)
+    m = dispatch.dispatch(
+        repo_path=repo, title="t", body="b", path=DispatchPath.FULL,
+        lane="stub", plan_lane="stub", plan_approval=False,
+    )
+    assert m.state is TaskState.PLANNING
+    watch.scan_once()  # <- no manual `cox plan-finalize` needed anymore
+    assert store.load_meta(m.id).state is TaskState.WORKING
+
+
+def test_watcher_auto_advances_plan_to_approval_gate(git_repo):
+    from cox import watch
+
+    repo = git_repo()
+    _add_repo_config(repo)
+    m = dispatch.dispatch(
+        repo_path=repo, title="t", body="b", path=DispatchPath.FULL,
+        lane="stub", plan_lane="stub", plan_approval=True,
+    )
+    watch.scan_once()
+    meta = store.load_meta(m.id)
+    assert meta.state is TaskState.NEEDS_HUMAN
+    assert meta.reason is NeedsHumanReason.PLAN_REVIEW
+
+
 def test_plan_phase_without_approval_goes_straight_to_working(git_repo):
     repo = git_repo()
     _add_repo_config(repo)

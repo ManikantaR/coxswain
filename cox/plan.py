@@ -19,7 +19,7 @@ from pathlib import Path
 from . import models, proc, store
 from .lanes.codex import parse_codex_jsonl
 from .model import NeedsHumanReason, TaskState
-from .review import _final_text, _review_argv, _wait_for_exit
+from .review import _final_text, _review_argv
 
 # Structured handoff shape (mattpocock/handoff pattern): a DIFFERENT engineer,
 # with no shared session, executes this — so the plan is the whole context they
@@ -90,10 +90,11 @@ def finalize(task_id: str) -> object:
 
     if lane != "stub":  # capture the architect's output into plan.md (+ record cost)
         log_path = store.task_data_dir(task_id) / "plan.log"
-        pid_path = store.task_state_dir(task_id) / "plan.pid"
-        pid = _read_pid(pid_path)
-        if pid > 0:
-            _wait_for_exit(pid)
+        import time
+
+        t0 = time.time()  # wait only while genuinely running (pid-reuse-safe, below)
+        while _architect_running(task_id) and time.time() - t0 < 900:
+            time.sleep(1.0)
         if lane == "codex":
             rr = parse_codex_jsonl(log_path, phase="plan")
             raw, cost = rr.raw_tail, rr.cost
@@ -182,3 +183,42 @@ def _read_pid(pid_path: Path) -> int:
         return int(pid_path.read_text(encoding="utf-8").strip())
     except (ValueError, OSError):
         return -1
+
+
+def _log_completed(task_id: str) -> bool:
+    """True if the architect's log shows a terminal event (turn.completed/result).
+
+    Used instead of raw pid-liveness so a reused stale pid can't look 'running',
+    and a finished-but-not-yet-reaped architect is recognised as done."""
+    import json
+
+    log = store.task_data_dir(task_id) / "plan.log"
+    if not log.exists():
+        return False
+    meta = store.load_meta(task_id)
+    lane = meta.plan_lane or meta.lane
+    if lane == "codex":
+        return parse_codex_jsonl(log, phase="plan").outcome in ("success", "failed")
+    for raw in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            obj = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            return True
+    return False
+
+
+def architect_done(task_id: str) -> bool:
+    """The plan phase is ready to finalize: architect exited or its log completed."""
+    return not _architect_running(task_id)
+
+
+def _architect_running(task_id: str) -> bool:
+    meta = store.load_meta(task_id)
+    if (meta.plan_lane or meta.lane) == "stub":
+        return False  # stub plan is synchronous — always ready
+    pid = _read_pid(store.task_state_dir(task_id) / "plan.pid")
+    if pid <= 0 or not proc.is_alive(pid):
+        return False
+    return not _log_completed(task_id)  # pid alive but log done -> treat as finished

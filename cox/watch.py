@@ -108,10 +108,34 @@ def scan_once() -> int:
     """One full pass over active tasks. Returns total wakes enqueued."""
     total = 0
     for tid in store.list_task_ids():
-        if store.load_meta(tid).state in _ACTIVE:
+        state = store.load_meta(tid).state
+        if state is TaskState.PLANNING:
+            total += _advance_planning(tid)
+        elif state in _ACTIVE:
             total += scan_task(tid)
     _write_heartbeat()
     return total
+
+
+def _advance_planning(task_id: str) -> int:
+    """Auto-finalize a plan whose architect has exited (deterministic, no tokens).
+
+    The plan phase used to stall silently: the architect finished but nothing ran
+    `cox plan-finalize`. The watcher now captures plan.md and advances — to
+    plan-review (if approval is on) or to the implementer — the moment the
+    architect is done. Enqueues one wake so the orchestrator notices."""
+    from . import plan
+
+    if not plan.architect_done(task_id):
+        return scan_task(task_id)  # still drafting — normal exit/stale detection
+    try:
+        meta = plan.finalize(task_id)
+    except Exception as e:  # noqa: BLE001 - a bad finalize must not crash the scan loop
+        wakequeue.enqueue(task_id, "worker-error", f"plan-finalize failed: {e}", "plan-error")
+        return 1
+    verb = "needs-you" if meta.state is TaskState.NEEDS_HUMAN else "plan-done"
+    wakequeue.enqueue(task_id, verb, f"plan finalized -> {meta.state.value}", "plan-advanced")
+    return 1
 
 
 def _write_heartbeat() -> None:
