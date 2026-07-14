@@ -97,6 +97,19 @@ def test_feed_payload_uses_renderer():
     assert server.feed_payload("t-feed")["feed"] == ["· hello"]
 
 
+def test_feed_reads_plan_log_during_planning():
+    _mk("t-plan-feed", TaskState.PLANNING)
+    d = store.task_data_dir("t-plan-feed")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "plan.log").write_text(
+        json.dumps({"type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "drafting the plan"}]}}),
+        encoding="utf-8",
+    )
+    # no worker.log yet — the architect writes plan.log; the feed must show it
+    assert server.feed_payload("t-plan-feed")["feed"] == ["· drafting the plan"]
+
+
 def test_blast_radius_from_numstat(monkeypatch, tmp_path):
     from cox import proc, server
     from cox.model import DispatchPath, TaskMeta

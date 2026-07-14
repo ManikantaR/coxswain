@@ -258,8 +258,22 @@ def tasks_payload() -> dict:
 
 
 def feed_payload(task_id: str, n: int = 20) -> dict:
-    log = store.task_data_dir(task_id) / "worker.log"
-    return {"id": task_id, "feed": render.summarize_stream(log, n=n)}
+    return {"id": task_id, "feed": render.summarize_stream(_active_log(task_id), n=n)}
+
+
+def _active_log(task_id: str) -> Path:
+    """The log to narrate: the architect's plan.log during PLANNING, else worker.log.
+
+    Without this the feed reads worker.log even while the architect (which writes
+    plan.log) is running — so a plan task looks dead on the board though it's
+    doing dozens of tool calls."""
+    d = store.task_data_dir(task_id)
+    worker, plan = d / "worker.log", d / "plan.log"
+    if store.load_meta(task_id).state is TaskState.PLANNING and plan.exists():
+        return plan
+    if not worker.exists() and plan.exists():
+        return plan
+    return worker
 
 
 def _median(xs: list) -> float:

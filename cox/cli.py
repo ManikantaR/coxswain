@@ -106,9 +106,10 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 def _cmd_peek(args: argparse.Namespace) -> int:
     store = _pkg_mod("store")
-    log = store.task_data_dir(args.task_id) / "worker.log"
+    server = _pkg_mod("server")
+    log = server._active_log(args.task_id)  # plan.log during PLANNING, else worker.log
     if not log.exists():
-        print(f"no worker log for {args.task_id}")
+        print(f"no activity log for {args.task_id}")
         return 1
     if args.raw:
         # escape hatch: last 40 raw stream-json lines (capped)
