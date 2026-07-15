@@ -92,9 +92,20 @@ v3.5 is DONE and attempt 3 is a SUCCESS when the remaining MoneyPulse #98 backlo
    (model/resume/cwd/permission_mode/hooks/max_budget_usd), native session mgmt +
    `RateLimitEvent` (the quota pre-flight we lacked).
 2. `coxd` runs ONE task end-to-end: dispatch → worktree → SDK session (typed event
-   stream) → Stop-hook deterministic gate (registry commands) → codex-SDK review →
+   stream) → deterministic gate (registry commands) → codex-SDK review →
    needs-you notification → resume-for-fix. Observed via a CLI tail over the event
    store. Stub-lane e2e ports over for CI.
+   PRIMITIVES PROVEN (2026-07-14):
+   - ✅ 2a worker (`coxd/spike_worker.py`): ClaudeSDKClient session in an isolated
+     cwd; `PreToolUse` hook hard-denies `git push` (replaces `_worker_env`);
+     structured cost/session — no log parsing.
+   - ✅ 2b registry+gate (`coxd/registry.py`, `coxd/spike_gate.py`): per-repo
+     commands auto-scouted from the repo's own manifests (no `.cox/repo.yml`);
+     gate is honest (missing test on a full task = RED, not silent skip — the #99
+     "gate lied" defect fixed).
+   REMAINING: codex-SDK review lane; resume-for-fix (native `resume=session_id`);
+   needs-you notification; stitch the above into the `coxd` supervisor + event
+   store; port the stub-lane e2e.
 
 **Week 2 — durability + the thin board.**
 3. Three concurrent tasks; SQLite event/state store (single owner: coxd).
