@@ -85,8 +85,12 @@ v3.5 is DONE and attempt 3 is a SUCCESS when the remaining MoneyPulse #98 backlo
 ## 4. Build slice (the ONLY sanctioned work until §3)
 
 **Week 1 — the loop, no UI.**
-1. Billing spike: one SDK session via `claude login` on the NAS; verify zero API
-   charges; assert `ANTHROPIC_API_KEY` absent in coxd's env.
+1. ✅ **Billing spike — PASS 2026-07-14** (`coxd/spike_billing.py`, coxd/SPIKE-1-BILLING.md).
+   claude-agent-sdk 0.2.119 ran a haiku session on the subscription (no API key);
+   structured `ResultMessage` usage proves the cached-token double-count bug is now
+   impossible. SDK API confirmed: `query()`/`ClaudeSDKClient`, `ClaudeAgentOptions`
+   (model/resume/cwd/permission_mode/hooks/max_budget_usd), native session mgmt +
+   `RateLimitEvent` (the quota pre-flight we lacked).
 2. `coxd` runs ONE task end-to-end: dispatch → worktree → SDK session (typed event
    stream) → Stop-hook deterministic gate (registry commands) → codex-SDK review →
    needs-you notification → resume-for-fix. Observed via a CLI tail over the event
