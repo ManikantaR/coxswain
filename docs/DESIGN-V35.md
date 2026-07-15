@@ -1,0 +1,102 @@
+# Coxswain v3.5 — control-plane transplant (THE CONTRACT)
+
+Locked 2026-07-14 after a two-agent research pass: (1) forensic post-mortem of all
+three attempts (agent-orchestrator → relay → coxswain) + this week's two real runs;
+(2) strategy research on SDK-based orchestration. Grilled to shared understanding.
+This document is a CONTRACT, not a roadmap: §3 defines done; until it is met,
+**no new surface may be built** (§4), and the assistant is instructed to refuse.
+
+## 1. Why (the post-mortem, one paragraph each)
+
+**The disease:** 14 of 14 real-run failures lived in the hand-rolled transport —
+argv construction, pid files, JSONL log tailing, parse-before-done races, polling
+watcher, wrong-log dashboard. Zero were agent-quality failures. 4 phases × 2 lanes
+× 5 hand-rolled mechanisms with three uncoordinated state-owners (CLI, watcher,
+LLM-reading-prose) regenerates the same bug class every run; hardening is a
+treadmill. ~35–40% of the code is plumbing an SDK provides; weighted by defects
+it is ~100% of the failure surface.
+
+**The accounting lied:** Run B's "16M tokens" was a double-count (codex `cached_input`
+is a SUBSET of `input`; the parser added them — real fresh input ~146k, 98% cached).
+Opus's "485k read" was 99.9% cache-reads. The real waste: a $0.61 review discarded by
+a silent 900s timeout (timeout indistinguishable from exit), the orphan burning 40
+more minutes, and P2 caching the INFRA error as a permanent verdict. On flat rate the
+scarce resources burned were the captain's time and trust.
+
+**The ratchet:** all three attempts wrote the prior lesson into a locked doc, then
+overrode it within days (D6 "NO dashboard" lasted 3; M0's "10 real tasks" is still
+owed while 5 of 7 dispatched tasks were the orchestrator building itself). Docs have
+never held the line — hence a contract with an enforcer.
+
+## 2. The locked decisions (D19–D26 in DECISIONS.md)
+
+1. **Rebuild the control plane on the Claude Agent SDK** (v3.5 — a transplant, not
+   attempt 4). One long-running supervisor (`coxd`, Python asyncio); each task is one
+   async function `plan → implement → gate → review → ship` as awaited calls over SDK
+   sessions. Deletes: proc.py, watch.py, wakequeue.py, classify.py, render.py,
+   context.py, pid files, log tailing, `_wait_for_exit`. Keeps (stronger): gate.py
+   policy, worktree isolation + no-push (now ALSO a `PreToolUse` deny on `git push`),
+   typed states + NeedsHumanReason, model pinning, resume-for-fix, one-review-pass
+   routing, rules/acceptance, board UX. Billing verified: SDK rides the Pro
+   subscription via `claude login` OAuth — `ANTHROPIC_API_KEY` must never be set.
+2. **Supervisor lives on the homelab NAS** (24/7). Repos, git creds, claude/codex
+   logins live there; laptop/phone are browsers. AFK becomes real.
+3. **stdlib-only is dropped** (D8 partially superseded). uv-managed venv;
+   claude-agent-sdk + a real micro-framework. Work-Windows portability is solved when
+   a work deployment actually exists.
+4. **Lanes v1: Claude workers + Codex reviewer** (codex SDK, ChatGPT-plan billing),
+   behind a narrow Lane protocol (spawn/resume/stream/cost only). Full worker parity
+   is a LATER, bounded addition, gated on (a) the loop being boring and (b) measured
+   — not guessed — quota pressure.
+5. **Per-repo config is central** (D17 pattern generalized): registry in the cox home,
+   agent-scouted on first contact with a repo (discover test/lint/build from
+   package.json/pyproject/CI), human-editable, NOTHING committed to target repos.
+   `.cox/repo.yml` is retired. Gate rule change: missing commands on a `full` task =
+   RED, never silent "skip" (the gate must not lie).
+6. **Approvals: merge-only by default.** Plans auto-approved; the ONE standing human
+   gate is merge (zero-unreviewed-merges stays locked). Plan-approval is opt-in via
+   the high-scrutiny preset for big/ambiguous tasks.
+7. **Ratchet enforcement: this contract.** The assistant refuses to build any new
+   surface until §3 is met, unless the captain explicitly says "override the
+   contract". Banned until then: new dashboard features, lane parity, autonomy
+   presets, models-refresh skill, Telegram, work-port activity.
+8. **Same repo.** History and evidence culture (SHAKEDOWN/DECISIONS) keep accruing;
+   transport modules are deleted in the same PRs that replace them.
+
+Carry-over fixes folded into the rebuild (from the Run B forensics):
+- Never sum cached tokens into input (both lanes) — report fresh vs cached.
+- An infra-error review result is NEVER cached as a verdict (P2 applies to completed
+  reviews only).
+- Pre-flight the quota window before spawning a paid session; don't launch a reviewer
+  into a 97%-utilized window.
+- Timeouts must be distinguishable from exits, and orphans must be killed.
+
+## 3. Definition of done (falsifiable — the 30-day test)
+
+v3.5 is DONE and attempt 3 is a SUCCESS when the remaining MoneyPulse #98 backlog
+(~9 sync-hardening issues) has landed end-to-end through the new loop:
+- dispatched from the board (phone or laptop),
+- **≤1 manual unstick across the entire backlog**,
+- captain touched only optional plan-edits and merges,
+- zero unreviewed merges; zero untyped needs-human,
+- the board never reported fiction (state matches reality at every check),
+- one crash test passed: kill `coxd` mid-task; the task resumes and ships.
+
+## 4. Build slice (the ONLY sanctioned work until §3)
+
+**Week 1 — the loop, no UI.**
+1. Billing spike: one SDK session via `claude login` on the NAS; verify zero API
+   charges; assert `ANTHROPIC_API_KEY` absent in coxd's env.
+2. `coxd` runs ONE task end-to-end: dispatch → worktree → SDK session (typed event
+   stream) → Stop-hook deterministic gate (registry commands) → codex-SDK review →
+   needs-you notification → resume-for-fix. Observed via a CLI tail over the event
+   store. Stub-lane e2e ports over for CI.
+
+**Week 2 — durability + the thin board.**
+3. Three concurrent tasks; SQLite event/state store (single owner: coxd).
+4. Port the board as a stateless view: task list, state, live feed, diff, checklist,
+   approve/merge buttons, cost from `ResultMessage`. Kill nothing the user sees;
+   kill everything under it.
+5. Central repo registry + first-contact scout; deploy coxd on the NAS.
+
+**Then:** run MoneyPulse #98's issues through it until §3 is met. Nothing else.

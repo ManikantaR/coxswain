@@ -1,6 +1,17 @@
 # Coxswain — Task board
 
 <!-- ▶▶ RESUME HERE — a fresh session reads THIS block first. Keep it current. ▶▶ -->
+> ## ▶▶ V3.5 PIVOT (2026-07-14) — READ [docs/DESIGN-V35.md](docs/DESIGN-V35.md) FIRST. IT IS A CONTRACT.
+>
+> Post-mortem of all 3 attempts + SDK research (D19–D26): **control plane rebuilt on the
+> Claude Agent SDK** (coxd supervisor on the NAS, tasks = async fns over SDK sessions, hooks
+> as gate/no-push, central agent-scouted repo registry, merge-only approvals). 14/14 real-run
+> failures were hand-rolled transport; 0 were agent quality. stdlib-only dropped. Lanes v1 =
+> Claude workers + Codex reviewer. **NO new surface until MoneyPulse #98's backlog lands per
+> V35 §3 — the assistant refuses scope adds unless the captain says "override the contract".**
+> Everything below this line describes the pre-pivot system; its policies survive, its
+> transport (proc/watch/wakequeue/render/context/pid files/log tailing) is being deleted.
+>
 > ## ▶ Current state & next step  (updated 2026-07-05)
 >
 > **Done:** M0 code-complete — **T-01 … T-13** all implemented, committed, and green
