@@ -111,7 +111,7 @@ v3.5 is DONE and attempt 3 is a SUCCESS when the remaining MoneyPulse #98 backlo
      →one review→pr_ready, with coxd the SOLE state owner (SQLite) + event log.
      Proven on a real task ($0.078). Native `resume=session_id` for fix.
    REMAINING (week 2): codex-SDK reviewer swap; needs-you notification (ntfy/
-   Telegram); the stateless board (reader over SQLite + live events); 3 concurrent
+   Telegram); ✅ the stateless board (coxd/board.py, Starlette+SSE over the store); 3 concurrent
    tasks; deploy `coxd` on the NAS; port the stub-lane e2e for CI.
 
 **Week 2 — durability + the thin board.**
