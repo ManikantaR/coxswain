@@ -22,8 +22,8 @@ from starlette.routing import Route
 
 STAGES = ["implement", "gate", "review", "merge"]
 _STATE_STAGE = {"queued": 0, "working": 0, "gating": 1, "fixing": 1,
-                "reviewing": 2, "pr_ready": 3, "landed": 3}
-_ACTIVE = {"working", "gating", "fixing", "reviewing"}
+                "reviewing": 2, "shipping": 3, "pr_ready": 3, "landed": 3}
+_ACTIVE = {"working", "gating", "fixing", "reviewing", "shipping"}
 _NEEDS_YOU = {"pr_ready", "needs_human"}
 
 
@@ -41,7 +41,7 @@ def _tasks_payload() -> dict:
         evs = store.events(t["id"])
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
-            "cost": t["cost"], "stage": _stage(t["state"]),
+            "cost": t["cost"], "pr_url": t["pr_url"], "stage": _stage(t["state"]),
             "active": t["state"] in _ACTIVE, "needs_you": t["state"] in _NEEDS_YOU,
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
         })
@@ -105,14 +105,14 @@ button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(-
 <span class=spacer></span><span id=conn class=pill>connecting…</span></header><main id=board><div class=empty>Loading…</div></main>
 <script>
 const open=new Set(),esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));let STAGES=['implement','gate','review','merge'],sig=null;
-const BADGE={queued:['b-work','queued'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed']};
+const BADGE={queued:['b-work','queued'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed']};
 function pipe(st){let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}h+='<div class="step '+c+'"><span class=dot>'+ic+'</span>'+STAGES[k]+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
 async function loadFeed(id,el){const d=await(await fetch('/api/task/'+id+'/events')).json();el.textContent=(d.events||[]).map(e=>'· '+e.kind+' '+JSON.stringify(e.data).slice(0,90)).join('\\n')}
 function render(s){STAGES=s.stages||STAGES;document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 h+='<div class="card'+(t.needs_you?' needs':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span></div>'+
-'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+'</div>'+pipe(t.stage)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
+'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+pipe(t.stage)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
 '<button class=fb>'+(open.has(t.id)?'Hide':'Events')+'</button><div class="feed'+(open.has(t.id)?' open':'')+'"></div></div>'}
 b.innerHTML=h;for(const c of b.querySelectorAll('.card')){const id=c.dataset.id,f=c.querySelector('.feed');if(open.has(id))loadFeed(id,f);
 c.querySelector('.fb').onclick=()=>{if(open.has(id)){open.delete(id);f.classList.remove('open')}else{open.add(id);f.classList.add('open');loadFeed(id,f)}c.querySelector('.fb').textContent=open.has(id)?'Hide':'Events'}}}

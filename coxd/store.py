@@ -32,7 +32,7 @@ def _conn() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS tasks(
             id TEXT PRIMARY KEY, repo TEXT, repo_path TEXT, brief TEXT, state TEXT,
             reason TEXT, session_id TEXT, worktree TEXT, cost REAL DEFAULT 0,
-            created REAL, updated REAL);
+            pr_url TEXT, created REAL, updated REAL);
         CREATE TABLE IF NOT EXISTS events(
             seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, ts REAL,
             kind TEXT, data TEXT);
@@ -59,6 +59,12 @@ def set_state(task_id: str, state: str, reason: str | None = None) -> None:
         c.execute("UPDATE tasks SET state=?, reason=?, updated=? WHERE id=?",
                   (state, reason, time.time(), task_id))
     append_event(task_id, "state", {"state": state, "reason": reason})
+
+
+def set_pr_url(task_id: str, url: str) -> None:
+    with _conn() as c:
+        c.execute("UPDATE tasks SET pr_url=?, updated=? WHERE id=?",
+                  (url, time.time(), task_id))
 
 
 def set_session(task_id: str, session_id: str | None) -> None:

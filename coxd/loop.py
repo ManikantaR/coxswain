@@ -73,7 +73,16 @@ async def run_task(task_id: str, worker_model: str = "claude-haiku-4-5",
         if not g["passed"]:
             return _terminal(task_id, "needs_human", "gate-red")
 
-    # --- ready for the captain's merge (the one standing human gate) --------
+    # --- ship: control plane pushes + opens the PR (workers can't) ----------
+    store.set_state(task_id, "shipping")
+    import ship
+    outcome, url = ship.ship(task_id)
+    emit("ship", {"outcome": outcome, "pr_url": url})
+    if outcome == "push-error":
+        return _terminal(task_id, "needs_human", "push-rejected")
+    if outcome == "pr-error":
+        return _terminal(task_id, "needs_human", "pr-error")
+    # pr | local -> ready for the captain's merge (the one standing human gate)
     return _terminal(task_id, "pr_ready", None)
 
 
