@@ -115,10 +115,17 @@ v3.5 is DONE and attempt 3 is a SUCCESS when the remaining MoneyPulse #98 backlo
    tasks; deploy `coxd` on the NAS; port the stub-lane e2e for CI.
 
 **Week 2 — durability + the thin board.**
-3. Three concurrent tasks; SQLite event/state store (single owner: coxd).
-4. Port the board as a stateless view: task list, state, live feed, diff, checklist,
-   approve/merge buttons, cost from `ResultMessage`. Kill nothing the user sees;
-   kill everything under it.
+3. ✅ **Live dispatch + supervisor (2026-07-15)** — `coxd/worktree.py`, `dispatch.py`,
+   `supervisor.py`, `cli.py`. `coxd serve` = one process serving the board AND
+   running queued tasks as asyncio tasks (concurrency cap; single store; crashes
+   contained). Proven live: `coxd dispatch` ran a real task end-to-end (worker →
+   auto-scouted honest gate → review → pr_ready, $0.117) watchable on the board.
+4. ✅ **Board** (`coxd/board.py`, Starlette+SSE) — stateless reader over the store;
+   task list, state, stepper, cost, live event feed. REMAINING on the board:
+   diff/checklist views + approve/merge buttons.
+   REMAINING (week 2): needs-you notification (ntfy/Telegram); codex-SDK reviewer
+   swap; deploy `coxd` on the NAS; the crash-recovery test (kill coxd mid-task →
+   resume); port the stub-lane e2e for CI. Then run MoneyPulse #98's backlog → §3.
 5. Central repo registry + first-contact scout; deploy coxd on the NAS.
 
 **Then:** run MoneyPulse #98's issues through it until §3 is met. Nothing else.
