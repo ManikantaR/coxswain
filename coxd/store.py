@@ -30,8 +30,8 @@ def _conn() -> sqlite3.Connection:
     c.executescript(
         """
         CREATE TABLE IF NOT EXISTS tasks(
-            id TEXT PRIMARY KEY, repo TEXT, brief TEXT, state TEXT, reason TEXT,
-            session_id TEXT, worktree TEXT, cost REAL DEFAULT 0,
+            id TEXT PRIMARY KEY, repo TEXT, repo_path TEXT, brief TEXT, state TEXT,
+            reason TEXT, session_id TEXT, worktree TEXT, cost REAL DEFAULT 0,
             created REAL, updated REAL);
         CREATE TABLE IF NOT EXISTS events(
             seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, ts REAL,
@@ -41,13 +41,15 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
-def create_task(task_id: str, repo: str, brief: str, worktree: str) -> None:
+def create_task(task_id: str, repo: str, brief: str, worktree: str,
+                repo_path: str = "") -> None:
     now = time.time()
     with _conn() as c:
         c.execute(
-            "INSERT OR REPLACE INTO tasks(id,repo,brief,state,worktree,created,updated) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (task_id, repo, brief, "queued", worktree, now, now),
+            "INSERT OR REPLACE INTO tasks"
+            "(id,repo,repo_path,brief,state,worktree,created,updated) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (task_id, repo, repo_path, brief, "queued", worktree, now, now),
         )
     append_event(task_id, "created", {"repo": repo})
 
@@ -88,6 +90,12 @@ def get_task(task_id: str) -> dict | None:
 def list_tasks() -> list[dict]:
     with _conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM tasks ORDER BY created DESC")]
+
+
+def queued_tasks() -> list[dict]:
+    with _conn() as c:
+        return [dict(r) for r in
+                c.execute("SELECT * FROM tasks WHERE state='queued' ORDER BY created")]
 
 
 def events(task_id: str, after_seq: int = 0) -> list[dict]:
