@@ -88,4 +88,12 @@ async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str) -
 
 def _terminal(task_id: str, state: str, reason: str | None) -> str:
     store.set_state(task_id, state, reason)
+    if state in ("pr_ready", "needs_human"):  # the AFK ping
+        import notify
+        t = store.get_task(task_id)
+        if state == "pr_ready":
+            notify.notify_async("coxd · ready to merge", f"{task_id} ({t['repo']})")
+        else:
+            notify.notify_async(f"coxd · needs you ({reason})",
+                                f"{task_id} ({t['repo']})", priority="high")
     return state
