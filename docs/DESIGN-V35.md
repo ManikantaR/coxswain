@@ -103,9 +103,16 @@ v3.5 is DONE and attempt 3 is a SUCCESS when the remaining MoneyPulse #98 backlo
      commands auto-scouted from the repo's own manifests (no `.cox/repo.yml`);
      gate is honest (missing test on a full task = RED, not silent skip — the #99
      "gate lied" defect fixed).
-   REMAINING: codex-SDK review lane; resume-for-fix (native `resume=session_id`);
-   needs-you notification; stitch the above into the `coxd` supervisor + event
-   store; port the stub-lane e2e.
+   - ✅ 2c review (`coxd/spike_review.py`): cross-model reviewer, clean structured
+     verdict, `RateLimitEvent` surfaced (pre-flight), infra-error typed+retryable
+     (never cached as a verdict — the $0.61 Run-B loss fixed).
+   - ✅ 2d ASSEMBLED loop (`coxd/store.py`, `gate.py`, `lane.py`, `loop.py`,
+     `spike_loop.py`): one task = one async fn, implement→honest gate→(resumed fix)
+     →one review→pr_ready, with coxd the SOLE state owner (SQLite) + event log.
+     Proven on a real task ($0.078). Native `resume=session_id` for fix.
+   REMAINING (week 2): codex-SDK reviewer swap; needs-you notification (ntfy/
+   Telegram); the stateless board (reader over SQLite + live events); 3 concurrent
+   tasks; deploy `coxd` on the NAS; port the stub-lane e2e for CI.
 
 **Week 2 — durability + the thin board.**
 3. Three concurrent tasks; SQLite event/state store (single owner: coxd).
