@@ -73,10 +73,48 @@ async def sse(_: Request) -> EventSourceResponse:
     return EventSourceResponse(gen())
 
 
+async def api_repos(_: Request) -> JSONResponse:
+    import repos
+    return JSONResponse({"repos": repos.list_repos()})
+
+
+async def api_issues(req: Request) -> JSONResponse:
+    import repos
+    out = repos.list_issues(req.query_params.get("repo", ""))
+    return JSONResponse(out, status_code=400 if out.get("error") else 200)
+
+
+async def api_dispatch(req: Request) -> JSONResponse:
+    import dispatch
+    import repos
+    body = await req.json()
+    repo = str(body.get("repo") or "").strip()
+    if not repo:
+        return JSONResponse({"error": "pick a repo"}, status_code=400)
+    brief = str(body.get("brief") or "").strip()
+    issue = str(body.get("issue") or "").strip()
+    if issue:
+        info = repos.resolve_issue(issue, repo)
+        if info.get("error"):
+            return JSONResponse(info, status_code=400)
+        block = f"{info['title']}\n\n{info['body']}\n\nGitHub issue: {info['url']}".strip()
+        brief = f"{brief}\n\n{block}".strip() if brief else block
+    if not brief:
+        return JSONResponse({"error": "provide a GitHub issue or a brief"}, status_code=400)
+    try:
+        tid = dispatch.dispatch(repo, brief)
+    except Exception as e:  # noqa: BLE001 - surface dispatch failures to the UI
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=400)
+    return JSONResponse({"id": tid})
+
+
 app = Starlette(routes=[
     Route("/", index),
     Route("/api/tasks", api_tasks),
     Route("/api/task/{tid}/events", api_events),
+    Route("/api/repos", api_repos),
+    Route("/api/issues", api_issues),
+    Route("/api/dispatch", api_dispatch, methods=["POST"]),
     Route("/events", sse),
 ])
 
@@ -100,9 +138,21 @@ h1{font-size:15px;margin:0}.pill{font-size:12px;color:var(--dim);background:var(
 @keyframes p{0%{box-shadow:0 0 0 0 rgba(59,130,246,.5)}70%,100%{box-shadow:0 0 0 6px rgba(59,130,246,0)}}
 button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:8px;padding:5px 11px;margin-top:10px}
 .feed{margin-top:10px;border-top:1px solid var(--line);padding-top:8px;font-family:ui-monospace,monospace;font-size:12px;color:var(--dim);white-space:pre-wrap;display:none}
-.feed.open{display:block}.empty{color:var(--dim);text-align:center;padding:40px}</style></head><body>
+.feed.open{display:block}.empty{color:var(--dim);text-align:center;padding:40px}
+#dp{border-bottom:1px solid var(--line);background:var(--panel)}.dform{max-width:820px;margin:0 auto;padding:14px 16px;display:grid;gap:8px}
+input,select,textarea{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%}
+textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:500}
+#dmsg{font-size:13px;color:var(--dim);align-self:center}</style></head><body>
 <header><h1>▟ coxd</h1><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b></span>
-<span class=spacer></span><span id=conn class=pill>connecting…</span></header><main id=board><div class=empty>Loading…</div></main>
+<span class=spacer></span><button id=nb>+ Dispatch</button><span id=conn class=pill>connecting…</span></header>
+<section id=dp hidden><div class=dform>
+<select id=drepo><option value="">— pick a repo —</option></select>
+<div class=drow><input id=diss placeholder="issue URL or # (auto-fills the brief)"><button id=dload>List issues</button></div>
+<select id=disslist hidden></select>
+<textarea id=dbrief rows=3 placeholder="brief (blank = use the issue)"></textarea>
+<div class=drow><button id=dgo class=go>Dispatch</button><span id=dmsg></span></div>
+</div></section>
+<main id=board><div class=empty>Loading…</div></main>
 <script>
 const open=new Set(),esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));let STAGES=['implement','gate','review','merge'],sig=null;
 const BADGE={queued:['b-work','queued'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed']};
@@ -116,6 +166,12 @@ h+='<div class="card'+(t.needs_you?' needs':'')+'" data-id="'+esc(t.id)+'"><div 
 '<button class=fb>'+(open.has(t.id)?'Hide':'Events')+'</button><div class="feed'+(open.has(t.id)?' open':'')+'"></div></div>'}
 b.innerHTML=h;for(const c of b.querySelectorAll('.card')){const id=c.dataset.id,f=c.querySelector('.feed');if(open.has(id))loadFeed(id,f);
 c.querySelector('.fb').onclick=()=>{if(open.has(id)){open.delete(id);f.classList.remove('open')}else{open.add(id);f.classList.add('open');loadFeed(id,f)}c.querySelector('.fb').textContent=open.has(id)?'Hide':'Events'}}}
+const nb=document.getElementById('nb'),dp=document.getElementById('dp'),drepo=document.getElementById('drepo'),disslist=document.getElementById('disslist'),dmsg=document.getElementById('dmsg');
+nb.onclick=()=>{dp.hidden=!dp.hidden;if(!dp.hidden)loadRepos()};
+async function loadRepos(){try{const d=await(await fetch('/api/repos')).json();drepo.innerHTML='<option value="">— pick a repo —</option>'+(d.repos||[]).map(r=>'<option value="'+esc(r.path)+'">'+esc(r.name)+'</option>').join('')}catch(e){}}
+document.getElementById('dload').onclick=async()=>{if(!drepo.value){dmsg.textContent='pick a repo';return}dmsg.textContent='loading issues…';try{const d=await(await fetch('/api/issues?repo='+encodeURIComponent(drepo.value))).json();if(d.error){dmsg.textContent='✗ '+d.error;return}if(!(d.issues||[]).length){dmsg.textContent='no open issues';disslist.hidden=true;return}disslist.innerHTML='<option value="">— pick an issue ('+d.issues.length+') —</option>'+d.issues.map(i=>'<option value="'+esc(i.url)+'">#'+i.number+' '+esc(i.title)+'</option>').join('');disslist.hidden=false;dmsg.textContent=''}catch(e){dmsg.textContent='✗ '+e}};
+disslist.onchange=()=>{if(disslist.value)document.getElementById('diss').value=disslist.value};
+document.getElementById('dgo').onclick=async()=>{const body={repo:drepo.value,issue:document.getElementById('diss').value.trim(),brief:document.getElementById('dbrief').value.trim()};if(!body.repo){dmsg.textContent='pick a repo';return}if(!body.issue&&!body.brief){dmsg.textContent='pick an issue or write a brief';return}dmsg.textContent='dispatching…';try{const d=await(await fetch('/api/dispatch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();if(d.error){dmsg.textContent='✗ '+d.error;return}dmsg.textContent='✓ queued '+d.id;document.getElementById('diss').value='';document.getElementById('dbrief').value='';disslist.hidden=true;sig=null}catch(e){dmsg.textContent='✗ '+e}};
 const es=new EventSource('/events');es.onopen=()=>{const c=document.getElementById('conn');c.textContent='live'};es.onmessage=e=>render(JSON.parse(e.data));es.onerror=()=>{document.getElementById('conn').textContent='reconnecting…'};
 fetch('/api/tasks').then(r=>r.json()).then(render).catch(()=>{});
 </script></body></html>"""
