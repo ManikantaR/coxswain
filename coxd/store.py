@@ -38,6 +38,12 @@ def _conn() -> sqlite3.Connection:
             kind TEXT, data TEXT);
         """
     )
+    # migrate older dbs: CREATE TABLE IF NOT EXISTS won't add columns to an
+    # existing table, so add any that are missing (self-healing schema).
+    have = {r[1] for r in c.execute("PRAGMA table_info(tasks)")}
+    for col, ddl in (("repo_path", "TEXT"), ("pr_url", "TEXT"), ("cost", "REAL DEFAULT 0")):
+        if col not in have:
+            c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     return c
 
 
