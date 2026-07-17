@@ -26,13 +26,16 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
     turbo = entry.get("runner") == "turbo"
     base = _base_ref(worktree) if turbo else None
     steps: dict[str, str] = {}
-    for name in ("test", "lint"):
+    # build catches what vitest/esbuild can't: `tsc` type errors that pass tests but
+    # break `nest build` (the #112 lesson, re-proven on #100). Required-ness differs:
+    # test/lint absent = UNKNOWN → RED; build absent = genuinely optional → skip.
+    for name in ("test", "lint", "build"):
         cmd = entry.get(name)
         if cmd is False:  # deliberately no gate here (repo's CI doesn't run it) — NOT unknown
             steps[name] = "none"
             continue
-        if not cmd:  # None/"" = UNKNOWN → RED for a full task (the gate must not lie/skip)
-            if path == "full":
+        if not cmd:  # None/"" — RED for test/lint on a full task (don't lie); build is optional
+            if path == "full" and name != "build":
                 return {"passed": False, "failing": name,
                         "reason": f"no {name} command in registry — RED, not skipped"}
             steps[name] = "skip"
