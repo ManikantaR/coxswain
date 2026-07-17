@@ -162,18 +162,26 @@ class ReviewOutcome:
 
 
 async def review(diff: str, model: str, emit: Emit) -> ReviewOutcome:
-    options = ClaudeAgentOptions(model=model, permission_mode="plan",
-                                 allowed_tools=[], max_turns=1)
+    # No tools, no plan mode: the reviewer just emits JSON. plan mode would need an
+    # ExitPlanMode call to finish (which allowed_tools=[] forbids) -> it never completes
+    # and the SDK RAISES "max turns"; a couple of turns of headroom + a hard guard so any
+    # infra failure becomes the typed review-error (never a crash, never a fake verdict).
+    options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
+                                 allowed_tools=[], max_turns=4)
     text, result = "", None
-    async for msg in query(prompt=f"# Diff\n```\n{diff}\n```\n\n{_CRITERIA}", options=options):
-        if isinstance(msg, RateLimitEvent):
-            emit("rate_limit", {"info": str(msg.rate_limit_info)})
-        elif isinstance(msg, AssistantMessage):
-            for b in msg.content:
-                if isinstance(b, TextBlock):
-                    text += b.text
-        elif isinstance(msg, ResultMessage):
-            result = msg
+    try:
+        async for msg in query(prompt=f"# Diff\n```\n{diff}\n```\n\n{_CRITERIA}", options=options):
+            if isinstance(msg, RateLimitEvent):
+                emit("rate_limit", {"info": str(msg.rate_limit_info)})
+            elif isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock):
+                        text += b.text
+            elif isinstance(msg, ResultMessage):
+                result = msg
+    except Exception as e:  # SDK raises on max-turns / transport faults — type it, don't crash
+        emit("review-error", {"err": str(e)[:200]})
+        return ReviewOutcome("review-error", None, [], None)
     if result is None or result.is_error or getattr(result, "api_error_status", None):
         return ReviewOutcome("review-error", None, [], result.total_cost_usd if result else None)
     s, e = text.find("{"), text.rfind("}")
