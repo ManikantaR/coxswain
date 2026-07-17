@@ -35,6 +35,35 @@ def create(repo_path: Path, task_id: str) -> Path:
     return wt
 
 
+def provision(wt: Path) -> dict:
+    """Install deps so the worker + gate can run the repo's REAL checks.
+
+    A fresh `git worktree` has no node_modules/venv, so a monorepo gate dies on
+    `turbo: command not found` (the #98 shakedown bug). Detect the toolchain from
+    the lockfiles carried into the worktree and install. Best-effort + deterministic:
+    try the reproducible install first, fall back to a loose one, return a typed
+    result the loop records. Zero tokens.
+    """
+    if (wt / "pnpm-lock.yaml").exists():
+        plans = ["pnpm install --frozen-lockfile", "pnpm install"]
+    elif (wt / "yarn.lock").exists():
+        plans = ["yarn install --frozen-lockfile", "yarn install"]
+    elif (wt / "package-lock.json").exists():
+        plans = ["npm ci", "npm install"]
+    elif (wt / "package.json").exists():
+        plans = ["npm install"]
+    else:
+        return {"skipped": "no node manifest"}
+    last: dict = {}
+    for cmd in plans:
+        r = subprocess.run(["sh", "-c", cmd], cwd=wt, capture_output=True, text=True)
+        last = {"ran": cmd, "ok": r.returncode == 0}
+        if r.returncode == 0:
+            return last
+        last["err"] = (r.stderr or r.stdout)[-400:]
+    return last
+
+
 def remove(repo_path: Path, wt: Path, branch: str) -> None:
     subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
                    cwd=repo_path, capture_output=True)

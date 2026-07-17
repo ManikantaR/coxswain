@@ -45,7 +45,7 @@ def scout(repo_path: Path) -> dict:
     Values may be None (unknown) — the gate treats a None as RED for a full task.
     """
     entry: dict = {"test": None, "lint": None, "build": None,
-                   "target_branch": "main", "source": None}
+                   "target_branch": "main", "source": None, "runner": None}
     pkg = repo_path / "package.json"
     pyproject = repo_path / "pyproject.toml"
     if pkg.exists():
@@ -58,6 +58,10 @@ def scout(repo_path: Path) -> dict:
         for key in ("test", "lint", "build"):
             if key in scripts:
                 entry[key] = f"{pm} {key}"
+        # turbo monorepo: the gate scopes to CHANGED packages (a whole-repo run made
+        # an unrelated apps/web OOM falsely fail a clean apps/api task — the #100 bug)
+        if (repo_path / "turbo.json").exists():
+            entry["runner"] = "turbo"
         entry["source"] = "package.json"
     elif pyproject.exists():
         text = pyproject.read_text(encoding="utf-8")

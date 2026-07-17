@@ -9,12 +9,14 @@ is a typed retryable state, never cached as a verdict (the Run-B fix).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import gate
 import lane
 import registry
 import store
+import worktree
 
 MAX_FIX = 2
 
@@ -28,6 +30,11 @@ async def run_task(task_id: str, worker_model: str = "claude-haiku-4-5",
 
     def emit(kind: str, data: dict) -> None:
         store.append_event(task_id, kind, data)
+
+    # --- provision: install deps so the worker + gate run the repo's REAL checks
+    store.set_state(task_id, "provisioning")
+    prov = await asyncio.to_thread(worktree.provision, wt)  # off the event loop
+    emit("provision", prov)
 
     # --- implement ---------------------------------------------------------
     store.set_state(task_id, "working")

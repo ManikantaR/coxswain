@@ -11,6 +11,8 @@ supervisor persists (the event log). codex lane is a later swap behind this shap
 from __future__ import annotations
 
 import json
+import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,16 +32,62 @@ from claude_agent_sdk import (
 Emit = Callable[[str, dict], None]
 
 
-async def _no_push_hook(input_data: dict, tool_use_id: str | None, context: object):
-    if input_data.get("tool_name") == "Bash":
-        cmd = str((input_data.get("tool_input") or {}).get("command", ""))
-        if "git push" in cmd:
-            return {"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason":
-                    "coxswain no-push boundary: workers never push; the control plane does.",
-            }}
-    return {}
+def _deny(reason: str) -> dict:
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": reason}}
+
+
+def _under(raw: str, wt: Path) -> bool:
+    """Does path `raw` (abs, ~, or relative-to-worktree) resolve inside the worktree?"""
+    p = Path(os.path.expanduser(raw.strip().strip('"').strip("'")))
+    if not p.is_absolute():
+        p = wt / p
+    try:
+        p.resolve().relative_to(wt.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+# `cd`/`pushd <target>` and `> / >>` redirect targets — the two accidental escape
+# vectors the #98 run exposed (a worker `cd`-ed to the main checkout and wrote to it).
+_CD = re.compile(r"\b(?:cd|pushd)\s+([^\s;&|<>]+)")
+_REDIR = re.compile(r">>?\s*([^\s;&|<>]+)")
+_BARE_CD = re.compile(r"\bcd\b\s*(?:;|&|\||$)")
+
+
+def _make_boundary_hook(worktree: Path):
+    """Hard-deny anything that leaves the worktree (Bash cd/redirect, Write/Edit path).
+
+    cwd is only a *default*, not a sandbox — bypassPermissions workers can `cd` out
+    or write to an absolute path. This is the boundary cwd doesn't give us; same
+    mechanism as no-push, which it also enforces.
+    """
+    async def hook(input_data: dict, tool_use_id: str | None, context: object):
+        tool = input_data.get("tool_name")
+        ti = input_data.get("tool_input") or {}
+        if tool == "Bash":
+            cmd = str(ti.get("command", ""))
+            if "git push" in cmd:
+                return _deny("coxswain no-push boundary: workers never push; "
+                             "the control plane does.")
+            if _BARE_CD.search(cmd):
+                return _deny("coxswain worktree boundary: bare `cd` leaves the worktree. "
+                             f"Stay inside {worktree}.")
+            for target in _CD.findall(cmd) + _REDIR.findall(cmd):
+                if not _under(target, worktree):
+                    return _deny(
+                        f"coxswain worktree boundary: `{target}` is outside the worktree. "
+                        f"Do all work inside {worktree}; never touch other checkouts.")
+        elif tool in ("Write", "Edit"):
+            fp = str(ti.get("file_path", ""))
+            if fp and not _under(fp, worktree):
+                return _deny(
+                    f"coxswain worktree boundary: cannot write `{fp}` outside the worktree. "
+                    f"Do all work inside {worktree}.")
+        return {}
+    return hook
 
 
 @dataclass
@@ -49,19 +97,37 @@ class WorkerResult:
     is_error: bool
 
 
+# Standing operating instruction prepended to EVERY worker turn (implement + fix).
+# Closes three #98-run bugs: (1) the worker hunted the main checkout because the
+# linked worktree's `.git` FILE names it — so we state the cwd explicitly; (2) it
+# never committed, leaving the gate/ship nothing — so we require a commit; (3) it
+# burned its whole turn budget re-verifying — so we tell it to stop when done.
+_PREAMBLE = (
+    "Your working directory is {wt} — the project lives HERE, in this git worktree. "
+    "Do ALL work inside it; never `cd` to or edit any other checkout (the `.git` file "
+    "names a different path — ignore it). When the acceptance criteria are met: `git add` "
+    "and `git commit` your work (do NOT push), then STOP. Do not re-verify repeatedly.\n\n"
+)
+
+
 async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                      resume: str | None = None) -> WorkerResult:
     """Implement (or fix, if `resume` is set) in the worktree. No push allowed."""
+    boundary = _make_boundary_hook(worktree)
     options = ClaudeAgentOptions(
         model=model, cwd=str(worktree),
         allowed_tools=["Bash", "Write", "Read", "Edit", "Glob", "Grep"],
-        hooks={"PreToolUse": [HookMatcher(matcher="Bash", hooks=[_no_push_hook])]},
+        hooks={"PreToolUse": [
+            HookMatcher(matcher="Bash", hooks=[boundary]),
+            HookMatcher(matcher="Write", hooks=[boundary]),
+            HookMatcher(matcher="Edit", hooks=[boundary]),
+        ]},
         permission_mode="bypassPermissions",
-        resume=resume, max_turns=60,
+        resume=resume, max_turns=100,
     )
     result: ResultMessage | None = None
     async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
+        await client.query(_PREAMBLE.format(wt=worktree) + prompt)
         async for msg in client.receive_response():
             if isinstance(msg, RateLimitEvent):
                 emit("rate_limit", {"info": str(msg.rate_limit_info)})

@@ -21,9 +21,9 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 STAGES = ["implement", "gate", "review", "merge"]
-_STATE_STAGE = {"queued": 0, "working": 0, "gating": 1, "fixing": 1,
-                "reviewing": 2, "shipping": 3, "pr_ready": 3, "landed": 3}
-_ACTIVE = {"working", "gating", "fixing", "reviewing", "shipping"}
+_STATE_STAGE = {"queued": 0, "provisioning": 0, "working": 0, "gating": 1,
+                "fixing": 1, "reviewing": 2, "shipping": 3, "pr_ready": 3, "landed": 3}
+_ACTIVE = {"provisioning", "working", "gating", "fixing", "reviewing", "shipping"}
 _NEEDS_YOU = {"pr_ready", "needs_human"}
 
 
@@ -155,7 +155,7 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 <main id=board><div class=empty>Loading…</div></main>
 <script>
 const open=new Set(),esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));let STAGES=['implement','gate','review','merge'],sig=null;
-const BADGE={queued:['b-work','queued'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed']};
+const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed']};
 function pipe(st){let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}h+='<div class="step '+c+'"><span class=dot>'+ic+'</span>'+STAGES[k]+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
 async function loadFeed(id,el){const d=await(await fetch('/api/task/'+id+'/events')).json();el.textContent=(d.events||[]).map(e=>'· '+e.kind+' '+JSON.stringify(e.data).slice(0,90)).join('\\n')}
 function render(s){STAGES=s.stages||STAGES;document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
