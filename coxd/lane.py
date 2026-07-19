@@ -110,7 +110,10 @@ _RUBRIC = (
     "broken authn/authz or missing ownership checks, secrets/keys in code, unsafe "
     "deserialization, SSRF, missing input validation on a trust boundary.\n"
     "3. Data/contract integrity: API request/response or DB schema/migration changes "
-    "that break existing callers or data; irreversible or non-idempotent migrations.\n"
+    "that break existing callers or data; irreversible or non-idempotent migrations; "
+    "DDL that fails inside a transaction (e.g. Postgres `ALTER TYPE ... ADD VALUE`, "
+    "`CREATE INDEX CONCURRENTLY`) since migrators wrap each file in a txn — these BREAK "
+    "app boot / migrate, so treat them as blocking, never advisory.\n"
     "Advisory ONLY (record as low findings, do NOT block): style, naming, formatting, "
     "micro-optimizations, test-coverage nits, refactor suggestions.\n"
 )
