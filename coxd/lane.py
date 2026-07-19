@@ -130,6 +130,15 @@ _PREAMBLE = (
 )
 
 
+# Under permission_mode="bypassPermissions" the SDK does NOT enforce allowed_tools as a
+# whitelist (it warns can_use_tool won't fire) — allowed_tools is only an auto-approve
+# hint. disallowed_tools is the real lever: it REMOVES the tool from the model's context
+# so it can't be used at all. Without this a worker spun up its own subagents (Agent/Task)
+# and ran Skills — uncontrolled quota + scope blast-radius we never granted. Block the
+# spawn/skill/network tools; the worker keeps only Bash/Write/Read/Edit/Glob/Grep.
+_WORKER_DENY = ["Task", "Agent", "Skill", "WebFetch", "WebSearch", "NotebookEdit"]
+
+
 async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                      resume: str | None = None, effort: str = "medium") -> WorkerResult:
     """Implement (or fix, if `resume` is set) in the worktree. No push allowed."""
@@ -137,6 +146,7 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
     options = ClaudeAgentOptions(
         model=model, cwd=str(worktree), effort=effort,
         allowed_tools=["Bash", "Write", "Read", "Edit", "Glob", "Grep"],
+        disallowed_tools=_WORKER_DENY,
         hooks={"PreToolUse": [
             HookMatcher(matcher="Bash", hooks=[boundary]),
             HookMatcher(matcher="Write", hooks=[boundary]),
@@ -191,8 +201,11 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
     # ExitPlanMode call to finish (which allowed_tools=[] forbids) -> it never completes
     # and the SDK RAISES "max turns"; a couple of turns of headroom + a hard guard so any
     # infra failure becomes the typed review-error (never a crash, never a fake verdict).
+    # allowed_tools=[] is not enforced under bypassPermissions either — hard-remove every
+    # mutating/spawning/network tool so the reviewer is genuinely read-only (it only emits JSON).
     options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
-                                 allowed_tools=[], max_turns=4, effort=effort)
+                                 allowed_tools=[], max_turns=4, effort=effort,
+                                 disallowed_tools=_WORKER_DENY + ["Bash", "Write", "Edit"])
     text, result = "", None
     try:
         async for msg in query(prompt=f"# Diff\n```\n{diff}\n```\n\n{_CRITERIA}", options=options):
