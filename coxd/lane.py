@@ -206,11 +206,40 @@ _CRITERIA = (
     + "\nBlocking policy (calibrate the verdict to this — do NOT block on advisory items):\n"
     "- verdict `fix`  = one or more high/med defects in a BLOCKING pillar (1-3 above).\n"
     "- verdict `reject` = the change is fundamentally wrong or unsafe to land at all.\n"
-    "- verdict `approve` = no blocking-pillar defects; advisory findings may still be listed.\n\n"
-    "Reply with ONLY JSON: "
-    '{"findings":[{"severity":"high|med|low","pillar":"correctness|security|contract|advisory",'
-    '"summary":"","file":"","line":0}],"verdict":"approve|fix|reject"}'
+    "- verdict `approve` = no blocking-pillar defects; advisory findings may still be listed.\n"
 )
+
+
+# The #103 canary hit `review-error` on a real review: the model prepended reasoning
+# prose before the JSON (despite being told "reply with ONLY JSON"), and that prose
+# happened to contain a stray brace, so the naive text.find('{')...rfind('}') slice grabbed
+# the wrong span and json.loads() failed — a large/brace-dense TS diff makes this likely to
+# recur across the batch. output_format enforces the shape at the API layer (--json-schema)
+# so a valid result.structured_output exists regardless of how much prose the model writes.
+# Keep the old text-slice as a defensive fallback only (in case structured_output is ever
+# absent), not as the primary path.
+_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["approve", "fix", "reject"]},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["high", "med", "low"]},
+                    "pillar": {"type": "string",
+                              "enum": ["correctness", "security", "contract", "advisory"]},
+                    "summary": {"type": "string"},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer"},
+                },
+                "required": ["severity", "summary"],
+            },
+        },
+    },
+    "required": ["verdict", "findings"],
+}
 
 
 @dataclass
@@ -231,7 +260,8 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
     options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
                                  allowed_tools=[], max_turns=4, effort=effort,
                                  disallowed_tools=_WORKER_DENY + ["Bash", "Write", "Edit"],
-                                 max_budget_usd=_REVIEW_MAX_BUDGET_USD)
+                                 max_budget_usd=_REVIEW_MAX_BUDGET_USD,
+                                 output_format={"type": "json_schema", "schema": _REVIEW_SCHEMA})
     text, result = "", None
     try:
         async for msg in query(prompt=f"# Diff\n```\n{diff}\n```\n\n{_CRITERIA}", options=options):
@@ -251,12 +281,18 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
                         "stop_reason": result.stop_reason})
     if result is None or result.is_error or getattr(result, "api_error_status", None):
         return ReviewOutcome("review-error", None, [], result.total_cost_usd if result else None)
-    s, e = text.find("{"), text.rfind("}")
-    if s == -1 or e == -1:
-        return ReviewOutcome("review-error", None, [], result.total_cost_usd)
-    try:
-        d = json.loads(text[s : e + 1])
-    except json.JSONDecodeError:
-        return ReviewOutcome("review-error", None, [], result.total_cost_usd)
+    # Primary path: output_format/--json-schema enforces the shape at the API layer, so
+    # structured_output is valid regardless of how much prose the model wrote around it
+    # (the #103 bug — a stray brace in the reasoning text broke the naive slice below).
+    d = result.structured_output
+    if not isinstance(d, dict):
+        # Defensive fallback only — should not normally be reached with output_format set.
+        s, e = text.find("{"), text.rfind("}")
+        if s == -1 or e == -1:
+            return ReviewOutcome("review-error", None, [], result.total_cost_usd)
+        try:
+            d = json.loads(text[s : e + 1])
+        except json.JSONDecodeError:
+            return ReviewOutcome("review-error", None, [], result.total_cost_usd)
     return ReviewOutcome("reviewed", str(d.get("verdict", "")).lower() or None,
                          d.get("findings") or [], result.total_cost_usd)
