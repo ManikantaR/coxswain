@@ -95,6 +95,7 @@ class WorkerResult:
     session_id: str | None
     cost: float | None
     is_error: bool
+    num_turns: int | None = None
 
 
 # SEED rubric — ONE source of truth both lanes read (implementor as the bar to clear,
@@ -142,8 +143,22 @@ _PREAMBLE = (
 _WORKER_DENY = ["Task", "Agent", "Skill", "WebFetch", "WebSearch", "NotebookEdit"]
 
 
+# Cost guardrails (the #102 canary spent $5.29 on ONE implement+review pass — 107 tool
+# calls, no fix round — with no budget signal at all). Two levers, both real CLI flags
+# in this SDK version (subprocess_cli.py passes --task-budget / --max-budget-usd):
+# - task_budget: SOFT, self-pacing — the model is told its remaining token budget so it
+#   can wrap up instead of over-exploring. This is the actual cost lever.
+# - max_budget_usd: HARD stop-loss safety net, set above known-good cost so it only
+#   trips on a genuine runaway, not a normal medium-complexity task.
+_WORKER_TASK_BUDGET_TOKENS = 120_000
+_WORKER_MAX_BUDGET_USD = 8.0
+_REVIEW_MAX_BUDGET_USD = 1.5
+
+
 async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
-                     resume: str | None = None, effort: str = "medium") -> WorkerResult:
+                     resume: str | None = None, effort: str = "medium",
+                     task_budget_tokens: int | None = _WORKER_TASK_BUDGET_TOKENS,
+                     max_budget_usd: float | None = _WORKER_MAX_BUDGET_USD) -> WorkerResult:
     """Implement (or fix, if `resume` is set) in the worktree. No push allowed."""
     boundary = _make_boundary_hook(worktree)
     options = ClaudeAgentOptions(
@@ -157,6 +172,8 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
         ]},
         permission_mode="bypassPermissions",
         resume=resume, max_turns=100,
+        task_budget={"total": task_budget_tokens} if task_budget_tokens else None,
+        max_budget_usd=max_budget_usd,
     )
     result: ResultMessage | None = None
     async with ClaudeSDKClient(options=options) as client:
@@ -174,8 +191,13 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                 result = msg
     if result is None:
         return WorkerResult(None, None, True)
+    # observability: log real cost/turns/usage so future budgets are calibrated on
+    # data, not guesses (the #102 postmortem had no per-stage numbers to work from).
+    emit("result", {"cost": result.total_cost_usd, "num_turns": result.num_turns,
+                    "stop_reason": result.stop_reason, "usage": result.usage})
     return WorkerResult(result.session_id, result.total_cost_usd,
-                        bool(result.is_error or getattr(result, "api_error_status", None)))
+                        bool(result.is_error or getattr(result, "api_error_status", None)),
+                        result.num_turns)
 
 
 _CRITERIA = (
@@ -208,7 +230,8 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
     # mutating/spawning/network tool so the reviewer is genuinely read-only (it only emits JSON).
     options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
                                  allowed_tools=[], max_turns=4, effort=effort,
-                                 disallowed_tools=_WORKER_DENY + ["Bash", "Write", "Edit"])
+                                 disallowed_tools=_WORKER_DENY + ["Bash", "Write", "Edit"],
+                                 max_budget_usd=_REVIEW_MAX_BUDGET_USD)
     text, result = "", None
     try:
         async for msg in query(prompt=f"# Diff\n```\n{diff}\n```\n\n{_CRITERIA}", options=options):
@@ -223,6 +246,9 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
     except Exception as e:  # SDK raises on max-turns / transport faults — type it, don't crash
         emit("review-error", {"err": str(e)[:200]})
         return ReviewOutcome("review-error", None, [], None)
+    if result is not None:
+        emit("result", {"cost": result.total_cost_usd, "num_turns": result.num_turns,
+                        "stop_reason": result.stop_reason})
     if result is None or result.is_error or getattr(result, "api_error_status", None):
         return ReviewOutcome("review-error", None, [], result.total_cost_usd if result else None)
     s, e = text.find("{"), text.rfind("}")
