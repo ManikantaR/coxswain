@@ -131,11 +131,11 @@ _PREAMBLE = (
 
 
 async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
-                     resume: str | None = None) -> WorkerResult:
+                     resume: str | None = None, effort: str = "medium") -> WorkerResult:
     """Implement (or fix, if `resume` is set) in the worktree. No push allowed."""
     boundary = _make_boundary_hook(worktree)
     options = ClaudeAgentOptions(
-        model=model, cwd=str(worktree),
+        model=model, cwd=str(worktree), effort=effort,
         allowed_tools=["Bash", "Write", "Read", "Edit", "Glob", "Grep"],
         hooks={"PreToolUse": [
             HookMatcher(matcher="Bash", hooks=[boundary]),
@@ -186,13 +186,13 @@ class ReviewOutcome:
     cost: float | None
 
 
-async def review(diff: str, model: str, emit: Emit) -> ReviewOutcome:
+async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> ReviewOutcome:
     # No tools, no plan mode: the reviewer just emits JSON. plan mode would need an
     # ExitPlanMode call to finish (which allowed_tools=[] forbids) -> it never completes
     # and the SDK RAISES "max turns"; a couple of turns of headroom + a hard guard so any
     # infra failure becomes the typed review-error (never a crash, never a fake verdict).
     options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
-                                 allowed_tools=[], max_turns=4)
+                                 allowed_tools=[], max_turns=4, effort=effort)
     text, result = "", None
     try:
         async for msg in query(prompt=f"# Diff\n```\n{diff}\n```\n\n{_CRITERIA}", options=options):

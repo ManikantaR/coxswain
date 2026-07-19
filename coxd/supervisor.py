@@ -17,15 +17,17 @@ import store
 import uvicorn
 
 
-async def _run_one(task_id: str, worker_model: str, review_model: str) -> None:
+async def _run_one(task_id: str, worker_model: str, review_model: str,
+                   effort: str) -> None:
     try:
-        await loop.run_task(task_id, worker_model, review_model)
+        await loop.run_task(task_id, worker_model, review_model, effort=effort)
     except Exception as e:  # a crashing task must not take down the supervisor
         store.set_state(task_id, "needs_human", "coxd-error")
         store.append_event(task_id, "error", {"error": str(e)})
 
 
-async def _runner(concurrency: int, worker_model: str, review_model: str) -> None:
+async def _runner(concurrency: int, worker_model: str, review_model: str,
+                  effort: str) -> None:
     running: dict[str, asyncio.Task] = {}
     while True:
         for tid in [t for t, task in running.items() if task.done()]:
@@ -38,14 +40,16 @@ async def _runner(concurrency: int, worker_model: str, review_model: str) -> Non
                     continue
                 store.set_state(t["id"], "working")  # claim before the next scan
                 running[t["id"]] = asyncio.create_task(
-                    _run_one(t["id"], worker_model, review_model))
+                    _run_one(t["id"], worker_model, review_model, effort))
         await asyncio.sleep(1)
 
 
 async def serve(host: str = "0.0.0.0", port: int = 8791, concurrency: int = 2,  # noqa: S104
                 worker_model: str = "claude-sonnet-5",
-                review_model: str = "claude-opus-4-8") -> None:
+                review_model: str = "claude-opus-4-8",
+                effort: str = "medium") -> None:
     config = uvicorn.Config(board.app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
-    print(f"coxd → http://{host}:{port}/  (concurrency {concurrency})")
-    await asyncio.gather(server.serve(), _runner(concurrency, worker_model, review_model))
+    print(f"coxd → http://{host}:{port}/  (concurrency {concurrency}, effort {effort})")
+    await asyncio.gather(server.serve(),
+                         _runner(concurrency, worker_model, review_model, effort))

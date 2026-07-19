@@ -22,7 +22,8 @@ MAX_FIX = 2
 
 
 async def run_task(task_id: str, worker_model: str = "claude-sonnet-5",
-                   review_model: str = "claude-opus-4-8") -> str:
+                   review_model: str = "claude-opus-4-8",
+                   effort: str = "medium") -> str:
     t = store.get_task(task_id)
     if t is None:
         raise ValueError(f"unknown task {task_id}")
@@ -38,7 +39,7 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5",
 
     # --- implement ---------------------------------------------------------
     store.set_state(task_id, "working")
-    wr = await lane.run_worker(wt, brief, worker_model, emit)
+    wr = await lane.run_worker(wt, brief, worker_model, emit, effort=effort)
     store.set_session(task_id, wr.session_id)
     store.add_cost(task_id, wr.cost)
     if wr.is_error or not wr.session_id:
@@ -58,11 +59,12 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5",
         fixes += 1
         await _resume_fix(task_id, wt, worker_model, emit,
                           f"The gate failed at {g['failing']}:\n{g.get('reason', '')}\n"
-                          "Fix it minimally, re-run the check, and commit. Do not push.")
+                          "Fix it minimally, re-run the check, and commit. Do not push.",
+                          effort=effort)
 
     # --- one review pass ---------------------------------------------------
     store.set_state(task_id, "reviewing")
-    r = await lane.review(gate.diff(wt), review_model, emit)
+    r = await lane.review(gate.diff(wt), review_model, emit, effort=effort)
     store.add_cost(task_id, r.cost)
     emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings})
     if r.outcome == "review-error":
@@ -74,7 +76,7 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5",
             return _terminal(task_id, "needs_human", "review-findings")
         await _resume_fix(task_id, wt, worker_model, emit,
                           "Address these review findings, then re-run tests and commit "
-                          "(do not push):\n" + str(r.findings))
+                          "(do not push):\n" + str(r.findings), effort=effort)
         g = gate.run_gate(wt, entry)
         emit("gate", g)
         if not g["passed"]:
@@ -93,10 +95,11 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5",
     return _terminal(task_id, "pr_ready", None)
 
 
-async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str) -> None:
+async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
+                      effort: str = "medium") -> None:
     store.set_state(task_id, "fixing")
     sid = store.get_task(task_id)["session_id"]  # resume the SAME session (cheap)
-    wr = await lane.run_worker(wt, feedback, model, emit, resume=sid)
+    wr = await lane.run_worker(wt, feedback, model, emit, resume=sid, effort=effort)
     store.add_cost(task_id, wr.cost)
     if wr.session_id:
         store.set_session(task_id, wr.session_id)
