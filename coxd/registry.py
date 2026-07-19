@@ -45,7 +45,8 @@ def scout(repo_path: Path) -> dict:
     Values may be None (unknown) — the gate treats a None as RED for a full task.
     """
     entry: dict = {"test": None, "lint": None, "build": None,
-                   "target_branch": "main", "source": None, "runner": None}
+                   "target_branch": "main", "source": None, "runner": None,
+                   "gate_env": {}}  # env the gate injects to match CI (e.g. NODE_OPTIONS heap)
     pkg = repo_path / "package.json"
     pyproject = repo_path / "pyproject.toml"
     if pkg.exists():

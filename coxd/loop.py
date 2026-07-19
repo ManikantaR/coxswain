@@ -21,8 +21,8 @@ import worktree
 MAX_FIX = 2
 
 
-async def run_task(task_id: str, worker_model: str = "claude-haiku-4-5",
-                   review_model: str = "claude-sonnet-4-6") -> str:
+async def run_task(task_id: str, worker_model: str = "claude-sonnet-5",
+                   review_model: str = "claude-opus-4-8") -> str:
     t = store.get_task(task_id)
     if t is None:
         raise ValueError(f"unknown task {task_id}")

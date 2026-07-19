@@ -6,6 +6,7 @@ never a silent "skip" (the #99 "gate lied" defect). Zero tokens.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,10 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
     # so an unrelated package can't fail (or OOM) a task that never touched it.
     turbo = entry.get("runner") == "turbo"
     base = _base_ref(worktree) if turbo else None
+    # Replicate the repo's CI-critical env so the gate matches CI, not a bare shell.
+    # apps/web's jsdom suite OOMs without CI's NODE_OPTIONS heap bump — without this the
+    # gate forces workers to hack package.json / drop tests to get green (the #101 defect).
+    env = {**os.environ, **(entry.get("gate_env") or {})}
     steps: dict[str, str] = {}
     # build catches what vitest/esbuild can't: `tsc` type errors that pass tests but
     # break `nest build` (the #112 lesson, re-proven on #100). Required-ness differs:
@@ -42,7 +47,8 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
             continue
         if turbo:  # deterministic path to the local turbo bin; affected-only scope
             cmd = f"node_modules/.bin/turbo run {name} --filter='[{base}]'"
-        r = subprocess.run(["sh", "-c", cmd], cwd=worktree, capture_output=True, text=True)
+        r = subprocess.run(["sh", "-c", cmd], cwd=worktree, capture_output=True,
+                           text=True, env=env)
         steps[name] = "ok" if r.returncode == 0 else "red"
         if r.returncode != 0:
             return {"passed": False, "failing": name, "steps": steps,

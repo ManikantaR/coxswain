@@ -43,8 +43,8 @@ async def _runner(concurrency: int, worker_model: str, review_model: str) -> Non
 
 
 async def serve(host: str = "0.0.0.0", port: int = 8791, concurrency: int = 2,  # noqa: S104
-                worker_model: str = "claude-haiku-4-5",
-                review_model: str = "claude-sonnet-4-6") -> None:
+                worker_model: str = "claude-sonnet-5",
+                review_model: str = "claude-opus-4-8") -> None:
     config = uvicorn.Config(board.app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
     print(f"coxd → http://{host}:{port}/  (concurrency {concurrency})")
