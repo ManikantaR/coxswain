@@ -97,6 +97,25 @@ class WorkerResult:
     is_error: bool
 
 
+# SEED rubric — ONE source of truth both lanes read (implementor as the bar to clear,
+# reviewer as what blocks vs. what is advisory). Deliberately correctness/security-only
+# so Opus-review blocks on real defects, not taste (an over-strict reviewer stalls the
+# loop against the <=1-unstick bar). This is a SEED: sharpen it from the observed failure
+# log across the #102-#108 batch, do not gold-plate it up front.
+_RUBRIC = (
+    "Bar (blocking pillars — a defect here is a real bug, not a preference):\n"
+    "1. Correctness: logic, edge/empty/null cases, off-by-one, wrong async/await, "
+    "unhandled error paths, state that can desync.\n"
+    "2. Security (OWASP-critical subset only): injection (SQL/command/template), "
+    "broken authn/authz or missing ownership checks, secrets/keys in code, unsafe "
+    "deserialization, SSRF, missing input validation on a trust boundary.\n"
+    "3. Data/contract integrity: API request/response or DB schema/migration changes "
+    "that break existing callers or data; irreversible or non-idempotent migrations.\n"
+    "Advisory ONLY (record as low findings, do NOT block): style, naming, formatting, "
+    "micro-optimizations, test-coverage nits, refactor suggestions.\n"
+)
+
+
 # Standing operating instruction prepended to EVERY worker turn (implement + fix).
 # Closes three #98-run bugs: (1) the worker hunted the main checkout because the
 # linked worktree's `.git` FILE names it — so we state the cwd explicitly; (2) it
@@ -107,6 +126,7 @@ _PREAMBLE = (
     "Do ALL work inside it; never `cd` to or edit any other checkout (the `.git` file "
     "names a different path — ignore it). When the acceptance criteria are met: `git add` "
     "and `git commit` your work (do NOT push), then STOP. Do not re-verify repeatedly.\n\n"
+    "Your code must clear this review bar before it can land:\n" + _RUBRIC + "\n"
 )
 
 
@@ -146,10 +166,15 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
 
 
 _CRITERIA = (
-    "You are a correctness-only reviewer. Review ONLY for bugs and contract "
-    "violations (no style). Reply with ONLY JSON: "
-    '{"findings":[{"severity":"high|med|low","summary":"","file":"","line":0}],'
-    '"verdict":"approve|fix|reject"}'
+    "You are the merge-gate reviewer. Judge the diff against this bar:\n\n"
+    + _RUBRIC
+    + "\nBlocking policy (calibrate the verdict to this — do NOT block on advisory items):\n"
+    "- verdict `fix`  = one or more high/med defects in a BLOCKING pillar (1-3 above).\n"
+    "- verdict `reject` = the change is fundamentally wrong or unsafe to land at all.\n"
+    "- verdict `approve` = no blocking-pillar defects; advisory findings may still be listed.\n\n"
+    "Reply with ONLY JSON: "
+    '{"findings":[{"severity":"high|med|low","pillar":"correctness|security|contract|advisory",'
+    '"summary":"","file":"","line":0}],"verdict":"approve|fix|reject"}'
 )
 
 
