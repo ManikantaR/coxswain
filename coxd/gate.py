@@ -95,9 +95,21 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
     return {"passed": True, "steps": steps}
 
 
-def diff(worktree: Path, base: str = "HEAD~1") -> str:
+def diff(worktree: Path, base: str | None = None) -> str:
+    """The FULL diff since the branch point — never just the last commit.
+
+    Defaulted to `base="HEAD~1"` before, which only happens to be correct when the
+    branch has exactly one commit. Any internal fix-round adds a second commit, and
+    `HEAD~1` then points at the FEATURE commit itself — the reviewer silently saw only
+    the tiny fix-round diff (e.g. 474 bytes on #107) instead of the real feature, and
+    still burned turns fumbling over a diff that didn't match the review prompt's own
+    framing. Use the same branch-point resolution the gate already uses for turbo
+    scoping, so review always sees everything since origin/main, regardless of how
+    many commits (fix-rounds) are on the branch.
+    """
+    base = base or _base_ref(worktree)
     r = subprocess.run(["git", "diff", f"{base}...HEAD"], cwd=worktree,
                        capture_output=True, text=True)
-    if r.returncode != 0:  # e.g. only one commit — fall back to the last commit's diff
+    if r.returncode != 0:  # e.g. no common ancestor — fall back to the last commit's diff
         r = subprocess.run(["git", "show", "HEAD"], cwd=worktree, capture_output=True, text=True)
     return r.stdout
