@@ -96,6 +96,10 @@ class WorkerResult:
     cost: float | None
     is_error: bool
     num_turns: int | None = None
+    # Full (untruncated) text of the worker's LAST reasoning block — its own
+    # wrap-up of what it did. Used verbatim in the PR body instead of the old
+    # "Dispatched via coxd. Cost: $X" placeholder, which told a reviewer nothing.
+    summary: str | None = None
 
 
 # SEED rubric — ONE source of truth both lanes read (implementor as the bar to clear,
@@ -130,6 +134,12 @@ _PREAMBLE = (
     "Do ALL work inside it; never `cd` to or edit any other checkout (the `.git` file "
     "names a different path — ignore it). When the acceptance criteria are met: `git add` "
     "and `git commit` your work (do NOT push), then STOP. Do not re-verify repeatedly.\n\n"
+    "Your FINAL message becomes the literal PR description on GitHub (possibly a public "
+    "repo) — never include real user data in it: no real account numbers, dollar amounts, "
+    "names, or other row-level values, even if you inspected real data to verify a fix "
+    "(describe verification structurally instead, e.g. 'confirmed against the schema/enum "
+    "values' or 'reproduced with synthetic literals', not by quoting what you actually saw). "
+    "Keep it a concise root-cause-and-fix summary, not a blow-by-blow transcript.\n\n"
     "Your code must clear this review bar before it can land:\n" + _RUBRIC + "\n"
 )
 
@@ -176,6 +186,7 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
         max_budget_usd=max_budget_usd,
     )
     result: ResultMessage | None = None
+    last_text = ""
     async with ClaudeSDKClient(options=options) as client:
         await client.query(_PREAMBLE.format(wt=worktree) + prompt)
         async for msg in client.receive_response():
@@ -187,6 +198,7 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                         emit("tool", {"name": b.name, "input": str(b.input)[:200]})
                     elif isinstance(b, TextBlock) and b.text.strip():
                         emit("say", {"text": b.text.strip()[:200]})
+                        last_text = b.text.strip()  # untruncated, for the PR body
             elif isinstance(msg, ResultMessage):
                 result = msg
     if result is None:
@@ -197,7 +209,7 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                     "stop_reason": result.stop_reason, "usage": result.usage})
     return WorkerResult(result.session_id, result.total_cost_usd,
                         bool(result.is_error or getattr(result, "api_error_status", None)),
-                        result.num_turns)
+                        result.num_turns, summary=last_text or None)
 
 
 _CRITERIA = (
@@ -253,12 +265,16 @@ class ReviewOutcome:
 async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> ReviewOutcome:
     # No tools, no plan mode: the reviewer just emits JSON. plan mode would need an
     # ExitPlanMode call to finish (which allowed_tools=[] forbids) -> it never completes
-    # and the SDK RAISES "max turns"; a couple of turns of headroom + a hard guard so any
-    # infra failure becomes the typed review-error (never a crash, never a fake verdict).
+    # and the SDK RAISES "max turns"; enough headroom + a hard guard so any infra failure
+    # becomes the typed review-error (never a crash, never a fake verdict). max_turns=4
+    # (the original "couple of turns of headroom" guess) was empirically too tight —
+    # #115's review hit it 3/3 times on a 67-line, 2-file diff with nothing structurally
+    # unusual, so the model's real turn count for a schema-constrained JSON review is
+    # higher than assumed. Bumped to 10; a genuine hang still gets caught, just later.
     # allowed_tools=[] is not enforced under bypassPermissions either — hard-remove every
     # mutating/spawning/network tool so the reviewer is genuinely read-only (it only emits JSON).
     options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
-                                 allowed_tools=[], max_turns=4, effort=effort,
+                                 allowed_tools=[], max_turns=10, effort=effort,
                                  disallowed_tools=_WORKER_DENY + ["Bash", "Write", "Edit"],
                                  max_budget_usd=_REVIEW_MAX_BUDGET_USD,
                                  output_format={"type": "json_schema", "schema": _REVIEW_SCHEMA})

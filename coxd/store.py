@@ -41,7 +41,10 @@ def _conn() -> sqlite3.Connection:
     # migrate older dbs: CREATE TABLE IF NOT EXISTS won't add columns to an
     # existing table, so add any that are missing (self-healing schema).
     have = {r[1] for r in c.execute("PRAGMA table_info(tasks)")}
-    for col, ddl in (("repo_path", "TEXT"), ("pr_url", "TEXT"), ("cost", "REAL DEFAULT 0")):
+    for col, ddl in (("repo_path", "TEXT"), ("pr_url", "TEXT"), ("cost", "REAL DEFAULT 0"),
+                     ("summary", "TEXT"), ("gate_steps", "TEXT"),
+                     ("review_verdict", "TEXT"), ("review_findings", "TEXT"),
+                     ("test_output", "TEXT"), ("archived_at", "REAL")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     return c
@@ -85,6 +88,42 @@ def add_cost(task_id: str, delta: float | None) -> None:
     with _conn() as c:
         c.execute("UPDATE tasks SET cost=cost+?, updated=? WHERE id=?",
                   (delta, time.time(), task_id))
+
+
+def set_summary(task_id: str, summary: str | None) -> None:
+    """The worker's own final wrap-up text — feeds the PR body (see ship.py)."""
+    if not summary:
+        return
+    with _conn() as c:
+        c.execute("UPDATE tasks SET summary=?, updated=? WHERE id=?",
+                  (summary, time.time(), task_id))
+
+
+def set_gate_steps(task_id: str, steps: dict | None, test_output: str | None = None) -> None:
+    with _conn() as c:
+        c.execute("UPDATE tasks SET gate_steps=?, test_output=?, updated=? WHERE id=?",
+                  (json.dumps(steps or {}), test_output, time.time(), task_id))
+
+
+def set_review(task_id: str, verdict: str | None, findings: list[dict] | None) -> None:
+    with _conn() as c:
+        c.execute("UPDATE tasks SET review_verdict=?, review_findings=?, updated=? WHERE id=?",
+                  (verdict, json.dumps(findings or []), time.time(), task_id))
+
+
+def archive_task(task_id: str) -> None:
+    """Manually archive a task now, regardless of age — the board's per-tile Archive
+    button. Distinct from the age-based auto-archive in board.py's `_is_archived`,
+    which this timestamp also satisfies once set (both checks share the same field)."""
+    with _conn() as c:
+        c.execute("UPDATE tasks SET archived_at=?, updated=? WHERE id=?",
+                  (time.time(), time.time(), task_id))
+
+
+def unarchive_task(task_id: str) -> None:
+    with _conn() as c:
+        c.execute("UPDATE tasks SET archived_at=NULL, updated=? WHERE id=?",
+                  (time.time(), task_id))
 
 
 def append_event(task_id: str, kind: str, data: dict | None = None) -> None:

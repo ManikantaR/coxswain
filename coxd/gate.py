@@ -73,6 +73,7 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
     # build catches what vitest/esbuild can't: `tsc` type errors that pass tests but
     # break `nest build` (the #112 lesson, re-proven on #100). Required-ness differs:
     # test/lint absent = UNKNOWN → RED; build absent = genuinely optional → skip.
+    test_output = ""
     for name in ("test", "lint", "build"):
         cmd = entry.get(name)
         if cmd is False:  # deliberately no gate here (repo's CI doesn't run it) — NOT unknown
@@ -92,7 +93,11 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
         if r.returncode != 0:
             return {"passed": False, "failing": name, "steps": steps,
                     "reason": (r.stderr or r.stdout).strip()[-800:]}
-    return {"passed": True, "steps": steps}
+        # Runner summary line (e.g. vitest's "Tests  606 passed (606)") is the cheapest
+        # honest pass-count evidence — no per-runner parsing, just keep the real tail.
+        if name == "test":
+            test_output = (r.stdout or r.stderr).strip()[-1500:]
+    return {"passed": True, "steps": steps, "test_output": test_output}
 
 
 def diff(worktree: Path, base: str | None = None) -> str:
