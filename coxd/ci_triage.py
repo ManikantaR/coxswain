@@ -82,21 +82,40 @@ def _run_id_from_link(link: str) -> str | None:
     return m.group(1) if m else None
 
 
+_LOG_FETCH_RETRIES = 3
+_LOG_FETCH_RETRY_DELAY_S = 5
+
+
+def _fetch_run_logs(repo_slug: str, run_id: str) -> bytes | None:
+    """The logs API can 404/empty-fail for a few seconds right after a job
+    completes (archive not yet assembled) — confirmed 2026-07-26: a real,
+    known auth-cascade flake (10 matches, well over threshold) got escalated
+    to needs_human because this fetch failed once and the caller silently
+    treated that the same as 'not a flake'. Retry before giving up."""
+    for attempt in range(_LOG_FETCH_RETRIES):
+        r = subprocess.run(
+            ["gh", "api", f"repos/{repo_slug}/actions/runs/{run_id}/logs"],
+            capture_output=True,
+        )
+        if r.returncode == 0 and r.stdout:
+            return r.stdout
+        if attempt < _LOG_FETCH_RETRIES - 1:
+            time.sleep(_LOG_FETCH_RETRY_DELAY_S)
+    return None
+
+
 def _job_log_matches_flake(repo_slug: str, run_id: str) -> bool:
     # `gh api .../logs` returns a ZIP archive of every job's log, not text — must be
     # unzipped in memory before matching. Fetching with text=True here would crash
     # decoding the binary payload as UTF-8 (confirmed: this silently broke every
     # flake check until caught here).
-    r = subprocess.run(
-        ["gh", "api", f"repos/{repo_slug}/actions/runs/{run_id}/logs"],
-        capture_output=True,
-    )
-    if r.returncode != 0:
+    stdout = _fetch_run_logs(repo_slug, run_id)
+    if stdout is None:
         return False
     import io
     import zipfile
     try:
-        with zipfile.ZipFile(io.BytesIO(r.stdout)) as zf:
+        with zipfile.ZipFile(io.BytesIO(stdout)) as zf:
             text = "\n".join(
                 zf.read(name).decode("utf-8", errors="replace")
                 for name in zf.namelist()

@@ -19,6 +19,21 @@ import uvicorn
 
 _CLEANUP_INTERVAL_S = 60
 
+# Populated by `_runner`, read by `cancel()` — lets the board stop an in-flight
+# task (kill its asyncio.Task, which propagates a CancelledError into whatever
+# the Agent SDK call is awaiting) instead of the only prior option, which was
+# racing it to `gh pr merge` before a mistaken /retry could finish redoing the
+# work from scratch (see 2026-07-27 duplicate-PR-178/180 incident).
+_running: dict[str, asyncio.Task] = {}
+
+
+def cancel(task_id: str) -> bool:
+    task = _running.get(task_id)
+    if task is None or task.done():
+        return False
+    task.cancel()
+    return True
+
 
 def _reclaim_orphans() -> None:
     """A prior supervisor process (hard-killed, crashed, or replaced by a bare
@@ -44,6 +59,12 @@ async def _run_one(task_id: str, worker_model: str, review_model: str,
                    effort: str) -> None:
     try:
         await loop.run_task(task_id, worker_model, review_model, effort=effort)
+    except asyncio.CancelledError:
+        # A human hit Stop (see `cancel()` above) — distinct from coxd-error so
+        # the board doesn't read this as a crash. Not retryable via /retry from
+        # here since real work may already be committed; /resume is the un-stick.
+        store.set_state(task_id, "needs_human", "stopped-by-user")
+        store.append_event(task_id, "error", {"error": "stopped by user"})
     except Exception as e:  # a crashing task must not take down the supervisor
         store.set_state(task_id, "needs_human", "coxd-error")
         store.append_event(task_id, "error", {"error": str(e)})
@@ -51,18 +72,17 @@ async def _run_one(task_id: str, worker_model: str, review_model: str,
 
 async def _runner(concurrency: int, worker_model: str, review_model: str,
                   effort: str) -> None:
-    running: dict[str, asyncio.Task] = {}
     while True:
-        for tid in [t for t, task in running.items() if task.done()]:
-            del running[tid]
-        if len(running) < concurrency:
+        for tid in [t for t, task in _running.items() if task.done()]:
+            del _running[tid]
+        if len(_running) < concurrency:
             for t in store.queued_tasks():
-                if len(running) >= concurrency:
+                if len(_running) >= concurrency:
                     break
-                if t["id"] in running:
+                if t["id"] in _running:
                     continue
                 store.set_state(t["id"], "working")  # claim before the next scan
-                running[t["id"]] = asyncio.create_task(
+                _running[t["id"]] = asyncio.create_task(
                     _run_one(t["id"], worker_model, review_model, effort))
         await asyncio.sleep(1)
 

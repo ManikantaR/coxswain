@@ -145,6 +145,26 @@ async def api_task_retry(req: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+async def api_task_stop(req: Request) -> JSONResponse:
+    """Cancel an in-flight task in place — the missing option before today (see
+    2026-07-27: a mistaken /retry on a task that already had a green PR raced
+    to completion and opened a duplicate PR, with no way to interrupt it short
+    of merging the original PR first). Only valid while actually running;
+    lands at needs_human/stopped-by-user, same unstick path (/resume) as any
+    other needs_human task — whatever was already committed is not discarded."""
+    tid = req.path_params["tid"]
+    t = store.get_task(tid)
+    if not t:
+        return JSONResponse({"error": "unknown task"}, status_code=404)
+    if t["state"] not in _ACTIVE:
+        return JSONResponse({"error": f"cannot stop from state '{t['state']}'"}, status_code=400)
+    import supervisor
+    if not supervisor.cancel(tid):
+        return JSONResponse({"error": "task isn't actually running (already finishing?)"},
+                            status_code=409)
+    return JSONResponse({"ok": True})
+
+
 async def api_task_resume(req: Request) -> JSONResponse:
     """Resume the SAME worker session with a human-provided note, then re-run the
     shared gate->review->ship tail. For a needs_human task that already has real
@@ -266,6 +286,7 @@ app = Starlette(routes=[
     Route("/api/issues", api_issues),
     Route("/api/dispatch", api_dispatch, methods=["POST"]),
     Route("/api/task/{tid}/retry", api_task_retry, methods=["POST"]),
+    Route("/api/task/{tid}/stop", api_task_stop, methods=["POST"]),
     Route("/api/task/{tid}/resume", api_task_resume, methods=["POST"]),
     Route("/api/task/{tid}/archive", api_task_archive, methods=["POST"]),
     Route("/api/task/{tid}/unarchive", api_task_unarchive, methods=["POST"]),
@@ -355,8 +376,9 @@ const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
 h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
 '<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+pipe(t.stage)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
+(t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
 (t.state==='needs_human'?'<div class=retryrow>'+
- '<button class=rtb title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
+ '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
  '<button class=rsb title="Keeps the existing session and any commits already made, and gives it your note as the next instruction. Cheaper and more targeted than Retry when real work already landed.">Resume w/ note</button>'+
  '<input class=rsnote hidden placeholder="what should it try differently?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':'')+
 (t.archived?'<button class=arb data-mode=unarchive title="Bring this task back into the normal board view.">Unarchive</button>':t.archivable?'<button class=arb data-mode=archive title="Hide this completed task from the board now — same as it aging out on its own, just immediate.">Archive</button>':'')+
@@ -366,7 +388,8 @@ c.querySelector('.fb').onclick=()=>{if(open.has(id)){open.delete(id);f.classList
 const arb=c.querySelector('.arb');if(arb)arb.onclick=async()=>{arb.disabled=true;try{const r=await(await fetch('/api/task/'+id+'/'+arb.dataset.mode,{method:'POST'})).json();if(r.error){alert(r.error);arb.disabled=false}else{sig=null}}catch(e){alert(e);arb.disabled=false}};
 c.querySelectorAll('.step').forEach(stepEl=>{stepEl.onclick=()=>{const s=parseInt(stepEl.dataset.stage,10);
 feedFilter.set(id,feedFilter.get(id)===s?undefined:s);open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}});
-const rtb=c.querySelector('.rtb');if(rtb)rtb.onclick=async()=>{rtb.disabled=true;rtb.textContent='retrying…';try{const r=await(await fetch('/api/task/'+id+'/retry',{method:'POST'})).json();if(r.error){alert(r.error);rtb.disabled=false;rtb.textContent='Retry fresh'}else{sig=null}}catch(e){alert(e)}};
+const spb=c.querySelector('.spb');if(spb)spb.onclick=async()=>{if(!confirm('Stop this task now? Whatever is already committed is kept — it lands at needs_human and you can Resume w/ note to pick it back up.'))return;spb.disabled=true;spb.textContent='stopping…';try{const r=await(await fetch('/api/task/'+id+'/stop',{method:'POST'})).json();if(r.error){alert(r.error);spb.disabled=false;spb.textContent='Stop'}else{sig=null}}catch(e){alert(e)}};
+const rtb=c.querySelector('.rtb');if(rtb)rtb.onclick=async()=>{const warn=rtb.dataset.pr?'This task already has an open PR — Retry fresh starts a SECOND implementation from scratch and will likely open a duplicate PR. Merge or close the existing PR first, or use Resume w/ note instead. Continue anyway?':'Retry fresh discards this session\\'s context and starts over from the original brief. Continue?';if(!confirm(warn))return;rtb.disabled=true;rtb.textContent='retrying…';try{const r=await(await fetch('/api/task/'+id+'/retry',{method:'POST'})).json();if(r.error){alert(r.error);rtb.disabled=false;rtb.textContent='Retry fresh'}else{sig=null}}catch(e){alert(e)}};
 const rsb=c.querySelector('.rsb'),rsnote=c.querySelector('.rsnote'),rsgo=c.querySelector('.rsgo'),rsmsg=c.querySelector('.rsmsg');
 if(rsb)rsb.onclick=()=>{rsb.hidden=true;rsnote.hidden=false;rsgo.hidden=false;rsnote.focus()};
 if(rsgo)rsgo.onclick=async()=>{const note=rsnote.value.trim();if(!note){rsmsg.textContent='note required';return}rsgo.disabled=true;rsmsg.textContent='resuming…';
