@@ -7,13 +7,14 @@ No I/O in this module — see store.py.
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-try:
-    from enum import StrEnum  # 3.11+
-except ImportError:  # pragma: no cover - exercised only on <3.11 interpreters
+if sys.version_info >= (3, 11):  # noqa: UP036 - pyproject floors 3.11, but the gate's own
+    from enum import StrEnum  # daemon still invokes a stray <3.11 interpreter in practice
+else:  # pragma: no cover - exercised only on <3.11 interpreters
     from enum import Enum
 
     class StrEnum(str, Enum):  # noqa: N801, UP042 - drop-in shim IS the pre-3.11 stdlib fallback
