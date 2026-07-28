@@ -37,7 +37,8 @@ import store
 _CORRECTION_RE = re.compile(
     r"\b(no,?\s+don'?t|that'?s wrong|that is wrong|not (?:what|like) (?:i|that)|"
     r"revert that|undo that|stop doing that|you keep|again\?|"
-    r"same (?:bug|issue|mistake) (?:again|as before)|didn'?t (?:i|we) (?:already|just) (?:say|tell|fix))\b",
+    r"same (?:bug|issue|mistake) (?:again|as before)|"
+    r"didn'?t (?:i|we) (?:already|just) (?:say|tell|fix))\b",
     re.IGNORECASE,
 )
 
@@ -67,7 +68,8 @@ def _save_state(state: dict) -> None:
 
 def transcript_files() -> list[Path]:
     """All Claude Code session transcripts across every project, newest-mtime-first."""
-    paths = [Path(p) for p in glob.glob(str(Path.home() / ".claude" / "projects" / "*" / "*.jsonl"))]
+    pattern = str(Path.home() / ".claude" / "projects" / "*" / "*.jsonl")
+    paths = [Path(p) for p in glob.glob(pattern)]
     return sorted(paths, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
 
 
@@ -85,7 +87,9 @@ def _user_text(entry: dict) -> str | None:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        parts = [
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        ]
         return "\n".join(p for p in parts if p) or None
     return None
 
@@ -182,7 +186,13 @@ Transcript (JSONL, one event per line):
 async def run_deep(model: str = "claude-opus-4-8", limit_files: int = 5) -> int:
     """Fresh-context Claude review pass over transcripts since the last deep run.
     Writes pending rule_suggestions. Returns the number written."""
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ResultMessage,
+        TextBlock,
+        query,
+    )
 
     state = _load_state()
     start = float(state.get("last_deep", 0.0))
@@ -241,8 +251,10 @@ async def run_deep(model: str = "claude-opus-4-8", limit_files: int = 5) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="coxd mine-sessions")
     p.add_argument("--since", type=float, default=None,
-                   help="unix ts; only scan transcripts modified since (default: last high-water mark)")
-    p.add_argument("--deep", action="store_true", help="run the fresh-context LLM review pass instead")
+                   help="unix ts; only scan transcripts modified since (default: last high-water "
+                        "mark)")
+    p.add_argument("--deep", action="store_true",
+                   help="run the fresh-context LLM review pass instead")
     p.add_argument("--model", default="claude-opus-4-8", help="model for --deep")
     a = p.parse_args(argv)
     if a.deep:

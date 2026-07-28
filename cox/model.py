@@ -16,7 +16,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only on <3.11 interpreters
     from enum import Enum
 
-    class StrEnum(str, Enum):  # noqa: N801 - matches stdlib name for drop-in compat
+    class StrEnum(str, Enum):  # noqa: N801, UP042 - drop-in shim IS the pre-3.11 stdlib fallback
         """Minimal 3.11 StrEnum shim: members compare/serialize as plain str,
         same as the stdlib version (str .__str__ so f"{x}"/json.dumps behave)."""
 
