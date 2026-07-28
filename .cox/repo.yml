@@ -1,8 +1,14 @@
 # Coxswain's own repo config — the deterministic gate for cox tasks (DESIGN §2.4).
 # Commands run in the task worktree; keep them tokenless and fast.
+# pyproject.toml pins requires-python = ">=3.11" (cox/model.py needs 3.11's
+# enum.StrEnum) and ci.yml pins actions/setup-python to 3.11 — but a bare
+# `pytest`/`ruff` here resolves whatever's first on the gate machine's PATH,
+# which silently picked up an older interpreter (anaconda's 3.9) and made
+# import collection fail with zero code actually broken. Pin python3.11
+# explicitly so local gate runs match CI instead of depending on PATH order.
 commands:
-  test: pytest -q
-  lint: ruff check .
+  test: python3.11 -m pytest -q
+  lint: python3.11 -m ruff check .
 review: full
 target_branch: main
 scm: github
