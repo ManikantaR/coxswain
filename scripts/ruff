@@ -1,0 +1,5 @@
+#!/bin/sh
+# Shim: the gate daemon's PATH has no bare `ruff` binary, only python3.11 -m ruff
+# (repo.yml already pins that for cox's own gate, but this covers any invoker
+# that calls bare `ruff` directly). Kept minimal — just delegates.
+exec python3.11 -m ruff "$@"
