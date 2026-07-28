@@ -11,6 +11,7 @@ import re
 import time
 from pathlib import Path
 
+import rules
 import store
 import worktree
 
@@ -23,5 +24,8 @@ def dispatch(repo_path: str | Path, brief: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", brief.lower())[:28].strip("-") or "task"
     task_id = f"{repo_name}-{slug}-{int(time.time())}"
     wt = worktree.create(repo_path, task_id)
+    rb = rules.rules_block(repo_name)
+    if rb:  # compounding lessons first, so the implementer reads them up front (P1)
+        brief = f"{rb}\n\n{brief}"
     store.create_task(task_id, repo_name, brief, str(wt), repo_path=str(repo_path))
     return task_id

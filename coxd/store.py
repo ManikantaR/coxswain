@@ -36,6 +36,10 @@ def _conn() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS events(
             seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, ts REAL,
             kind TEXT, data TEXT);
+        CREATE TABLE IF NOT EXISTS rule_suggestions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT, text TEXT,
+            source TEXT, evidence TEXT, status TEXT DEFAULT 'pending',
+            created REAL, decided REAL);
         """
     )
     # migrate older dbs: CREATE TABLE IF NOT EXISTS won't add columns to an
@@ -157,3 +161,41 @@ def events(task_id: str, after_seq: int = 0) -> list[dict]:
         ).fetchall()
     return [{"seq": r["seq"], "ts": r["ts"], "kind": r["kind"], "data": json.loads(r["data"])}
             for r in rows]
+
+
+def add_rule_suggestion(repo: str, text: str, source: str, evidence: str = "") -> int:
+    """Record a machine-discovered candidate rule (pending captain review). Never
+    auto-applied — the board approves/rejects (see rules.py's add_rule)."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO rule_suggestions(repo,text,source,evidence,status,created) "
+            "VALUES(?,?,?,?,'pending',?)",
+            (repo, text, source, evidence, time.time()),
+        )
+        return cur.lastrowid
+
+
+def list_rule_suggestions(status: str = "pending") -> list[dict]:
+    with _conn() as c:
+        if status:
+            rows = c.execute(
+                "SELECT * FROM rule_suggestions WHERE status=? ORDER BY created DESC",
+                (status,),
+            ).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM rule_suggestions ORDER BY created DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_rule_suggestion(sid: int) -> dict | None:
+    with _conn() as c:
+        r = c.execute("SELECT * FROM rule_suggestions WHERE id=?", (sid,)).fetchone()
+    return dict(r) if r else None
+
+
+def decide_rule_suggestion(sid: int, status: str) -> None:
+    """status is 'approved' or 'rejected' — rejected rows are kept for audit and
+    never resurfaced (status filter in list_rule_suggestions excludes them)."""
+    with _conn() as c:
+        c.execute("UPDATE rule_suggestions SET status=?, decided=? WHERE id=?",
+                  (status, time.time(), sid))
