@@ -9,8 +9,19 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass, field
-from enum import StrEnum
 from typing import Any
+
+try:
+    from enum import StrEnum  # 3.11+
+except ImportError:  # pragma: no cover - exercised only on <3.11 interpreters
+    from enum import Enum
+
+    class StrEnum(str, Enum):  # noqa: N801 - matches stdlib name for drop-in compat
+        """Minimal 3.11 StrEnum shim: members compare/serialize as plain str,
+        same as the stdlib version (str .__str__ so f"{x}"/json.dumps behave)."""
+
+        def __str__(self) -> str:
+            return str(self.value)
 
 
 class TaskState(StrEnum):
