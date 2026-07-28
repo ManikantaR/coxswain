@@ -278,6 +278,37 @@ async def api_dispatch(req: Request) -> JSONResponse:
     return JSONResponse({"id": tid})
 
 
+async def api_suggestions(_: Request) -> JSONResponse:
+    """Pending machine-discovered candidate rules (issue #7) — session_miner.py
+    writes these; the board is the only path that turns one into a durable rule
+    (captain-gated, same trust boundary as the old manual promote_rule)."""
+    return JSONResponse({"suggestions": store.list_rule_suggestions(status="pending")})
+
+
+async def api_suggestion_approve(req: Request) -> JSONResponse:
+    import rules
+    sid = int(req.path_params["sid"])
+    s = store.get_rule_suggestion(sid)
+    if not s:
+        return JSONResponse({"error": "unknown suggestion"}, status_code=404)
+    if s["status"] != "pending":
+        return JSONResponse({"error": f"already {s['status']}"}, status_code=400)
+    added = rules.add_rule(s["repo"], s["text"])
+    store.decide_rule_suggestion(sid, "approved")
+    return JSONResponse({"ok": True, "added": added})
+
+
+async def api_suggestion_reject(req: Request) -> JSONResponse:
+    sid = int(req.path_params["sid"])
+    s = store.get_rule_suggestion(sid)
+    if not s:
+        return JSONResponse({"error": "unknown suggestion"}, status_code=404)
+    if s["status"] != "pending":
+        return JSONResponse({"error": f"already {s['status']}"}, status_code=400)
+    store.decide_rule_suggestion(sid, "rejected")
+    return JSONResponse({"ok": True})
+
+
 app = Starlette(routes=[
     Route("/", index),
     Route("/api/tasks", api_tasks),
@@ -291,6 +322,9 @@ app = Starlette(routes=[
     Route("/api/task/{tid}/archive", api_task_archive, methods=["POST"]),
     Route("/api/task/{tid}/unarchive", api_task_unarchive, methods=["POST"]),
     Route("/api/restart", api_restart, methods=["POST"]),
+    Route("/api/suggestions", api_suggestions),
+    Route("/api/suggestion/{sid}/approve", api_suggestion_approve, methods=["POST"]),
+    Route("/api/suggestion/{sid}/reject", api_suggestion_reject, methods=["POST"]),
     Route("/events", sse),
 ])
 
@@ -336,6 +370,10 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 <select id=disslist hidden></select>
 <textarea id=dbrief rows=3 placeholder="brief (blank = use the issue)"></textarea>
 <div class=drow><button id=dgo class=go>Dispatch</button><span id=dmsg></span></div>
+</div></section>
+<section id=sug hidden><div class=dform>
+<div class=row><b>Suggested rules</b><span class=spacer></span><button id=sugtoggle>Hide</button></div>
+<div id=suglist></div>
 </div></section>
 <main id=board><div class=empty>Loading…</div></main>
 <script>
@@ -405,6 +443,21 @@ let showArchived=false,es=null;
 function connect(){if(es)es.close();const q=showArchived?'?all=1':'';es=new EventSource('/events'+q);es.onopen=()=>{document.getElementById('conn').textContent='live'};es.onmessage=e=>render(JSON.parse(e.data));es.onerror=()=>{document.getElementById('conn').textContent='reconnecting…'};
 fetch('/api/tasks'+q).then(r=>r.json()).then(render).catch(()=>{})}
 document.getElementById('ab').onclick=()=>{showArchived=!showArchived;sig=null;connect()};
+// --- session-mined rule suggestions (issue #7) — captain approves/rejects, never auto-applied ---
+async function loadSuggestions(){try{const d=await(await fetch('/api/suggestions')).json();const list=d.suggestions||[];const sec=document.getElementById('sug'),ul=document.getElementById('suglist');
+if(!list.length){sec.hidden=true;return}sec.hidden=false;
+const byRepo={};for(const s of list){(byRepo[s.repo]=byRepo[s.repo]||[]).push(s)}
+let h='';for(const repo of Object.keys(byRepo).sort()){h+='<div class=meta style="margin-top:8px"><b>'+esc(repo)+'</b></div>';
+for(const s of byRepo[repo]){h+='<div class=card style="padding:10px;margin-top:6px"><div>'+esc(s.text)+'</div>'+
+(s.evidence?'<div class=last style="opacity:.7">"'+esc(s.evidence)+'"</div>':'')+
+'<div class=meta>'+esc(s.source||'')+'</div>'+
+'<div class=retryrow><button class=sug-ok data-id="'+s.id+'">Approve</button><button class=sug-no data-id="'+s.id+'">Reject</button></div></div>'}}
+ul.innerHTML=h;
+ul.querySelectorAll('.sug-ok').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await(await fetch('/api/suggestion/'+b.dataset.id+'/approve',{method:'POST'})).json();if(r.error){alert(r.error);b.disabled=false}else{loadSuggestions()}}catch(e){alert(e);b.disabled=false}});
+ul.querySelectorAll('.sug-no').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await(await fetch('/api/suggestion/'+b.dataset.id+'/reject',{method:'POST'})).json();if(r.error){alert(r.error);b.disabled=false}else{loadSuggestions()}}catch(e){alert(e);b.disabled=false}});
+}catch(e){}}
+document.getElementById('sugtoggle').onclick=()=>{const l=document.getElementById('suglist');l.hidden=!l.hidden;document.getElementById('sugtoggle').textContent=l.hidden?'Show':'Hide'};
+loadSuggestions();setInterval(loadSuggestions,15000);
 document.getElementById('rb').onclick=async()=>{if(!confirm('Restart coxd now? Refuses if anything is active.'))return;
 try{const r=await(await fetch('/api/restart',{method:'POST'})).json();if(r.error){alert(r.error)}else{alert('Restarting — the board will go blank for a few seconds.')}}catch(e){}};
 connect();

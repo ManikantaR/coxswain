@@ -33,6 +33,14 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list", help="list tasks")
 
+    m = sub.add_parser("mine-sessions",
+                       help="mine ~/.claude session transcripts for candidate compounding rules")
+    m.add_argument("--since", type=float, default=None,
+                   help="unix ts; default resumes from the last run's high-water mark")
+    m.add_argument("--deep", action="store_true",
+                   help="fresh-context LLM review pass instead of the cheap textual scan")
+    m.add_argument("--model", default="claude-opus-4-8", help="model for --deep")
+
     a = p.parse_args(argv)
 
     if a.cmd == "dispatch":
@@ -56,6 +64,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"=> {row['state']}  {row['reason'] or ''}  ${row['cost'] or 0:.3f}")
                 return 0
             time.sleep(1)
+    if a.cmd == "mine-sessions":
+        import session_miner
+        if a.deep:
+            n = asyncio.run(session_miner.run_deep(model=a.model))
+        else:
+            n = session_miner.run_lightweight(since=a.since)
+        print(f"wrote {n} pending rule suggestion(s)")
+        return 0
     return 1
 
 
