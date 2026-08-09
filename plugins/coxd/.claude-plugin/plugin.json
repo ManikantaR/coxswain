@@ -1,0 +1,8 @@
+{
+  "name": "coxd",
+  "description": "Drive the coxd orchestrator as the lead — dispatch GitHub issues to disposable worker agents, watch the plan→gate→review→ship loop, review the PR, merge on your explicit word, deploy. Portable lead-manual so any session on any machine knows coxd without pasted context.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Manikanta Radhakrishna"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "coxswain",
+  "description": "The coxswain orchestrator's own Claude Code plugins — drive coxd (dispatch → gate → review → merge → deploy) as a lead from any repo on any machine.",
+  "owner": {
+    "name": "Manikanta Radhakrishna"
+  },
+  "plugins": [
+    {
+      "name": "coxd",
+      "description": "Drive the coxd autonomous-coding orchestrator as the lead/firstmate — start the daemon, dispatch a GitHub issue to the crew, watch the loop, review the PR, merge on your word, deploy. Install once, use from any repo on any machine.",
+      "source": "./plugins/coxd",
+      "author": {
+        "name": "Manikanta Radhakrishna"
+      },
+      "category": "workflow"
+    }
+  ]
+}
