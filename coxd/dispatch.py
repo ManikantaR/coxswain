@@ -24,8 +24,10 @@ def dispatch(repo_path: str | Path, brief: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", brief.lower())[:28].strip("-") or "task"
     task_id = f"{repo_name}-{slug}-{int(time.time())}"
     wt = worktree.create(repo_path, task_id)
+    intent = brief  # the captain's raw one-liner — titles the PR (see ship.py)
     rb = rules.rules_block(repo_name)
     if rb:  # compounding lessons first, so the implementer reads them up front (P1)
         brief = f"{rb}\n\n{brief}"
-    store.create_task(task_id, repo_name, brief, str(wt), repo_path=str(repo_path))
+    store.create_task(task_id, repo_name, brief, str(wt),
+                      repo_path=str(repo_path), intent=intent)
     return task_id

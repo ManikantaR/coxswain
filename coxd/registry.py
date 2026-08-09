@@ -51,7 +51,11 @@ def scout(repo_path: Path) -> dict:
                    # default — set enabled+command per repo. cwd defaults to the repo;
                    # gate_on_ci skips the deploy if the target branch's CI is red.
                    "deploy": {"enabled": False, "command": None, "cwd": None,
-                              "gate_on_ci": True, "branch": "main"}}
+                              "gate_on_ci": True, "branch": "main"},
+                   # Paths whose change forces a RED greenlight (read every line).
+                   # Secrets/migrations by default; add the repo's sacred code per-repo.
+                   "sacred_globs": [".env", "env*", "**/*secret*",
+                                    "**/migrations/**", "**/alembic/**"]}
     pkg = repo_path / "package.json"
     pyproject = repo_path / "pyproject.toml"
     if pkg.exists():

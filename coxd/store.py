@@ -48,21 +48,25 @@ def _conn() -> sqlite3.Connection:
     for col, ddl in (("repo_path", "TEXT"), ("pr_url", "TEXT"), ("cost", "REAL DEFAULT 0"),
                      ("summary", "TEXT"), ("gate_steps", "TEXT"),
                      ("review_verdict", "TEXT"), ("review_findings", "TEXT"),
-                     ("test_output", "TEXT"), ("archived_at", "REAL")):
+                     ("test_output", "TEXT"), ("archived_at", "REAL"),
+                     ("intent", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     return c
 
 
 def create_task(task_id: str, repo: str, brief: str, worktree: str,
-                repo_path: str = "") -> None:
+                repo_path: str = "", intent: str = "") -> None:
+    """`brief` is the full implementer prompt (rules block + intent); `intent` is
+    the captain's raw one-liner, kept separate so ship.py titles the PR from the
+    real intent, not the prepended rules heading."""
     now = time.time()
     with _conn() as c:
         c.execute(
             "INSERT OR REPLACE INTO tasks"
-            "(id,repo,repo_path,brief,state,worktree,created,updated) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (task_id, repo, repo_path, brief, "queued", worktree, now, now),
+            "(id,repo,repo_path,brief,intent,state,worktree,created,updated) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (task_id, repo, repo_path, brief, intent or brief, "queued", worktree, now, now),
         )
     append_event(task_id, "created", {"repo": repo})
 

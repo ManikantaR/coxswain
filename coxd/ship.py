@@ -14,6 +14,8 @@ import subprocess
 from pathlib import Path
 
 import gate
+import greenlight
+import registry
 import store
 
 _TEST_PATH_MARKERS = ("__tests__/", ".spec.ts", ".spec.tsx", ".test.ts", ".test.tsx")
@@ -82,7 +84,40 @@ def _review_section(verdict: str | None, findings: list[dict]) -> str:
 _SUMMARY_MAX_CHARS = 2000
 
 
-def _build_body(t: dict, wt: Path) -> str:
+def _diff_stat(wt: Path, base: str = "origin/main") -> tuple[list[str], int, int]:
+    """Files changed + total +/- for the branch vs base — the greenlight diff-size
+    input. Best-effort; a git failure yields an empty stat."""
+    r = subprocess.run(["git", "diff", "--numstat", f"{base}...HEAD"],
+                       cwd=wt, capture_output=True, text=True)
+    files: list[str] = []
+    added = deleted = 0
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                a, d, path = parts
+                files.append(path)
+                added += int(a) if a.isdigit() else 0
+                deleted += int(d) if d.isdigit() else 0
+    return files, added, deleted
+
+
+def _greenlight(t: dict, wt: Path) -> tuple[str, str]:
+    """(tier, header) for this PR from coxd's own signal (gate green by construction,
+    review verdict/findings, diff size, per-repo sacred_globs). Advisory — a failure
+    here never blocks the ship."""
+    try:
+        entry = registry.load(t["repo"]) or {}
+        files, added, deleted = _diff_stat(wt, f"origin/{entry.get('target_branch', 'main')}")
+        findings = json.loads(t.get("review_findings") or "[]")
+        tier, reasons = greenlight.tier(findings, t.get("review_verdict"),
+                                        files, added, deleted, entry.get("sacred_globs") or [])
+        return tier, greenlight.header(tier, reasons, findings)
+    except Exception:  # noqa: BLE001 — greenlight is advisory, never fail a ship over it
+        return "", ""
+
+
+def _build_body(t: dict, wt: Path, gl_header: str = "") -> str:
     summary = t.get("summary") or "_(worker produced no summary text)_"
     if len(summary) > _SUMMARY_MAX_CHARS:
         summary = summary[:_SUMMARY_MAX_CHARS].rstrip() + "\n\n_(summary truncated)_"
@@ -91,6 +126,7 @@ def _build_body(t: dict, wt: Path) -> str:
     findings = json.loads(t.get("review_findings") or "[]")
 
     sections = [
+        *([gl_header, "\n---"] if gl_header else []),
         summary,
         "\n---\n### Test evidence",
         _test_evidence(wt),
@@ -106,6 +142,21 @@ def _build_body(t: dict, wt: Path) -> str:
         sections += ["\n### Review", review]
     sections += [f"\n---\nDispatched via coxd (`{t['id']}`) · cost ${t['cost'] or 0:.3f} · 🤖 coxd"]
     return "\n".join(sections)
+
+
+def _pr_title(t: dict) -> str:
+    """PR title from the captain's raw intent — never the prepended rules block.
+    Older tasks predate the `intent` column; fall back to stripping a leading
+    rules block off `brief`. Trailing 'GitHub issue: <url>' is dropped so the
+    title stays the intent, not a URL."""
+    src = t.get("intent") or t.get("brief") or ""
+    lines = [ln for ln in src.strip().splitlines() if ln.strip()]
+    # Skip a leading learned-rules block if this is a legacy row without intent.
+    if lines and lines[0].lstrip().startswith("## Learned rules"):
+        lines = [ln for ln in lines[1:] if not ln.lstrip().startswith("- ")]
+    first = (lines[0] if lines else "coxd task").strip()
+    first = re.split(r"\s*GitHub issue:\s*", first, maxsplit=1)[0].strip() or first
+    return first[:70]
 
 
 def ship(task_id: str) -> tuple[str, str | None]:
@@ -124,8 +175,9 @@ def ship(task_id: str) -> tuple[str, str | None]:
         store.append_event(task_id, "ship-error", {"stage": "push", "err": push.stderr[-300:]})
         return ("push-error", None)
 
-    title = t["brief"].strip().splitlines()[0][:70]
-    body = _build_body(t, wt)
+    title = _pr_title(t)
+    tier, gl_header = _greenlight(t, wt)
+    body = _build_body(t, wt, gl_header)
     pr = subprocess.run(
         ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
         cwd=wt, capture_output=True, text=True)
@@ -135,4 +187,12 @@ def ship(task_id: str) -> tuple[str, str | None]:
     url = pr.stdout.strip().splitlines()[-1] if pr.stdout.strip() else None
     if url:
         store.set_pr_url(task_id, url)
+        if tier:
+            store.append_event(task_id, "greenlight", {"tier": tier})
+        if tier == "GREEN":  # pre-label low-risk PRs for one-click merge (best-effort)
+            subprocess.run(["gh", "label", "create", "coxd-greenlight", "--color", "0E8A16",
+                            "--description", "coxd: low-risk, safe to one-click merge", "--force"],
+                           cwd=wt, capture_output=True, text=True)
+            subprocess.run(["gh", "pr", "edit", url, "--add-label", "coxd-greenlight"],
+                           cwd=wt, capture_output=True, text=True)
     return ("pr", url)
