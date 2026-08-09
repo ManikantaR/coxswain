@@ -1,0 +1,32 @@
+# coxd on the NAS — always-on supervisor (DESIGN-V35 D20).
+# Build context is the coxswain repo root. Deploy: see deploy/README.md.
+services:
+  coxd:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: coxd:latest
+    container_name: coxd
+    restart: unless-stopped
+    ports:
+      - "8791:8791"          # board + SSE; put behind Traefik + auth before exposing (PWA)
+    environment:
+      # gh + git use this. A PAT (repo scope) or a fine-grained token for the target repos.
+      GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN in deploy/.env}
+      COXD_HOME: /data/coxswain
+      COXD_REPO_ROOT: /repo
+      # optional AFK pings (leave blank to no-op)
+      COXD_NTFY_TOPIC: ${COXD_NTFY_TOPIC:-}
+      COXD_NTFY_SERVER: ${COXD_NTFY_SERVER:-}
+      COXD_TG_TOKEN: ${COXD_TG_TOKEN:-}
+      COXD_TG_CHAT: ${COXD_TG_CHAT:-}
+      COXD_BOARD_URL: ${COXD_BOARD_URL:-}
+    volumes:
+      - coxd-data:/data/coxswain     # sqlite store + per-repo registry (persistent)
+      - claude-creds:/root/.claude   # `claude login` writes the Pro-subscription creds here
+      - coxd-repos:/repo             # target repos, cloned in during setup (persistent)
+
+volumes:
+  coxd-data:
+  claude-creds:
+  coxd-repos:
