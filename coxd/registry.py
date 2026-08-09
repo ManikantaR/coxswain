@@ -74,6 +74,17 @@ def scout(repo_path: Path) -> dict:
         entry["test"] = "pytest -q"
         entry["lint"] = "ruff check ." if "ruff" in text else None
         entry["source"] = "pyproject.toml"
+    # Deploy entrypoint: the repo owns its full deploy recipe in a single script;
+    # coxd only TRIGGERS it, staying deploy-agnostic. Auto-detect the common ones so
+    # onboarding is one confirm — but leave enabled=False (never auto-deploy a fresh
+    # repo; the captain flips it on per repo).
+    for candidate, cmd in (("deploy-to-nas.sh", "./deploy-to-nas.sh"),
+                           ("deploy.sh", "./deploy.sh"),
+                           ("bin/deploy", "bin/deploy"),
+                           ("fly.toml", "fly deploy")):
+        if (repo_path / candidate).exists():
+            entry["deploy"]["command"] = cmd
+            break
     return entry
 
 
