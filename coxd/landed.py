@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import ci_triage
+import notify
+import registry
 import store
 import worktree
 
@@ -49,6 +52,72 @@ def _close_issue_if_open(brief: str, repo_slug: str, pr_url: str) -> None:
          "--comment", f"Landed via {pr_url}."])
 
 
+def _latest_ci_failing(slug: str, branch: str) -> bool:
+    """True only if the newest CI run on `branch` has COMPLETED with 'failure'.
+    Pending/none/success → not failing, so the deploy proceeds (a merged PR already
+    passed its own checks). Non-blocking, best-effort — any lookup error is not-failing."""
+    r = _run(["gh", "run", "list", "-R", slug, "--branch", branch, "--limit", "1",
+              "--json", "status,conclusion"])
+    if r.returncode != 0:
+        return False
+    import json
+    try:
+        runs = json.loads(r.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return bool(runs) and runs[0].get("status") == "completed" \
+        and runs[0].get("conclusion") == "failure"
+
+
+def _deploy_stamp(repo_name: str) -> Path:
+    return registry.home() / f"last_deploy_{repo_name.replace('/', '_')}.txt"
+
+
+def _recently_deployed(repo_name: str, window_s: int = 180) -> bool:
+    """Coalesce a burst of merges (a whole backlog landing) into ONE deploy: skip if
+    this repo deployed within the window. Deploys are idempotent (they push latest
+    main), so one covers the batch — avoids N deploys for an N-issue batch."""
+    p = _deploy_stamp(repo_name)
+    try:
+        return p.exists() and (time.time() - float(p.read_text())) < window_s
+    except (ValueError, OSError):
+        return False
+
+
+def _maybe_deploy(t: dict, slug: str) -> None:
+    """Run the repo's configured deploy command after a merge lands — the manual
+    ./deploy-to-nas.sh that used to follow every merge. Opt-in per repo; skipped on
+    a recent deploy or red target-branch CI; best-effort with an AFK ping either way."""
+    dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
+    if not dep.get("enabled") or not dep.get("command"):
+        return
+    if _recently_deployed(t["repo"]):
+        store.append_event(t["id"], "deploy-coalesced",
+                           {"note": "another deploy for this repo ran just now"})
+        return
+    branch = dep.get("branch", "main")
+    if dep.get("gate_on_ci", True) and _latest_ci_failing(slug, branch):
+        store.append_event(t["id"], "deploy-skipped", {"reason": f"{branch} CI is red"})
+        notify.notify_async("coxd: deploy skipped",
+                            f"{slug}: {branch} CI is red — deploy the merge manually", "high")
+        return
+    cwd = dep.get("cwd") or t["repo_path"]
+    store.append_event(t["id"], "deploy-start", {"command": dep["command"]})
+    try:
+        _deploy_stamp(t["repo"]).write_text(str(time.time()))  # claim before running → coalesce
+    except OSError:
+        pass
+    r = _run(["bash", "-lc", dep["command"]], cwd=cwd)
+    if r.returncode == 0:
+        store.append_event(t["id"], "deployed", {"command": dep["command"]})
+        notify.notify_async("coxd: deployed", f"{slug}: deploy ✓ after merge", "default")
+    else:
+        store.append_event(t["id"], "deploy-failed",
+                           {"rc": r.returncode, "err": (r.stderr or "")[-400:]})
+        notify.notify_async("coxd: deploy FAILED",
+                            f"{slug}: deploy rc={r.returncode} — deploy manually", "high")
+
+
 def check_and_cleanup_merged() -> None:
     """One pass: for every pr_ready task, check if its PR merged; if so, clean up."""
     for t in store.list_tasks():
@@ -67,3 +136,4 @@ def check_and_cleanup_merged() -> None:
         _run(["git", "push", "origin", "--delete", branch], cwd=t["repo_path"])
         pr_number = t["pr_url"].rstrip("/").rsplit("/", 1)[-1]
         store.set_state(t["id"], "landed", f"merged as PR #{pr_number}")
+        _maybe_deploy(t, slug)

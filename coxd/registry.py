@@ -46,7 +46,12 @@ def scout(repo_path: Path) -> dict:
     """
     entry: dict = {"test": None, "lint": None, "build": None,
                    "target_branch": "main", "source": None, "runner": None,
-                   "gate_env": {}}  # env the gate injects to match CI (e.g. NODE_OPTIONS heap)
+                   "gate_env": {},  # env the gate injects to match CI (e.g. NODE_OPTIONS heap)
+                   # Opt-in auto-deploy after a merge lands (landed.py). Disabled by
+                   # default — set enabled+command per repo. cwd defaults to the repo;
+                   # gate_on_ci skips the deploy if the target branch's CI is red.
+                   "deploy": {"enabled": False, "command": None, "cwd": None,
+                              "gate_on_ci": True, "branch": "main"}}
     pkg = repo_path / "package.json"
     pyproject = repo_path / "pyproject.toml"
     if pkg.exists():
