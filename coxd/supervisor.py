@@ -26,6 +26,11 @@ _CLEANUP_INTERVAL_S = 60
 # work from scratch (see 2026-07-27 duplicate-PR-178/180 incident).
 _running: dict[str, asyncio.Task] = {}
 
+# reason markers set on orphans at restart so `_runner` knows HOW to recover each
+# (see `_reclaim_orphans`): resume the preserved SDK session, or start fresh.
+_AUTO_RESUME = "auto-resume-on-restart"
+_AUTO_RETRY = "auto-retry-on-restart"
+
 
 def cancel(task_id: str) -> bool:
     task = _running.get(task_id)
@@ -36,22 +41,45 @@ def cancel(task_id: str) -> bool:
 
 
 def _reclaim_orphans() -> None:
-    """A prior supervisor process (hard-killed, crashed, or replaced by a bare
-    `python -m board` that never runs `_runner`) can leave a task sitting in an
-    active state (working/gating/fixing/reviewing/shipping/ci-watching) with no
-    asyncio.Task actually driving it — indistinguishable, from the board alone,
-    from a task that's merely quiet for a moment. Since _runner only ever
-    creates tasks for things it pulls from queued_tasks() itself, anything
-    already in an active state at THIS process's startup could not have been
-    started by it — so it's orphaned by definition. Flag it instead of leaving
-    it to sit forever looking deceptively normal (see 2026-07-25 coxd stall)."""
+    """A prior supervisor process (hard-killed, crashed, or replaced mid-task) can
+    leave a task sitting in an active state (working/gating/fixing/reviewing/
+    shipping/ci-watching) with no asyncio.Task driving it. Since _runner only ever
+    creates tasks for things it pulls from queued_tasks() itself, anything already
+    in an active state at THIS process's startup could not have been started by it
+    — so it's orphaned by definition (see 2026-07-25 coxd stall).
+
+    Recover it automatically rather than parking it at needs_human (the crash-resume
+    bar: a restart must resume and ship, not demand a human). The recovery is chosen
+    by how far the task got — pure state transitions here; `_runner` does the actual
+    resume/retry when it next scans:
+      - a PR is already open  → needs_human. Auto-retry would open a DUPLICATE PR
+        (2026-07-27 dup-PR-178/180 incident) and re-shipping via resume could too;
+        one human glance is the cheapest safe option and this is rare.
+      - a session_id exists   → auto-RESUME: continue the preserved SDK session where
+        it left off (no duplicated work, keeps any commits).
+      - no session yet        → auto-RETRY fresh: it crashed during provisioning or the
+        first worker call, before anything was committed — a clean re-run is safe."""
     for t in store.list_tasks():
-        if t["state"] in board._ACTIVE:
-            store.set_state(t["id"], "needs_human", "orphaned-on-restart")
-            store.append_event(t["id"], "error", {
-                "error": f"orphaned: no worker was running (was '{t['state']}') "
-                         "when this supervisor started — a prior process died "
-                         "or was replaced mid-task",
+        if t["state"] not in board._ACTIVE:
+            continue
+        tid = t["id"]
+        if t.get("pr_url"):
+            store.set_state(tid, "needs_human", "orphaned-on-restart")
+            store.append_event(tid, "error", {
+                "error": f"orphaned after restart with an open PR ({t['pr_url']}) — "
+                         "resume or close/merge the PR manually to avoid a duplicate",
+            })
+        elif t.get("session_id"):
+            store.set_state(tid, "queued", _AUTO_RESUME)
+            store.append_event(tid, "info", {
+                "note": f"auto-resume queued after coxd restart (was '{t['state']}', "
+                        "session preserved)",
+            })
+        else:
+            store.set_state(tid, "queued", _AUTO_RETRY)
+            store.append_event(tid, "info", {
+                "note": f"auto-retry queued after coxd restart (was '{t['state']}', "
+                        "no session/commits yet)",
             })
 
 
@@ -70,6 +98,26 @@ async def _run_one(task_id: str, worker_model: str, review_model: str,
         store.append_event(task_id, "error", {"error": str(e)})
 
 
+async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
+                          effort: str) -> None:
+    """Auto-recovery for an orphan that had a live SDK session (see
+    `_reclaim_orphans`): resume that session where it left off and re-run the
+    gate->review->ship tail, instead of restarting from scratch. Same crash
+    posture as `_run_one` — a failure lands at needs_human, never kills serve."""
+    try:
+        await loop.resume_task(
+            task_id,
+            "coxd restarted while this task was mid-flight — continue from where you "
+            "left off. Re-check the working tree first; some work may already be committed.",
+            worker_model, review_model, effort=effort)
+    except asyncio.CancelledError:
+        store.set_state(task_id, "needs_human", "stopped-by-user")
+        store.append_event(task_id, "error", {"error": "stopped by user"})
+    except Exception as e:  # a crashing task must not take down the supervisor
+        store.set_state(task_id, "needs_human", "coxd-error")
+        store.append_event(task_id, "error", {"error": str(e)})
+
+
 async def _runner(concurrency: int, worker_model: str, review_model: str,
                   effort: str) -> None:
     while True:
@@ -81,9 +129,17 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
                     break
                 if t["id"] in _running:
                     continue
-                store.set_state(t["id"], "working")  # claim before the next scan
-                _running[t["id"]] = asyncio.create_task(
-                    _run_one(t["id"], worker_model, review_model, effort))
+                # An orphan reclaimed for auto-resume (session preserved) continues
+                # its SDK session; everything else — fresh dispatches AND board /retry,
+                # which clears the reason — starts from the brief.
+                if t.get("reason") == _AUTO_RESUME and t.get("session_id"):
+                    store.set_state(t["id"], "fixing")  # claim before the next scan
+                    _running[t["id"]] = asyncio.create_task(
+                        _run_one_resume(t["id"], worker_model, review_model, effort))
+                else:
+                    store.set_state(t["id"], "working")  # claim before the next scan
+                    _running[t["id"]] = asyncio.create_task(
+                        _run_one(t["id"], worker_model, review_model, effort))
         await asyncio.sleep(1)
 
 
