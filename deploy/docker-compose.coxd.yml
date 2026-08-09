@@ -31,18 +31,15 @@ services:
       # LAN-only board behind Traefik. v1 = NO auth (home network); wildcard cert
       # covers *.home.manikantar.com, AdGuard resolves it internally to Traefik.
       - 'traefik.enable=true'
-      - 'traefik.http.routers.coxd.rule=Host(`coxd.manikantar.com`)'
+      - 'traefik.http.routers.coxd.rule=Host(`coxd.home.manikantar.com`)'
       - 'traefik.http.routers.coxd.entrypoints=websecure'
       - 'traefik.http.routers.coxd.tls=true'
-      # apex-level host isn't under the *.home.manikantar.com wildcart → request its
-      # own LE cert via the existing route53 DNS-01 resolver (no public A record needed).
-      - 'traefik.http.routers.coxd.tls.certresolver=route53'
       - 'traefik.http.services.coxd.loadbalancer.server.port=8791'
       # Homepage dashboard auto-discovery
       - 'homepage.group=Applications'
       - 'homepage.name=coxd'
       - 'homepage.icon=mdi-ship-wheel'
-      - 'homepage.href=https://coxd.manikantar.com'
+      - 'homepage.href=https://coxd.home.manikantar.com'
       - 'homepage.description=Autonomous coding orchestrator (coxswain)'
 
 volumes:

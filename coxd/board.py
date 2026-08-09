@@ -25,7 +25,7 @@ import uvicorn
 from sse_starlette.sse import EventSourceResponse
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 STAGES = ["implement", "gate", "review", "merge"]
@@ -309,8 +309,55 @@ async def api_suggestion_reject(req: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+# ── PWA: installable board (add-to-home-screen, offline shell) ──────────────
+_MANIFEST = json.dumps({
+    "name": "coxd — coxswain", "short_name": "coxd", "start_url": "/",
+    "display": "standalone", "background_color": "#0d1117", "theme_color": "#0d1117",
+    "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml",
+               "purpose": "any maskable"}],
+})
+_ICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    '<rect width="512" height="512" rx="96" fill="#0d1117"/>'
+    '<g fill="none" stroke="#3b82f6" stroke-width="22">'
+    '<circle cx="256" cy="256" r="120"/><circle cx="256" cy="256" r="46"/>'
+    '<g stroke-width="26">'
+    '<line x1="256" y1="70" x2="256" y2="170"/><line x1="256" y1="342" x2="256" y2="442"/>'
+    '<line x1="70" y1="256" x2="170" y2="256"/><line x1="342" y1="256" x2="442" y2="256"/>'
+    '<line x1="124" y1="124" x2="195" y2="195"/><line x1="317" y1="317" x2="388" y2="388"/>'
+    '<line x1="388" y1="124" x2="317" y2="195"/><line x1="195" y1="317" x2="124" y2="388"/>'
+    '</g></g></svg>'
+)
+# network-first shell so the board updates instantly; API + SSE always bypass cache (live).
+_SW = (
+    "const C='coxd-v1';"
+    "self.addEventListener('install',e=>{self.skipWaiting();"
+    "e.waitUntil(caches.open(C).then(c=>c.addAll(['/','/icon.svg','/manifest.webmanifest'])))});"
+    "self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));"
+    "self.addEventListener('fetch',e=>{const u=new URL(e.request.url);"
+    "if(u.pathname.startsWith('/api')||u.pathname==='/events')return;"
+    "e.respondWith(fetch(e.request).then(r=>{const cp=r.clone();"
+    "caches.open(C).then(c=>c.put(e.request,cp));return r}).catch(()=>caches.match(e.request)))});"
+)
+
+
+async def manifest(_: Request) -> Response:
+    return Response(_MANIFEST, media_type="application/manifest+json")
+
+
+async def service_worker(_: Request) -> Response:
+    return Response(_SW, media_type="text/javascript")
+
+
+async def icon(_: Request) -> Response:
+    return Response(_ICON, media_type="image/svg+xml")
+
+
 app = Starlette(routes=[
     Route("/", index),
+    Route("/manifest.webmanifest", manifest),
+    Route("/sw.js", service_worker),
+    Route("/icon.svg", icon),
     Route("/api/tasks", api_tasks),
     Route("/api/task/{tid}/events", api_events),
     Route("/api/repos", api_repos),
@@ -329,7 +376,14 @@ app = Starlette(routes=[
 ])
 
 _HTML = """<!doctype html><html><head><meta charset=utf-8><title>coxd</title>
-<meta name=viewport content="width=device-width,initial-scale=1"><style>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=theme-color content="#0d1117"><link rel=manifest href="/manifest.webmanifest">
+<link rel=icon href="/icon.svg"><link rel=apple-touch-icon href="/icon.svg">
+<meta name=apple-mobile-web-app-capable content=yes>
+<meta name=apple-mobile-web-app-status-bar-style content=black-translucent>
+<meta name=apple-mobile-web-app-title content=coxd>
+<script>if('serviceWorker'in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))</script>
+<style>
 :root{--bg:#0d1117;--panel:#161b22;--line:#2a3140;--fg:#e6edf3;--dim:#8b949e;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--acc:#3b82f6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,system-ui,sans-serif}
 header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;gap:10px;align-items:center}
