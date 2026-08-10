@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -21,6 +22,12 @@ import store
 import worktree
 
 _ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
+
+# One deploy per repo at a time — a docker build takes minutes, so a second tap of
+# the board's Deploy button (which bypasses the coalesce window on purpose) must not
+# race a build already in flight. Keyed by repo name.
+_deploy_inflight: set[str] = set()
+_deploy_lock = threading.Lock()
 
 
 def _run(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
@@ -84,25 +91,33 @@ def _recently_deployed(repo_name: str, window_s: int = 180) -> bool:
         return False
 
 
-def _maybe_deploy(t: dict, slug: str) -> None:
-    """Run the repo's configured deploy command after a merge lands — the manual
-    ./deploy-to-nas.sh that used to follow every merge. Opt-in per repo; skipped on
-    a recent deploy or red target-branch CI; best-effort with an AFK ping either way."""
+def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
+    """Run the repo's configured deploy command (the ./deploy-to-nas.sh that used to
+    follow every merge by hand). Two callers:
+      - auto (manual=False): post-merge, opt-in per repo (`deploy.enabled`) and
+        coalesced so a batch of merges deploys once.
+      - manual (manual=True): the board's Deploy button. A human tapped it, so it
+        ignores `enabled` and the coalesce window — but still respects the CI gate
+        (never ship on a red target branch).
+    Returns a result dict for the board; also emits store events + an AFK ping."""
     dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
-    if not dep.get("enabled") or not dep.get("command"):
-        return
-    if _recently_deployed(t["repo"]):
-        store.append_event(t["id"], "deploy-coalesced",
-                           {"note": "another deploy for this repo ran just now"})
-        return
+    if not dep.get("command"):
+        return {"skipped": "no deploy command configured for this repo"}
+    if not manual:
+        if not dep.get("enabled"):
+            return {"skipped": "auto-deploy disabled for this repo"}
+        if _recently_deployed(t["repo"]):
+            store.append_event(t["id"], "deploy-coalesced",
+                               {"note": "another deploy for this repo ran just now"})
+            return {"ok": True, "skipped": "coalesced with a recent deploy"}
     branch = dep.get("branch", "main")
     if dep.get("gate_on_ci", True) and _latest_ci_failing(slug, branch):
         store.append_event(t["id"], "deploy-skipped", {"reason": f"{branch} CI is red"})
         notify.notify_async("coxd: deploy skipped",
-                            f"{slug}: {branch} CI is red — deploy the merge manually", "high")
-        return
+                            f"{slug}: {branch} CI is red — not deploying", "high")
+        return {"error": f"{branch} CI is red — not deploying"}
     cwd = dep.get("cwd") or t["repo_path"]
-    store.append_event(t["id"], "deploy-start", {"command": dep["command"]})
+    store.append_event(t["id"], "deploy-start", {"command": dep["command"], "manual": manual})
     try:
         _deploy_stamp(t["repo"]).write_text(str(time.time()))  # claim before running → coalesce
     except OSError:
@@ -110,12 +125,49 @@ def _maybe_deploy(t: dict, slug: str) -> None:
     r = _run(["bash", "-lc", dep["command"]], cwd=cwd)
     if r.returncode == 0:
         store.append_event(t["id"], "deployed", {"command": dep["command"]})
-        notify.notify_async("coxd: deployed", f"{slug}: deploy ✓ after merge", "default")
-    else:
-        store.append_event(t["id"], "deploy-failed",
-                           {"rc": r.returncode, "err": (r.stderr or "")[-400:]})
-        notify.notify_async("coxd: deploy FAILED",
-                            f"{slug}: deploy rc={r.returncode} — deploy manually", "high")
+        notify.notify_async("coxd: deployed",
+                            f"{slug}: deploy ✓" + ("" if manual else " after merge"), "default")
+        return {"ok": True}
+    err = (r.stderr or r.stdout or "")[-400:]
+    store.append_event(t["id"], "deploy-failed", {"rc": r.returncode, "err": err})
+    notify.notify_async("coxd: deploy FAILED",
+                        f"{slug}: deploy rc={r.returncode} — check the board", "high")
+    return {"error": f"deploy failed (rc={r.returncode})", "detail": err}
+
+
+def _maybe_deploy(t: dict, slug: str) -> None:
+    """Auto post-merge deploy (opt-in per repo). Thin wrapper over run_deploy."""
+    run_deploy(t, slug, manual=False)
+
+
+def deploy_task_async(tid: str) -> dict:
+    """Kick off a manual deploy for a task's repo in a background thread (a docker
+    build takes minutes — don't block the board's event loop). One deploy per repo at
+    a time. Returns immediately; progress lands in the task's event feed + an AFK ping."""
+    t = store.get_task(tid)
+    if not t:
+        return {"error": "unknown task"}
+    if not t.get("repo_path"):
+        return {"error": "task has no repo path"}
+    slug = ci_triage.repo_slug(t["repo_path"])
+    if not slug:
+        return {"error": "cannot resolve the repo slug"}
+    if not ((registry.load(t["repo"]) or {}).get("deploy") or {}).get("command"):
+        return {"error": "no deploy command configured for this repo"}
+    with _deploy_lock:
+        if t["repo"] in _deploy_inflight:
+            return {"error": f"{t['repo']} is already deploying"}
+        _deploy_inflight.add(t["repo"])
+
+    def _bg() -> None:
+        try:
+            run_deploy(t, slug, manual=True)
+        finally:
+            with _deploy_lock:
+                _deploy_inflight.discard(t["repo"])
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 def check_and_cleanup_merged() -> None:

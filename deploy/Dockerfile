@@ -17,6 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Docker CLI + compose plugin (CLIENT only — no daemon in here). coxd drives the NAS
+# host's Docker via the mounted /var/run/docker.sock to build+recreate a repo's
+# containers when you tap Deploy on the board. See deploy/docker-compose.coxd.yml.
+RUN install -m 0755 -d /usr/share/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /usr/share/keyrings/docker.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" \
+        > /etc/apt/sources.list.d/docker.list \
+ && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+ && rm -rf /var/lib/apt/lists/*
+
 # The Claude Code CLI (node) that the Agent SDK shells out to, + coxd's python deps.
 RUN npm install -g @anthropic-ai/claude-code \
  && pip install --no-cache-dir "claude-agent-sdk>=0.2.119" uvicorn starlette

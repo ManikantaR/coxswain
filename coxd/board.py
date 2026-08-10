@@ -15,6 +15,7 @@ import os
 import re
 import time
 
+import registry
 import store
 
 # Every dispatch brief in this project includes a line like
@@ -82,7 +83,16 @@ def _is_archived(t: dict) -> bool:
     return age_days > _ARCHIVE_DAYS
 
 
+def _repo_has_deploy(repo: str, _cache: dict = {}) -> bool:
+    """Does this repo have a deploy command configured? Cached per render pass so a
+    board full of tasks doesn't re-read the same registry file N times."""
+    if repo not in _cache:
+        _cache[repo] = bool(((registry.load(repo) or {}).get("deploy") or {}).get("command"))
+    return _cache[repo]
+
+
 def _tasks_payload(show_archived: bool = False) -> dict:
+    _repo_has_deploy.__defaults__[0].clear()  # fresh registry read each pass
     rows = []
     archived_count = 0
     for t in store.list_tasks():
@@ -99,6 +109,8 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "issue_url": issue_match.group(0) if issue_match else None,
             "archivable": t["state"] in _MANUAL_ARCHIVABLE,
             "archived": bool(t.get("archived_at")),
+            # Deploy button shows on a landed task whose repo has a deploy command.
+            "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
             "_updated": t["updated"] or t["created"] or 0,
         })
@@ -185,6 +197,15 @@ async def api_task_resume(req: Request) -> JSONResponse:
     store.set_state(tid, "fixing")  # claim immediately so the board reflects it's active
     asyncio.create_task(loop.resume_task(tid, note))
     return JSONResponse({"ok": True})
+
+
+async def api_task_deploy(req: Request) -> JSONResponse:
+    """Human-gated deploy: build + recreate this task's repo on the NAS at current
+    main. coxd holds the Docker socket but only acts on this tap. Runs in a
+    background thread; progress lands in the task's event feed + an AFK ping."""
+    import landed
+    res = landed.deploy_task_async(req.path_params["tid"])
+    return JSONResponse(res, status_code=400 if res.get("error") else 200)
 
 
 async def api_task_archive(req: Request) -> JSONResponse:
@@ -366,6 +387,7 @@ app = Starlette(routes=[
     Route("/api/task/{tid}/retry", api_task_retry, methods=["POST"]),
     Route("/api/task/{tid}/stop", api_task_stop, methods=["POST"]),
     Route("/api/task/{tid}/resume", api_task_resume, methods=["POST"]),
+    Route("/api/task/{tid}/deploy", api_task_deploy, methods=["POST"]),
     Route("/api/task/{tid}/archive", api_task_archive, methods=["POST"]),
     Route("/api/task/{tid}/unarchive", api_task_unarchive, methods=["POST"]),
     Route("/api/restart", api_restart, methods=["POST"]),
@@ -473,11 +495,14 @@ h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+
  '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
  '<button class=rsb title="Keeps the existing session and any commits already made, and gives it your note as the next instruction. Cheaper and more targeted than Retry when real work already landed.">Resume w/ note</button>'+
  '<input class=rsnote hidden placeholder="what should it try differently?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':'')+
+(t.deployable?'<div class=retryrow><button class=depb data-repo="'+esc(t.repo)+'" title="Build + recreate this repo\\'s containers on the NAS at current main, then run migrations. Human-gated — coxd does the work; watch Events for progress.">Deploy ▸</button><span class=depmsg></span></div>':'')+
 (t.archived?'<button class=arb data-mode=unarchive title="Bring this task back into the normal board view.">Unarchive</button>':t.archivable?'<button class=arb data-mode=archive title="Hide this completed task from the board now — same as it aging out on its own, just immediate.">Archive</button>':'')+
 '<button class=fb>'+(open.has(t.id)?'Hide':'Events')+'</button><div class="feed'+(open.has(t.id)?' open':'')+'"></div></div>'}
 b.innerHTML=h;for(const c of b.querySelectorAll('.card')){const id=c.dataset.id,f=c.querySelector('.feed');if(open.has(id))loadFeed(id,f);
 c.querySelector('.fb').onclick=()=>{if(open.has(id)){open.delete(id);f.classList.remove('open')}else{open.add(id);f.classList.add('open');loadFeed(id,f)}c.querySelector('.fb').textContent=open.has(id)?'Hide':'Events'};
 const arb=c.querySelector('.arb');if(arb)arb.onclick=async()=>{arb.disabled=true;try{const r=await(await fetch('/api/task/'+id+'/'+arb.dataset.mode,{method:'POST'})).json();if(r.error){alert(r.error);arb.disabled=false}else{sig=null}}catch(e){alert(e);arb.disabled=false}};
+const depb=c.querySelector('.depb'),depmsg=c.querySelector('.depmsg');
+if(depb)depb.onclick=async()=>{if(!confirm('Deploy '+depb.dataset.repo+' at current main to the NAS?\\n\\nThis builds images, recreates containers, and runs migrations — coxd runs the repo\\'s deploy script on the NAS.'))return;depb.disabled=true;depb.textContent='deploying…';depmsg.textContent='';try{const r=await(await fetch('/api/task/'+id+'/deploy',{method:'POST'})).json();if(r.error){depmsg.textContent='✗ '+r.error;depb.disabled=false;depb.textContent='Deploy ▸'}else{depmsg.textContent='building on the NAS — watch Events; you\\'ll get a ping when done';open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}}catch(e){depmsg.textContent='✗ '+e;depb.disabled=false;depb.textContent='Deploy ▸'}};
 c.querySelectorAll('.step').forEach(stepEl=>{stepEl.onclick=()=>{const s=parseInt(stepEl.dataset.stage,10);
 feedFilter.set(id,feedFilter.get(id)===s?undefined:s);open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}});
 const spb=c.querySelector('.spb');if(spb)spb.onclick=async()=>{if(!confirm('Stop this task now? Whatever is already committed is kept — it lands at needs_human and you can Resume w/ note to pick it back up.'))return;spb.disabled=true;spb.textContent='stopping…';try{const r=await(await fetch('/api/task/'+id+'/stop',{method:'POST'})).json();if(r.error){alert(r.error);spb.disabled=false;spb.textContent='Stop'}else{sig=null}}catch(e){alert(e)}};
