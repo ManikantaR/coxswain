@@ -15,6 +15,10 @@ services:
       GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN in deploy/.env}
       COXD_HOME: /data/coxswain
       COXD_REPO_ROOT: /repo
+      # Declares this isolated, LAN-only container as a sandbox so the claude CLI will
+      # run headless as the container's root user. Without it, worker dispatch fails at
+      # startup with "Fatal error in message reader". Safe here: the container is isolated.
+      IS_SANDBOX: "1"
       # optional AFK pings (leave blank to no-op)
       COXD_NTFY_TOPIC: ${COXD_NTFY_TOPIC:-}
       COXD_NTFY_SERVER: ${COXD_NTFY_SERVER:-}

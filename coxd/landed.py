@@ -117,6 +117,14 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
                             f"{slug}: {branch} CI is red — not deploying", "high")
         return {"error": f"{branch} CI is red — not deploying"}
     cwd = dep.get("cwd") or t["repo_path"]
+    # Never ship stale code: fast-forward the deploy checkout to the target branch
+    # first. ff-only so a diverged/dirty clone fails loud instead of silently merging.
+    pr = _run(["git", "-C", cwd, "pull", "--ff-only", "origin", branch])
+    if pr.returncode != 0:
+        store.append_event(t["id"], "deploy-pull-failed",
+                           {"branch": branch, "err": (pr.stderr or pr.stdout or "")[-300:]})
+        return {"error": f"git pull --ff-only origin {branch} failed — refusing to deploy stale code",
+                "detail": (pr.stderr or pr.stdout or "")[-300:]}
     store.append_event(t["id"], "deploy-start", {"command": dep["command"], "manual": manual})
     try:
         _deploy_stamp(t["repo"]).write_text(str(time.time()))  # claim before running → coalesce
