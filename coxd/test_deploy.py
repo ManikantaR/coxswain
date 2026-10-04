@@ -31,13 +31,17 @@ deploy_ran: list = []
 def fake_run(args, cwd=None):
     if args[:3] == ["gh", "run", "list"]:
         return FakeProc(0, json.dumps([ci]))
-    if args and args[0] == "bash":          # the deploy command
-        deploy_ran.append(cwd)
-        return FakeProc(deploy_rc)
     return FakeProc(0)
 
 
+def fake_stream(tid, command, cwd, timeout_s):  # the deploy command
+    deploy_ran.append(cwd)
+    return deploy_rc, ""
+
+
 landed._run = fake_run  # type: ignore[assignment]
+real_stream = landed._stream_deploy
+landed._stream_deploy = fake_stream  # type: ignore[assignment]
 
 
 def mk(tid: str) -> dict:
@@ -79,6 +83,30 @@ check("CI ok → deployed", bool(deploy_ran) and "deployed" in kinds("t3"))
 # 4. recently deployed (t3 just stamped) → coalesce
 deploy_ran.clear(); landed._maybe_deploy(mk("t4"), "o/aura-tutor")
 check("recent deploy → coalesced", not deploy_ran and "deploy-coalesced" in kinds("t4"))
+
+# 5. real streaming runner: output reaches progress/tail, rc propagates
+landed._PROGRESS_EVERY_S = 0.0
+mk("t5")
+rc, out = real_stream("t5", "echo building; echo done; exit 3", "/", 30)
+check("stream: rc + tail captured", rc == 3 and "building" in out and "done" in out)
+check("stream: progress events emitted", "deploy-progress" in kinds("t5"))
+
+# 6. hung deploy → watchdog kills the process group, rc=124 (was: hang forever)
+import time as _t
+mk("t6"); t0 = _t.monotonic()
+rc, out = real_stream("t6", "sleep 30 & wait", "/", 1)
+check("stream: timeout kills + rc 124", rc == 124 and "timed out" in out and _t.monotonic() - t0 < 10)
+
+# 7. a crash inside the background thread still lands a terminal deploy-failed event
+def boom(*a, **k): raise RuntimeError("kaboom")
+landed.ci_triage.repo_slug = lambda path: "o/aura-tutor"  # type: ignore[assignment]
+orig = landed.run_deploy; landed.run_deploy = boom  # type: ignore[assignment]
+mk("t7"); landed.deploy_task_async("t7")
+for _ in range(50):
+    if "deploy-failed" in kinds("t7"): break
+    _t.sleep(0.05)
+landed.run_deploy = orig  # type: ignore[assignment]
+check("bg crash → deploy-failed event", "deploy-failed" in kinds("t7"))
 
 print("\nALL PASS ✓" if all(res) else "\nSOME FAILED ✗")
 sys.exit(0 if all(res) else 1)
