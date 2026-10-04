@@ -83,12 +83,19 @@ def _is_archived(t: dict) -> bool:
     return age_days > _ARCHIVE_DAYS
 
 
-def _repo_has_deploy(repo: str, _cache: dict = {}) -> bool:
-    """Does this repo have a deploy command configured? Cached per render pass so a
-    board full of tasks doesn't re-read the same registry file N times."""
-    if repo not in _cache:
-        _cache[repo] = bool(((registry.load(repo) or {}).get("deploy") or {}).get("command"))
-    return _cache[repo]
+_DEPLOY_CACHE: dict[str, tuple[float, bool]] = {}
+_DEPLOY_CACHE_TTL_S = 30.0
+
+
+def _repo_has_deploy(repo: str) -> bool:
+    """Does this repo have a deploy command configured? Cached briefly so a board
+    full of tasks doesn't re-read the same registry file N times, but expires so a
+    newly enabled deploy shows its button without restarting coxd."""
+    hit = _DEPLOY_CACHE.get(repo)
+    if hit is None or time.time() - hit[0] > _DEPLOY_CACHE_TTL_S:
+        has = bool(((registry.load(repo) or {}).get("deploy") or {}).get("command"))
+        _DEPLOY_CACHE[repo] = (time.time(), has)
+    return _DEPLOY_CACHE[repo][1]
 
 
 def _tasks_payload(show_archived: bool = False) -> dict:

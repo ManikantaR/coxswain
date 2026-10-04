@@ -179,7 +179,8 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
     if pr.returncode != 0:
         store.append_event(t["id"], "deploy-pull-failed",
                            {"branch": branch, "err": (pr.stderr or pr.stdout or "")[-300:]})
-        return {"error": f"git pull --ff-only origin {branch} failed — refusing to deploy stale code",
+        return {"error": f"git pull --ff-only origin {branch} failed — "
+                         "refusing to deploy stale code",
                 "detail": (pr.stderr or pr.stdout or "")[-300:]}
     store.append_event(t["id"], "deploy-start", {"command": dep["command"], "manual": manual})
     try:
@@ -233,8 +234,10 @@ def deploy_task_async(tid: str) -> dict:
         except Exception as e:  # never let the thread die without a terminal event
             print(f"[deploy {tid}] crashed: {e!r}", flush=True)
             try:
-                store.append_event(tid, "deploy-failed", {"rc": -1, "err": f"coxd error: {e!r}"[-400:]})
-                notify.notify_async("coxd: deploy FAILED", f"{slug}: coxd error — {e!r}"[:200], "high")
+                store.append_event(tid, "deploy-failed",
+                                   {"rc": -1, "err": f"coxd error: {e!r}"[-400:]})
+                notify.notify_async("coxd: deploy FAILED",
+                                    f"{slug}: coxd error — {e!r}"[:200], "high")
             except Exception:
                 pass
         finally:

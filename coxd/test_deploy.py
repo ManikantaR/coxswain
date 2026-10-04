@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import time as _t
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-dep-"))
@@ -60,28 +61,34 @@ def set_deploy(cfg: dict) -> None:
 
 
 res = []
-def check(name, cond): res.append(cond); print(("PASS" if cond else "FAIL"), name)
+def check(name, cond):
+    res.append(cond)
+    print(("PASS" if cond else "FAIL"), name)
 
 
 # 1. disabled → no deploy
 set_deploy({"enabled": False, "command": "./deploy-to-nas.sh"})
-deploy_ran.clear(); landed._maybe_deploy(mk("t1"), "o/aura-tutor")
+deploy_ran.clear()
+landed._maybe_deploy(mk("t1"), "o/aura-tutor")
 check("disabled → no deploy", not deploy_ran and "deploy-start" not in kinds("t1"))
 
 # 2. enabled + CI red → skip
 ci = {"status": "completed", "conclusion": "failure"}
 set_deploy({"enabled": True, "command": "./deploy-to-nas.sh", "gate_on_ci": True, "branch": "main"})
-deploy_ran.clear(); landed._maybe_deploy(mk("t2"), "o/aura-tutor")
+deploy_ran.clear()
+landed._maybe_deploy(mk("t2"), "o/aura-tutor")
 check("CI red → skipped", not deploy_ran and "deploy-skipped" in kinds("t2"))
 
 # 3. enabled + CI ok → deploy
 ci = {"status": "completed", "conclusion": "success"}
 landed._deploy_stamp("aura-tutor").unlink(missing_ok=True)
-deploy_ran.clear(); landed._maybe_deploy(mk("t3"), "o/aura-tutor")
+deploy_ran.clear()
+landed._maybe_deploy(mk("t3"), "o/aura-tutor")
 check("CI ok → deployed", bool(deploy_ran) and "deployed" in kinds("t3"))
 
 # 4. recently deployed (t3 just stamped) → coalesce
-deploy_ran.clear(); landed._maybe_deploy(mk("t4"), "o/aura-tutor")
+deploy_ran.clear()
+landed._maybe_deploy(mk("t4"), "o/aura-tutor")
 check("recent deploy → coalesced", not deploy_ran and "deploy-coalesced" in kinds("t4"))
 
 # 5. real streaming runner: output reaches progress/tail, rc propagates
@@ -92,18 +99,23 @@ check("stream: rc + tail captured", rc == 3 and "building" in out and "done" in 
 check("stream: progress events emitted", "deploy-progress" in kinds("t5"))
 
 # 6. hung deploy → watchdog kills the process group, rc=124 (was: hang forever)
-import time as _t
-mk("t6"); t0 = _t.monotonic()
+mk("t6")
+t0 = _t.monotonic()
 rc, out = real_stream("t6", "sleep 30 & wait", "/", 1)
-check("stream: timeout kills + rc 124", rc == 124 and "timed out" in out and _t.monotonic() - t0 < 10)
+check("stream: timeout kills + rc 124",
+      rc == 124 and "timed out" in out and _t.monotonic() - t0 < 10)
 
 # 7. a crash inside the background thread still lands a terminal deploy-failed event
-def boom(*a, **k): raise RuntimeError("kaboom")
+def boom(*a, **k):
+    raise RuntimeError("kaboom")
 landed.ci_triage.repo_slug = lambda path: "o/aura-tutor"  # type: ignore[assignment]
-orig = landed.run_deploy; landed.run_deploy = boom  # type: ignore[assignment]
-mk("t7"); landed.deploy_task_async("t7")
+orig = landed.run_deploy
+landed.run_deploy = boom  # type: ignore[assignment]
+mk("t7")
+landed.deploy_task_async("t7")
 for _ in range(50):
-    if "deploy-failed" in kinds("t7"): break
+    if "deploy-failed" in kinds("t7"):
+        break
     _t.sleep(0.05)
 landed.run_deploy = orig  # type: ignore[assignment]
 check("bg crash → deploy-failed event", "deploy-failed" in kinds("t7"))
