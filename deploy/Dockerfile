@@ -25,18 +25,31 @@ RUN install -m 0755 -d /usr/share/keyrings \
         | gpg --dearmor -o /usr/share/keyrings/docker.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" \
         > /etc/apt/sources.list.d/docker.list \
- && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+ && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin \
  && rm -rf /var/lib/apt/lists/*
 
 # The Claude Code CLI (node) that the Agent SDK shells out to, + coxd's python deps.
 RUN npm install -g @anthropic-ai/claude-code \
  && pip install --no-cache-dir "claude-agent-sdk>=0.2.119" uvicorn starlette
 
+# pnpm for pnpm-monorepo targets (MoneyPulse, aura-tutor). Without it every worker
+# dispatch died at provisioning with `pnpm: not found`. corepack ships with node; the
+# pinned default matches MoneyPulse's `packageManager` field, and corepack will fetch a
+# different pin on demand for other repos (no interactive prompt — we're headless).
+ARG PNPM_VERSION=10.32.1
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable \
+ && corepack prepare pnpm@${PNPM_VERSION} --activate \
+ && pnpm --version
+
 WORKDIR /app
 COPY coxd /app/coxd
 
 # COXD_HOME (sqlite store + repo registry) and COXD_REPO_ROOT (target repos) are volumes.
 ENV COXD_HOME=/data/coxswain COXD_REPO_ROOT=/repo
+# Unbuffered stdout so `docker logs coxd` actually shows the serve banner, cleanup
+# errors and streamed deploy output (it was empty: block-buffered, never flushed).
+ENV PYTHONUNBUFFERED=1
 EXPOSE 8791
 # cli.py uses flat imports → its own dir is on sys.path[0]; run it by path.
 ENTRYPOINT ["tini", "--"]

@@ -9,10 +9,13 @@ and do the bookkeeping automatically instead of repeating it by hand every time.
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 import ci_triage
@@ -32,6 +35,59 @@ _deploy_lock = threading.Lock()
 
 def _run(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+
+
+# A deploy (docker build of a monorepo on the NAS) legitimately takes many minutes, but
+# never hours. Past this, kill it and report deploy-failed instead of hanging forever.
+DEFAULT_DEPLOY_TIMEOUT_S = 45 * 60
+_PROGRESS_EVERY_S = 20.0
+
+
+def _stream_deploy(tid: str, command: str, cwd: str, timeout_s: float) -> tuple[int, str]:
+    """Run the deploy command, STREAMING its output instead of capturing it to the end.
+
+    Why (the "Deploy button dies silently" bug): the old path was
+    subprocess.run(capture_output=True) with no timeout — a multi-minute docker build
+    produced zero visible output, a hung step blocked the thread forever, and nothing
+    ever reached `docker logs`. Now every line is echoed (flushed) to coxd's stdout so
+    `docker logs coxd` shows the build live, a `deploy-progress` event carries the
+    latest line to the board every ~20s, and a watchdog kills the whole process group
+    after `timeout_s`. Returns (returncode, tail-of-output); rc=124 on timeout."""
+    p = subprocess.Popen(
+        ["bash", "-lc", command], cwd=cwd, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        start_new_session=True,  # own process group → the watchdog can kill children too
+    )
+    timed_out = threading.Event()
+
+    def _kill() -> None:
+        timed_out.set()
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    watchdog = threading.Timer(timeout_s, _kill)
+    watchdog.daemon = True
+    watchdog.start()
+    tail: deque[str] = deque(maxlen=40)
+    last_emit = time.monotonic()
+    try:
+        assert p.stdout is not None
+        for line in p.stdout:
+            line = line.rstrip("\n")
+            tail.append(line)
+            print(f"[deploy {tid}] {line}", flush=True)
+            if time.monotonic() - last_emit >= _PROGRESS_EVERY_S:
+                store.append_event(tid, "deploy-progress", {"line": line[-200:]})
+                last_emit = time.monotonic()
+        rc = p.wait()
+    finally:
+        watchdog.cancel()
+    out = "\n".join(tail)
+    if timed_out.is_set():
+        return 124, f"timed out after {int(timeout_s)}s (killed)\n{out}"
+    return rc, out
 
 
 def _pr_merged(pr_url: str, repo_slug: str) -> tuple[bool, str | None]:
@@ -123,24 +179,29 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
     if pr.returncode != 0:
         store.append_event(t["id"], "deploy-pull-failed",
                            {"branch": branch, "err": (pr.stderr or pr.stdout or "")[-300:]})
-        return {"error": f"git pull --ff-only origin {branch} failed — refusing to deploy stale code",
+        return {"error": f"git pull --ff-only origin {branch} failed — "
+                         "refusing to deploy stale code",
                 "detail": (pr.stderr or pr.stdout or "")[-300:]}
     store.append_event(t["id"], "deploy-start", {"command": dep["command"], "manual": manual})
     try:
         _deploy_stamp(t["repo"]).write_text(str(time.time()))  # claim before running → coalesce
     except OSError:
         pass
-    r = _run(["bash", "-lc", dep["command"]], cwd=cwd)
-    if r.returncode == 0:
+    timeout_s = float(dep.get("timeout_s") or DEFAULT_DEPLOY_TIMEOUT_S)
+    try:
+        rc, out = _stream_deploy(t["id"], dep["command"], cwd, timeout_s)
+    except OSError as e:  # bash/cwd missing → still a loud, terminal event
+        rc, out = 127, f"could not start deploy: {e}"
+    if rc == 0:
         store.append_event(t["id"], "deployed", {"command": dep["command"]})
         notify.notify_async("coxd: deployed",
                             f"{slug}: deploy ✓" + ("" if manual else " after merge"), "default")
         return {"ok": True}
-    err = (r.stderr or r.stdout or "")[-400:]
-    store.append_event(t["id"], "deploy-failed", {"rc": r.returncode, "err": err})
+    err = out[-400:]
+    store.append_event(t["id"], "deploy-failed", {"rc": rc, "err": err})
     notify.notify_async("coxd: deploy FAILED",
-                        f"{slug}: deploy rc={r.returncode} — check the board", "high")
-    return {"error": f"deploy failed (rc={r.returncode})", "detail": err}
+                        f"{slug}: deploy rc={rc} — check the board", "high")
+    return {"error": f"deploy failed (rc={rc})", "detail": err}
 
 
 def _maybe_deploy(t: dict, slug: str) -> None:
@@ -170,6 +231,15 @@ def deploy_task_async(tid: str) -> dict:
     def _bg() -> None:
         try:
             run_deploy(t, slug, manual=True)
+        except Exception as e:  # never let the thread die without a terminal event
+            print(f"[deploy {tid}] crashed: {e!r}", flush=True)
+            try:
+                store.append_event(tid, "deploy-failed",
+                                   {"rc": -1, "err": f"coxd error: {e!r}"[-400:]})
+                notify.notify_async("coxd: deploy FAILED",
+                                    f"{slug}: coxd error — {e!r}"[:200], "high")
+            except Exception:
+                pass
         finally:
             with _deploy_lock:
                 _deploy_inflight.discard(t["repo"])
