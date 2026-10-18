@@ -99,7 +99,6 @@ def _repo_has_deploy(repo: str) -> bool:
 
 
 def _tasks_payload(show_archived: bool = False) -> dict:
-    _repo_has_deploy.__defaults__[0].clear()  # fresh registry read each pass
     rows = []
     archived_count = 0
     for t in store.list_tasks():
