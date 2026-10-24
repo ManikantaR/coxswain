@@ -97,6 +97,20 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         if not g["passed"]:
             return _terminal(task_id, "needs_human", "gate-red")
         store.set_gate_steps(task_id, g.get("steps"))
+        # Re-review the fixed diff. Shipping on "the worker said it fixed it"
+        # let two PRs land with their own reviewer's blocking finding still
+        # open (2026-10). Only a fresh `approve` ships; anything else stops.
+        store.set_state(task_id, "reviewing")
+        r = await lane.review(gate.diff(wt), review_model, emit, effort=effort)
+        store.add_cost(task_id, r.cost)
+        emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings,
+                        "pass": "re-review"})
+        if r.outcome == "reviewed":
+            store.set_review(task_id, r.verdict, r.findings)
+        if r.outcome == "review-error":
+            return _terminal(task_id, "needs_human", "review-error")
+        if r.verdict != "approve":
+            return _terminal(task_id, "needs_human", "review-findings")
 
     # --- ship: control plane pushes + opens the PR (workers can't) ----------
     store.set_state(task_id, "shipping")
