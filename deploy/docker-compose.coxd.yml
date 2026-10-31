@@ -8,8 +8,9 @@ services:
     image: coxd:latest
     container_name: coxd
     restart: unless-stopped
-    ports:
-      - "8791:8791"          # board + SSE; put behind Traefik + auth before exposing (PWA)
+    # No host port publish: the board is reachable ONLY through Traefik
+    # (coxd.home.manikantar.com). Publishing 8791 on the NAS bypassed Traefik entirely.
+    # Ops from the NAS shell: `docker exec coxd curl -s localhost:8791/api/tasks`.
     environment:
       # gh + git use this. A PAT (repo scope) or a fine-grained token for the target repos.
       GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN in deploy/.env}
@@ -19,6 +20,7 @@ services:
       # run headless as the container's root user. Without it, worker dispatch fails at
       # startup with "Fatal error in message reader". Safe here: the container is isolated.
       IS_SANDBOX: "1"
+      COXD_BIND: "0.0.0.0"   # inside the container only; Traefik reaches it on traefik-public
       # Commit identity for worker commits (nothing sets user.name/email in the image).
       # Fictional/bot identity only — never a real person's name (privacy rule).
       GIT_AUTHOR_NAME: ${COXD_GIT_NAME:-coxd-nas}

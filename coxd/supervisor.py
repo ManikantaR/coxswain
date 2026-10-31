@@ -13,6 +13,7 @@ import asyncio
 import os
 
 import board
+import factory
 import landed
 import loop
 import store
@@ -124,7 +125,8 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
     while True:
         for tid in [t for t, task in _running.items() if task.done()]:
             del _running[tid]
-        if len(_running) < concurrency:
+        # Factory OFF: start nothing new; whatever is already running finishes.
+        if len(_running) < concurrency and not factory.is_paused():
             for t in store.queued_tasks():
                 if len(_running) >= concurrency:
                     break
@@ -157,11 +159,14 @@ async def _cleanup_loop() -> None:
         await asyncio.sleep(_CLEANUP_INTERVAL_S)
 
 
-async def serve(host: str = "0.0.0.0", port: int = 8791, concurrency: int = 2,  # noqa: S104
+async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
                 worker_model: str = "claude-sonnet-5-5",
                 review_model: str = "claude-opus-5-5",
                 effort: str = "medium") -> None:
     _reclaim_orphans()
+    # Loopback by default (the laptop crew); the NAS container sets COXD_BIND=0.0.0.0
+    # so Traefik can reach it over the docker network.
+    host = host or os.environ.get("COXD_BIND", "127.0.0.1")
     # Model pins are overridable per instance without a rebuild (e.g. drop the
     # reviewer to Sonnet when the weekly Opus cap is hit).
     worker_model = os.environ.get("COXD_WORKER_MODEL") or worker_model

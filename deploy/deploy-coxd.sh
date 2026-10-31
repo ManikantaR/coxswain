@@ -25,5 +25,5 @@ ssh "${NAS_HOST}" "test -f ${REMOTE_DIR}/deploy/.env" \
 echo "[coxd-deploy] build + up on the NAS"
 ssh "${NAS_HOST}" "cd ${REMOTE_DIR}/deploy && docker compose -f docker-compose.coxd.yml --env-file .env up -d --build"
 
-echo "[coxd-deploy] done → board http://${NAS_HOST}:8791/"
+echo "[coxd-deploy] done → board https://coxd.home.manikantar.com/"
 echo "[coxd-deploy] first time? run the auth + clone steps in deploy/README.md (claude login is yours)."
