@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import envscrub
+import quota
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -101,6 +102,10 @@ class WorkerResult:
     # wrap-up of what it did. Used verbatim in the PR body instead of the old
     # "Dispatched via coxd. Cost: $X" placeholder, which told a reviewer nothing.
     summary: str | None = None
+    # Set when the run was cut off by the subscription usage limit: the epoch time the
+    # window resets (from the SDK's RateLimitEvent), or a fallback estimate. The loop
+    # parks the task at `waiting_quota` instead of failing it (see quota.py).
+    quota_reset_at: float | None = None
 
 
 # SEED rubric — ONE source of truth both lanes read (implementor as the bar to clear,
@@ -193,11 +198,13 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
     )
     result: ResultMessage | None = None
     last_text = ""
+    quota_reset_at: float | None = None
     async with ClaudeSDKClient(options=options) as client:
         await client.query(_PREAMBLE.format(wt=worktree) + prompt)
         async for msg in client.receive_response():
             if isinstance(msg, RateLimitEvent):
                 emit("rate_limit", {"info": str(msg.rate_limit_info)})
+                quota_reset_at = quota.rejected_reset_at(msg.rate_limit_info) or quota_reset_at
             elif isinstance(msg, AssistantMessage):
                 for b in msg.content:
                     if isinstance(b, ToolUseBlock):
@@ -207,15 +214,17 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                         last_text = b.text.strip()  # untruncated, for the PR body
             elif isinstance(msg, ResultMessage):
                 result = msg
+    quota_reset_at = quota_reset_at or quota.reset_from_result(result)
     if result is None:
-        return WorkerResult(None, None, True)
+        return WorkerResult(None, None, True, quota_reset_at=quota_reset_at)
     # observability: log real cost/turns/usage so future budgets are calibrated on
     # data, not guesses (the #102 postmortem had no per-stage numbers to work from).
     emit("result", {"cost": result.total_cost_usd, "num_turns": result.num_turns,
                     "stop_reason": result.stop_reason, "usage": result.usage})
     return WorkerResult(result.session_id, result.total_cost_usd,
                         bool(result.is_error or getattr(result, "api_error_status", None)),
-                        result.num_turns, summary=last_text or None)
+                        result.num_turns, summary=last_text or None,
+                        quota_reset_at=quota_reset_at)
 
 
 _CRITERIA = (
@@ -266,6 +275,7 @@ class ReviewOutcome:
     verdict: str | None
     findings: list[dict]
     cost: float | None
+    quota_reset_at: float | None = None
 
 
 async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> ReviewOutcome:
@@ -286,10 +296,12 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
                                  max_budget_usd=_REVIEW_MAX_BUDGET_USD,
                                  output_format={"type": "json_schema", "schema": _REVIEW_SCHEMA})
     text, result = "", None
+    quota_reset_at: float | None = None
     try:
         async for msg in query(prompt=f"# Diff\n```\n{diff}\n```\n\n{_CRITERIA}", options=options):
             if isinstance(msg, RateLimitEvent):
                 emit("rate_limit", {"info": str(msg.rate_limit_info)})
+                quota_reset_at = quota.rejected_reset_at(msg.rate_limit_info) or quota_reset_at
             elif isinstance(msg, AssistantMessage):
                 for b in msg.content:
                     if isinstance(b, TextBlock):
@@ -298,12 +310,14 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
                 result = msg
     except Exception as e:  # SDK raises on max-turns / transport faults — type it, don't crash
         emit("review-error", {"err": str(e)[:200]})
-        return ReviewOutcome("review-error", None, [], None)
+        return ReviewOutcome("review-error", None, [], None, quota_reset_at=quota_reset_at)
     if result is not None:
         emit("result", {"cost": result.total_cost_usd, "num_turns": result.num_turns,
                         "stop_reason": result.stop_reason})
+    quota_reset_at = quota_reset_at or quota.reset_from_result(result)
     if result is None or result.is_error or getattr(result, "api_error_status", None):
-        return ReviewOutcome("review-error", None, [], result.total_cost_usd if result else None)
+        return ReviewOutcome("review-error", None, [], result.total_cost_usd if result else None,
+                             quota_reset_at=quota_reset_at)
     # Primary path: output_format/--json-schema enforces the shape at the API layer, so
     # structured_output is valid regardless of how much prose the model wrote around it
     # (the #103 bug — a stray brace in the reasoning text broke the naive slice below).
