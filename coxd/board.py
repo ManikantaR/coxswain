@@ -15,6 +15,7 @@ import os
 import re
 import time
 
+import factory
 import registry
 import store
 
@@ -129,7 +130,8 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     return {"tasks": rows, "stages": STAGES,
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
-            "archived": archived_count, "archive_days": _ARCHIVE_DAYS}
+            "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
+            "factory": factory.status()}
 
 
 async def index(_: Request) -> HTMLResponse:
@@ -235,6 +237,20 @@ async def api_task_unarchive(req: Request) -> JSONResponse:
         return JSONResponse({"error": "unknown task"}, status_code=404)
     store.unarchive_task(tid)
     return JSONResponse({"ok": True})
+
+
+async def api_factory(req: Request) -> JSONResponse:
+    """GET: is this instance's factory ON or OFF. POST {"paused": bool}: flip it.
+    OFF starts nothing new; running tasks finish; the queue waits (see factory.py)."""
+    if req.method == "GET":
+        return JSONResponse(factory.status())
+    try:
+        body = await req.json()
+    except ValueError:
+        return JSONResponse({"error": "JSON body required"}, status_code=400)
+    if not isinstance(body.get("paused"), bool):
+        return JSONResponse({"error": "paused must be true or false"}, status_code=400)
+    return JSONResponse(factory.set_paused(body["paused"]))
 
 
 async def api_restart(_: Request) -> JSONResponse:
@@ -397,6 +413,7 @@ app = Starlette(routes=[
     Route("/api/task/{tid}/archive", api_task_archive, methods=["POST"]),
     Route("/api/task/{tid}/unarchive", api_task_unarchive, methods=["POST"]),
     Route("/api/restart", api_restart, methods=["POST"]),
+    Route("/api/factory", api_factory, methods=["GET", "POST"]),
     Route("/api/suggestions", api_suggestions),
     Route("/api/suggestion/{sid}/approve", api_suggestion_approve, methods=["POST"]),
     Route("/api/suggestion/{sid}/reject", api_suggestion_reject, methods=["POST"]),
@@ -445,7 +462,7 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 #dmsg{font-size:13px;color:var(--dim);align-self:center}</style></head><body>
 <header><h1>▟ coxd</h1><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b></span>
 <button id=ab class=pill hidden>archived <b>0</b></button>
-<span class=spacer></span><button id=rb title="Restart the coxd process in place — refuses while anything is active">↻ Restart cox</button><button id=nb>+ Dispatch</button><span id=conn class=pill>connecting…</span></header>
+<span class=spacer></span><button id=fb title="Factory ON = picks up queued work. OFF = starts nothing new; running tasks finish.">Factory …</button><button id=rb title="Restart the coxd process in place — refuses while anything is active">↻ Restart cox</button><button id=nb>+ Dispatch</button><span id=conn class=pill>connecting…</span></header>
 <section id=dp hidden><div class=dform>
 <select id=drepo><option value="">— pick a repo —</option></select>
 <div class=drow><input id=diss placeholder="issue URL or # (auto-fills the brief)"><button id=dload>List issues</button></div>
@@ -487,7 +504,9 @@ async function loadFeed(id,el){const d=await(await fetch('/api/task/'+id+'/event
 let evs=tagStages(d.events||[]);const fs=feedFilter.get(id);
 let head='';if(fs!=null){evs=evs.filter(e=>e._stage===fs);head='── showing '+STAGES[fs].toUpperCase()+' only — click that step again to show everything ──\\n\\n'}
 el.textContent=head+evs.map(e=>feedLine(e,'['+fmtTime(e.ts)+'] ')).join('\\n').replace(/^\\n/,'')}
-function render(s){STAGES=s.stages||STAGES;document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+let FACTORY_PAUSED=null;
+function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
+function render(s){STAGES=s.stages||STAGES;renderFactory(s.factory);document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
 const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last,t.issue_url]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
@@ -543,6 +562,8 @@ ul.querySelectorAll('.sug-no').forEach(b=>b.onclick=async()=>{b.disabled=true;tr
 }catch(e){}}
 document.getElementById('sugtoggle').onclick=()=>{const l=document.getElementById('suglist');l.hidden=!l.hidden;document.getElementById('sugtoggle').textContent=l.hidden?'Show':'Hide'};
 loadSuggestions();setInterval(loadSuggestions,15000);
+document.getElementById('fb').onclick=async()=>{const turnOff=!FACTORY_PAUSED;if(!confirm(turnOff?'Turn the factory OFF on this machine? Running tasks finish; nothing new starts.':'Turn the factory ON on this machine? It will start queued work.'))return;
+try{const r=await(await fetch('/api/factory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:turnOff})})).json();if(r.error){alert(r.error)}else{renderFactory(r)}}catch(e){alert(e)}};
 document.getElementById('rb').onclick=async()=>{if(!confirm('Restart coxd now? Refuses if anything is active.'))return;
 try{const r=await(await fetch('/api/restart',{method:'POST'})).json();if(r.error){alert(r.error)}else{alert('Restarting — the board will go blank for a few seconds.')}}catch(e){}};
 connect();
