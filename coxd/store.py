@@ -40,6 +40,7 @@ def _conn() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT, text TEXT,
             source TEXT, evidence TEXT, status TEXT DEFAULT 'pending',
             created REAL, decided REAL);
+        CREATE INDEX IF NOT EXISTS ev_task ON events(task_id, seq);
         """
     )
     # migrate older dbs: CREATE TABLE IF NOT EXISTS won't add columns to an

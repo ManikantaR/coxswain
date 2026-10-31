@@ -21,5 +21,7 @@ store.set_state("t1", "landed", "merged")
 
 payload = board._tasks_payload()
 assert any(r["id"] == "t1" for r in payload["tasks"]), payload
+assert all(isinstance(r["timing"], dict) for r in payload["tasks"]), payload
+assert payload["tz"]
 assert board._tasks_payload() == payload  # second pass uses the TTL cache, no crash
 print("ok test_board")

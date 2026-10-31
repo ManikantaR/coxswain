@@ -18,6 +18,7 @@ import time
 import factory
 import registry
 import store
+import timeline
 
 # Every dispatch brief in this project includes a line like
 # "GitHub issue: https://github.com/<owner>/<repo>/issues/<n>" by convention —
@@ -103,6 +104,7 @@ def _repo_has_deploy(repo: str) -> bool:
 def _tasks_payload(show_archived: bool = False) -> dict:
     rows = []
     archived_count = 0
+    now = time.time()
     for t in store.list_tasks():
         if _is_archived(t):
             archived_count += 1
@@ -121,6 +123,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             # Deploy button shows on a landed task whose repo has a deploy command.
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
+            "timing": timeline.derive(t, evs, now),
             "_updated": t["updated"] or t["created"] or 0,
         })
     # needs-you first, then active, then most-recently-updated first within each
@@ -130,6 +133,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     for r in rows:
         del r["_updated"]
     return {"tasks": rows, "stages": STAGES,
+            "tz": os.environ.get("COXD_TZ", "America/New_York"),
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
             "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
