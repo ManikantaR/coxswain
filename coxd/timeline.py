@@ -28,7 +28,7 @@ def derive(task: dict, events: list, now: float) -> dict:
 
     buckets = {b: 0.0 for b in ("queued", "provision", "implement", "gate", "fix",
                                 "review", "ship", "ci", "paused", "human")}
-    for (ts, st), (nxt, _) in zip(states, states[1:]):
+    for (ts, st), (nxt, _) in zip(states, states[1:], strict=False):
         b = _BUCKET.get(st or "")
         if b:
             buckets[b] += max(0.0, nxt - ts)
