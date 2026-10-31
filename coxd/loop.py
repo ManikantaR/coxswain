@@ -21,8 +21,8 @@ import worktree
 MAX_FIX = 2
 
 
-async def run_task(task_id: str, worker_model: str = "claude-sonnet-5",
-                   review_model: str = "claude-opus-4-8",
+async def run_task(task_id: str, worker_model: str = "claude-sonnet-5-5",
+                   review_model: str = "claude-opus-5-5",
                    effort: str = "medium") -> str:
     t = store.get_task(task_id)
     if t is None:
@@ -140,8 +140,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
     return _terminal(task_id, "pr_ready", None)
 
 
-async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonnet-5",
-                      review_model: str = "claude-opus-4-8",
+async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonnet-5-5",
+                      review_model: str = "claude-opus-5-5",
                       effort: str = "medium") -> str:
     """Board-triggered resume: a human gives the SAME worker session a note (e.g.
     'the gate-red was a flaky port conflict, just retry' or 'use approach X instead'),

@@ -10,6 +10,7 @@ in-flight sessions resume.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import board
 import landed
@@ -157,10 +158,14 @@ async def _cleanup_loop() -> None:
 
 
 async def serve(host: str = "0.0.0.0", port: int = 8791, concurrency: int = 2,  # noqa: S104
-                worker_model: str = "claude-sonnet-5",
-                review_model: str = "claude-opus-4-8",
+                worker_model: str = "claude-sonnet-5-5",
+                review_model: str = "claude-opus-5-5",
                 effort: str = "medium") -> None:
     _reclaim_orphans()
+    # Model pins are overridable per instance without a rebuild (e.g. drop the
+    # reviewer to Sonnet when the weekly Opus cap is hit).
+    worker_model = os.environ.get("COXD_WORKER_MODEL") or worker_model
+    review_model = os.environ.get("COXD_REVIEW_MODEL") or review_model
     config = uvicorn.Config(board.app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
     print(f"coxd → http://{host}:{port}/  (concurrency {concurrency}, effort {effort})")
