@@ -25,6 +25,7 @@ _ISSUE_URL_RE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+")
 import uvicorn
 from sse_starlette.sse import EventSourceResponse
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
@@ -380,7 +381,63 @@ async def icon(_: Request) -> Response:
     return Response(_ICON, media_type="image/svg+xml")
 
 
-app = Starlette(routes=[
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _allowed_hosts() -> set[str]:
+    """Hostnames the board answers to. COXD_ALLOWED_HOSTS (comma-separated) adds to the
+    defaults — e.g. the Traefik name. Ports are ignored."""
+    hosts = {"localhost", "127.0.0.1", "coxd.home.manikantar.com"}
+    extra = os.environ.get("COXD_ALLOWED_HOSTS", "")
+    hosts.update(h.strip().lower() for h in extra.split(",") if h.strip())
+    return hosts
+
+
+def _hostname(value: str) -> str:
+    """'https://Coxd.Example:8791/x' or 'coxd.example:8791' → 'coxd.example'."""
+    v = value.strip().lower()
+    if "://" in v:
+        v = v.split("://", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["):  # [::1]:8791
+        return v.split("]", 1)[0] + "]"
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+class _GuardMiddleware:
+    """Refuse requests that a malicious web page could forge.
+
+    The board has no login yet, so any page open in a LAN browser could POST to
+    http://<nas>:8791/api/dispatch (a "simple" text/plain POST needs no CORS
+    preflight) — and a dispatched brief runs an agent next to docker.sock. Two checks:
+      - Host must be one of ours → defeats DNS rebinding.
+      - On writes, a present Origin must be one of ours → defeats cross-site POSTs.
+        (Browsers always send Origin on POST; curl/scripts send none and pass.)
+    Real authentication comes later (Traefik forward-auth); this is the floor.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        allowed = _allowed_hosts()
+        reason = None
+        if _hostname(headers.get("host", "")) not in allowed:
+            reason = "unknown host"
+        elif scope.get("method", "GET") not in _SAFE_METHODS:
+            origin = headers.get("origin")
+            if origin is not None and _hostname(origin) not in allowed:
+                reason = "cross-origin write"
+        if reason:
+            resp = JSONResponse({"error": f"forbidden: {reason}"}, status_code=403)
+            return await resp(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+app = Starlette(middleware=[Middleware(_GuardMiddleware)], routes=[
     Route("/", index),
     Route("/manifest.webmanifest", manifest),
     Route("/sw.js", service_worker),
