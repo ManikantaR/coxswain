@@ -19,6 +19,7 @@ import loop
 import quota
 import store
 import uvicorn
+import watchdog
 
 _CLEANUP_INTERVAL_S = 60
 
@@ -189,4 +190,5 @@ async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
     print(f"coxd → http://{host}:{port}/  (concurrency {concurrency}, effort {effort})")
     await asyncio.gather(server.serve(),
                          _runner(concurrency, worker_model, review_model, effort),
-                         _cleanup_loop())
+                         _cleanup_loop(),
+                         watchdog.run())

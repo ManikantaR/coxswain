@@ -15,6 +15,8 @@ import os
 import threading
 import urllib.parse
 import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import registry
 
@@ -40,17 +42,38 @@ def _config() -> dict:
 
 
 def notify(title: str, message: str, priority: str = "default") -> list[str]:
-    """Send to every configured channel. Returns which fired (for tests/logs)."""
+    """Send to every configured channel. Returns which fired (for tests/logs).
+
+    Low-priority messages, and anything inside the household quiet window, arrive
+    silently (no sound/vibration) — still delivered, just not waking anyone."""
     cfg = _config()
     url = cfg.get("board_url")
+    silent = priority == "low" or in_quiet_hours()
     sent: list[str] = []
     if cfg.get("ntfy_topic"):
-        _ntfy(cfg, title, message, url, priority)
+        _ntfy(cfg, title, message, url, "min" if silent else priority)
         sent.append("ntfy")
     if cfg.get("telegram_token") and cfg.get("telegram_chat"):
-        _telegram(cfg, title, message, url)
+        _telegram(cfg, title, message, url, silent=silent)
         sent.append("telegram")
     return sent
+
+
+def local_now() -> datetime:
+    """Now in the household timezone (COXD_TZ, default America/New_York)."""
+    return datetime.now(ZoneInfo(os.environ.get("COXD_TZ", "America/New_York")))
+
+
+def in_quiet_hours(now: datetime | None = None) -> bool:
+    """COXD_QUIET='HH:MM-HH:MM' (default 22:00-07:15), wrapping midnight."""
+    now = now or local_now()
+    spec = os.environ.get("COXD_QUIET", "22:00-07:15")
+    try:
+        a, b = (int(x[:2]) * 60 + int(x[3:5]) for x in spec.split("-"))
+    except (ValueError, IndexError):
+        return False
+    m = now.hour * 60 + now.minute
+    return (a <= m or m < b) if a > b else (a <= m < b)
 
 
 def notify_async(title: str, message: str, priority: str = "default") -> None:
@@ -73,10 +96,14 @@ def _ntfy(cfg: dict, title: str, message: str, url: str | None, priority: str) -
     urllib.request.urlopen(req, timeout=10)  # noqa: S310
 
 
-def _telegram(cfg: dict, title: str, message: str, url: str | None) -> None:
-    text = f"*{title}*\n{message}" + (f"\n{url}" if url else "")
+def _telegram(cfg: dict, title: str, message: str, url: str | None,
+              silent: bool = False) -> None:
+    # Plain text: Markdown mode rejected messages containing task ids/states with
+    # underscores (e.g. waiting_quota), and the failure was swallowed — a lost ping.
+    text = f"{title}\n{message}" + (f"\n{url}" if url else "")
     data = urllib.parse.urlencode(
-        {"chat_id": cfg["telegram_chat"], "text": text, "parse_mode": "Markdown"}).encode()
+        {"chat_id": cfg["telegram_chat"], "text": text,
+         "disable_notification": "true" if silent else "false"}).encode()
     urllib.request.urlopen(  # noqa: S310
         f"https://api.telegram.org/bot{cfg['telegram_token']}/sendMessage",
         data=data, timeout=10)
