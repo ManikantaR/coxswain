@@ -13,6 +13,7 @@ import asyncio
 import os
 
 import board
+import factory
 import landed
 import loop
 import store
@@ -124,7 +125,8 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
     while True:
         for tid in [t for t, task in _running.items() if task.done()]:
             del _running[tid]
-        if len(_running) < concurrency:
+        # Factory OFF: start nothing new; whatever is already running finishes.
+        if len(_running) < concurrency and not factory.is_paused():
             for t in store.queued_tasks():
                 if len(_running) >= concurrency:
                     break
