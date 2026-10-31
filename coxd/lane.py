@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import envscrub
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -165,6 +166,10 @@ _WORKER_MAX_BUDGET_USD = 8.0
 _REVIEW_MAX_BUDGET_USD = 1.5
 
 
+# Workers never get the GitHub credential: only the control plane (ship.py/landed.py
+# in the coxd process) pushes and opens PRs. A worker holding GH_TOKEN could `gh pr
+# merge` or push main, and the text-matching boundary hook is easy to route around.
+# See envscrub.py.
 async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                      resume: str | None = None, effort: str = "medium",
                      task_budget_tokens: int | None = _WORKER_TASK_BUDGET_TOKENS,
@@ -181,6 +186,7 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
             HookMatcher(matcher="Edit", hooks=[boundary]),
         ]},
         permission_mode="bypassPermissions",
+        env=envscrub.sdk_blanking(),
         resume=resume, max_turns=100,
         task_budget={"total": task_budget_tokens} if task_budget_tokens else None,
         max_budget_usd=max_budget_usd,
@@ -275,6 +281,7 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
     # mutating/spawning/network tool so the reviewer is genuinely read-only (it only emits JSON).
     options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
                                  allowed_tools=[], max_turns=10, effort=effort,
+                                 env=envscrub.sdk_blanking(),
                                  disallowed_tools=_WORKER_DENY + ["Bash", "Write", "Edit"],
                                  max_budget_usd=_REVIEW_MAX_BUDGET_USD,
                                  output_format={"type": "json_schema", "schema": _REVIEW_SCHEMA})

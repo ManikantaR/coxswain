@@ -160,13 +160,17 @@ async def _cleanup_loop() -> None:
 
 
 async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
-                worker_model: str = "claude-sonnet-5",
-                review_model: str = "claude-opus-4-8",
+                worker_model: str = "claude-sonnet-5-5",
+                review_model: str = "claude-opus-5-5",
                 effort: str = "medium") -> None:
     _reclaim_orphans()
     # Loopback by default (the laptop crew); the NAS container sets COXD_BIND=0.0.0.0
     # so Traefik can reach it over the docker network.
     host = host or os.environ.get("COXD_BIND", "127.0.0.1")
+    # Model pins are overridable per instance without a rebuild (e.g. drop the
+    # reviewer to Sonnet when the weekly Opus cap is hit).
+    worker_model = os.environ.get("COXD_WORKER_MODEL") or worker_model
+    review_model = os.environ.get("COXD_REVIEW_MODEL") or review_model
     config = uvicorn.Config(board.app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
     print(f"coxd → http://{host}:{port}/  (concurrency {concurrency}, effort {effort})")

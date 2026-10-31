@@ -7,9 +7,10 @@ never a silent "skip" (the #99 "gate lied" defect). Zero tokens.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
+
+import envscrub
 
 
 def _check_migrations(worktree: Path) -> str | None:
@@ -61,7 +62,7 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
     # Replicate the repo's CI-critical env so the gate matches CI, not a bare shell.
     # apps/web's jsdom suite OOMs without CI's NODE_OPTIONS heap bump — without this the
     # gate forces workers to hack package.json / drop tests to get green (the #101 defect).
-    env = {**os.environ, **(entry.get("gate_env") or {})}
+    env = envscrub.scrubbed_env(entry.get("gate_env") or {})  # gate runs worker-written code
     steps: dict[str, str] = {}
     # migration-registration parity FIRST (fail fast, cheap): closes the gate's e2e
     # blind spot where unregistered drizzle migrations pass unit+build but 500 in CI.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import envscrub
 import registry
 
 
@@ -73,7 +74,9 @@ def provision(wt: Path) -> dict:
         return {"skipped": "no node manifest"}
     last: dict = {}
     for cmd in plans:
-        r = subprocess.run(["sh", "-c", cmd], cwd=wt, capture_output=True, text=True)
+        # install runs package lifecycle scripts the worker may have edited → no secrets
+        r = subprocess.run(["sh", "-c", cmd], cwd=wt, capture_output=True, text=True,
+                           env=envscrub.scrubbed_env())
         last = {"ran": cmd, "ok": r.returncode == 0}
         if r.returncode == 0:
             return last
