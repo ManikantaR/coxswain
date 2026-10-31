@@ -78,3 +78,26 @@ after it for >45 min means coxd itself died; check `docker logs coxd`.
 History: before this, the deploy ran via `subprocess.run(capture_output=True)` with no
 timeout and Python stdout was block-buffered — so a multi-minute build looked dead, a hung
 step blocked forever, and `docker logs` was empty ("Deploy dies silently", 2026-08-22).
+
+## Upgrading to the pinned / persistent image (factory Phase 0, 2026-10-31)
+
+The image now sets `CLAUDE_CONFIG_DIR=/root/.claude` so the CLI's account state lives in
+the `claude-creds` volume (it used to sit at `/root/.claude.json`, outside every volume,
+so each rebuild logged coxd out). git→GitHub auth is baked into `/etc/gitconfig` (gh
+credential helper), so `gh auth setup-git` is no longer needed after a rebuild.
+
+One-time, **before** the first rebuild with this image, carry the existing login into
+the volume so you don't have to log in again:
+
+```bash
+ssh nas docker exec coxd cp -p /root/.claude.json /root/.claude/.claude.json
+```
+
+After the rebuild, verify both survive:
+
+```bash
+ssh nas 'docker exec coxd sh -c "cd /tmp && claude -p \"reply ok\" && git -C /repo/MoneyPulse ls-remote origin HEAD"'
+```
+
+Versions are pinned (`CLAUDE_CODE_VERSION`, `CLAUDE_AGENT_SDK_VERSION` build args) and
+the CLI's self-updater is off. Bump deliberately, then re-run a proving task.

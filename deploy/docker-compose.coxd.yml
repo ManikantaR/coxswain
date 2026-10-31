@@ -19,6 +19,12 @@ services:
       # run headless as the container's root user. Without it, worker dispatch fails at
       # startup with "Fatal error in message reader". Safe here: the container is isolated.
       IS_SANDBOX: "1"
+      # Commit identity for worker commits (nothing sets user.name/email in the image).
+      # Fictional/bot identity only — never a real person's name (privacy rule).
+      GIT_AUTHOR_NAME: ${COXD_GIT_NAME:-coxd-nas}
+      GIT_AUTHOR_EMAIL: ${COXD_GIT_EMAIL:-coxd-nas@users.noreply.github.com}
+      GIT_COMMITTER_NAME: ${COXD_GIT_NAME:-coxd-nas}
+      GIT_COMMITTER_EMAIL: ${COXD_GIT_EMAIL:-coxd-nas@users.noreply.github.com}
       # optional AFK pings (leave blank to no-op)
       COXD_NTFY_TOPIC: ${COXD_NTFY_TOPIC:-}
       COXD_NTFY_SERVER: ${COXD_NTFY_SERVER:-}

@@ -22,12 +22,29 @@ def _default_base(repo_path: Path) -> str:
     return "HEAD"
 
 
+def _fetch(repo_path: Path) -> None:
+    """Refresh origin before branching. Local scratch repos have no remote → skip.
+
+    A repo WITH a remote whose fetch fails (e.g. no git credentials in the NAS
+    container after a rebuild) used to be swallowed, so the worker silently branched
+    from a weeks-old clone. Fail loudly instead — a stale base is worse than no task.
+    """
+    remotes = subprocess.run(["git", "remote"], cwd=repo_path,
+                             capture_output=True, text=True).stdout.split()
+    if not remotes:
+        return
+    r = subprocess.run(["git", "fetch", "--quiet", "--prune"], cwd=repo_path,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git fetch failed in {repo_path} — refusing to branch from a "
+                           f"stale base: {(r.stderr or '').strip()[:300]}")
+
+
 def create(repo_path: Path, task_id: str) -> Path:
     wt = registry.home() / "worktrees" / task_id
     wt.parent.mkdir(parents=True, exist_ok=True)
     branch = f"coxd/{task_id}"
-    subprocess.run(["git", "fetch", "--quiet"], cwd=repo_path,
-                   capture_output=True)  # best-effort; local scratch repos have no remote
+    _fetch(repo_path)
     subprocess.run(
         ["git", "worktree", "add", "-b", branch, str(wt), _default_base(repo_path)],
         cwd=repo_path, check=True, capture_output=True, text=True,
