@@ -12,8 +12,15 @@ echo "[coxd-deploy] syncing coxswain → ${NAS_HOST}:${REMOTE_DIR}/"
 # ("invalid path"). tar-over-ssh is version-agnostic and works everywhere.
 COPYFILE_DISABLE=1 tar czf - -C "${SRC}" \
     --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-    --exclude='*.egg-info' --exclude='./cox' --exclude='./data' . \
+    --exclude='*.egg-info' --exclude='./cox' --exclude='./data' \
+    --exclude='./deploy/.env' --exclude='./deploy/.env.*' . \
   | ssh "${NAS_HOST}" "mkdir -p ${REMOTE_DIR} && tar xzf - -C ${REMOTE_DIR}"
+
+# The NAS deploy/.env is the ONLY copy of the live secrets (GH_TOKEN, COXD_TG_*). It is
+# excluded from the tar above: shipping the workstation's (gitignored) deploy/.env used
+# to silently overwrite it — the 2026-10-31 rebuild wiped the Telegram settings.
+ssh "${NAS_HOST}" "test -f ${REMOTE_DIR}/deploy/.env" \
+  || { echo "[coxd-deploy] ${REMOTE_DIR}/deploy/.env missing on the NAS — create it (see deploy/README.md)" >&2; exit 3; }
 
 echo "[coxd-deploy] build + up on the NAS"
 ssh "${NAS_HOST}" "cd ${REMOTE_DIR}/deploy && docker compose -f docker-compose.coxd.yml --env-file .env up -d --build"
