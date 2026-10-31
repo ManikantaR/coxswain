@@ -27,7 +27,8 @@ import worktree  # noqa: E402
 
 def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
-                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                   env={**os.environ,
+                        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"})
 
 
@@ -62,7 +63,8 @@ def main() -> int:
 
     upstream = _repo(root, "upstream")
     clone = root / "clone"
-    subprocess.run(["git", "clone", "-q", str(upstream), str(clone)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", str(upstream), str(clone)],
+                   check=True, capture_output=True)
     wt2 = worktree.create(clone, "clone-1")
     fails += not (wt2 / "f.txt").exists()
     print("reachable remote → worktree created:", (wt2 / "f.txt").exists())
