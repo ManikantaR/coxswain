@@ -20,6 +20,10 @@ services:
       # run headless as the container's root user. Without it, worker dispatch fails at
       # startup with "Fatal error in message reader". Safe here: the container is isolated.
       IS_SANDBOX: "1"
+      # Household time: quiet hours (silent pings 22:00-07:15), the 07:20 morning
+      # summary and "resumes ~HH:MM" are all local. tzdata is in the image.
+      TZ: America/New_York
+      COXD_TZ: America/New_York
       COXD_BIND: "0.0.0.0"   # inside the container only; Traefik reaches it on traefik-public
       # Commit identity for worker commits (nothing sets user.name/email in the image).
       # Fictional/bot identity only — never a real person's name (privacy rule).
