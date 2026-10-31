@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 import time
 
 import factory
@@ -245,11 +246,19 @@ async def api_task_unarchive(req: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+def _factory_payload() -> dict:
+    return {
+        **factory.status(),
+        "host": os.environ.get("COXD_HOST_LABEL") or socket.gethostname(),
+        "role": os.environ.get("COXD_ROLE") or "primary",
+    }
+
+
 async def api_factory(req: Request) -> JSONResponse:
     """GET: is this instance's factory ON or OFF. POST {"paused": bool}: flip it.
     OFF starts nothing new; running tasks finish; the queue waits (see factory.py)."""
     if req.method == "GET":
-        return JSONResponse(factory.status())
+        return JSONResponse(_factory_payload())
     try:
         body = await req.json()
     except ValueError:
@@ -379,7 +388,7 @@ _ICON = (
 )
 # network-first shell so the board updates instantly; API + SSE always bypass cache (live).
 _SW = (
-    "const C='coxd-v1';"
+    "const C='coxd-v2';"
     "self.addEventListener('install',e=>{self.skipWaiting();"
     "e.waitUntil(caches.open(C).then(c=>c.addAll(['/','/icon.svg','/manifest.webmanifest'])))});"
     "self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));"
@@ -522,8 +531,11 @@ button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(-
 #dp{border-bottom:1px solid var(--line);background:var(--panel)}.dform{max-width:820px;margin:0 auto;padding:14px 16px;display:grid;gap:8px}
 input,select,textarea{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%}
 textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:500}
-#dmsg{font-size:13px;color:var(--dim);align-self:center}</style></head><body>
-<header><h1>▟ coxd</h1><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b></span>
+#dmsg{font-size:13px;color:var(--dim);align-self:center}
+#foff{background:#b3261e;color:#fff;font-weight:600;text-align:center;padding:6px;letter-spacing:.05em}#foff[hidden]{display:none}
+.offline{text-align:center;padding:40px 16px}.offline h2{margin:0 0 8px}</style></head><body>
+<div id=foff hidden>⏸ FACTORY OFF — nothing new will start; running tasks finish</div>
+<header><h1>▟ coxd</h1><span class=pill id=hostchip hidden></span><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b></span>
 <button id=ab class=pill hidden>archived <b>0</b></button>
 <span class=spacer></span><button id=fb title="Factory ON = picks up queued work. OFF = starts nothing new; running tasks finish.">Factory …</button><button id=rb title="Restart the coxd process in place — refuses while anything is active">↻ Restart cox</button><button id=nb>+ Dispatch</button><span id=conn class=pill>connecting…</span></header>
 <section id=dp hidden><div class=dform>
@@ -568,8 +580,12 @@ let evs=tagStages(d.events||[]);const fs=feedFilter.get(id);
 let head='';if(fs!=null){evs=evs.filter(e=>e._stage===fs);head='── showing '+STAGES[fs].toUpperCase()+' only — click that step again to show everything ──\\n\\n'}
 el.textContent=head+evs.map(e=>feedLine(e,'['+fmtTime(e.ts)+'] ')).join('\\n').replace(/^\\n/,'')}
 let FACTORY_PAUSED=null;
-function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
-function render(s){STAGES=s.stages||STAGES;renderFactory(s.factory);document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+let HOST='',GOT=false,offT=null;
+function setHost(h){HOST=h;const c=document.getElementById('hostchip');c.textContent=h;c.hidden=!h}
+function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').textContent='offline';const m=document.getElementById('board');m.innerHTML='<div class="empty offline" id=offline-panel><h2>coxd is not running on this machine</h2>'+(HOST?'<div class=meta>host: '+esc(HOST)+'</div>':'')+'<p><button id=retry>Retry</button></p></div>';document.getElementById('retry').onclick=()=>{m.innerHTML='<div class=empty>Loading…</div>';startWatch()}}
+function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
+function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
+function render(s){GOT=true;clearTimeout(offT);STAGES=s.stages||STAGES;renderFactory(s.factory);document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
 const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last,t.issue_url]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
@@ -632,7 +648,7 @@ document.getElementById('fb').onclick=async()=>{const turnOff=!FACTORY_PAUSED;if
 try{const r=await(await fetch('/api/factory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:turnOff})})).json();if(r.error){alert(r.error)}else{renderFactory(r)}}catch(e){alert(e)}};
 document.getElementById('rb').onclick=async()=>{if(!confirm('Restart coxd now? Refuses if anything is active.'))return;
 try{const r=await(await fetch('/api/restart',{method:'POST'})).json();if(r.error){alert(r.error)}else{alert('Restarting — the board will go blank for a few seconds.')}}catch(e){}};
-connect();
+startWatch();
 </script></body></html>"""
 
 
