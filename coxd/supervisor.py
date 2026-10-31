@@ -10,6 +10,7 @@ in-flight sessions resume.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import board
 import landed
@@ -156,11 +157,14 @@ async def _cleanup_loop() -> None:
         await asyncio.sleep(_CLEANUP_INTERVAL_S)
 
 
-async def serve(host: str = "0.0.0.0", port: int = 8791, concurrency: int = 2,  # noqa: S104
+async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
                 worker_model: str = "claude-sonnet-5",
                 review_model: str = "claude-opus-4-8",
                 effort: str = "medium") -> None:
     _reclaim_orphans()
+    # Loopback by default (the laptop crew); the NAS container sets COXD_BIND=0.0.0.0
+    # so Traefik can reach it over the docker network.
+    host = host or os.environ.get("COXD_BIND", "127.0.0.1")
     config = uvicorn.Config(board.app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
     print(f"coxd → http://{host}:{port}/  (concurrency {concurrency}, effort {effort})")
