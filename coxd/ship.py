@@ -175,6 +175,11 @@ def ship(task_id: str) -> tuple[str, str | None]:
         store.append_event(task_id, "ship-error", {"stage": "push", "err": push.stderr[-300:]})
         return ("push-error", None)
 
+    if t.get("pr_url"):
+        # A follow-up round on a task whose PR is already open (human resume from
+        # pr_ready): the push above updated that PR; never open a second one.
+        return ("pr", t["pr_url"])
+
     title = _pr_title(t)
     tier, gl_header = _greenlight(t, wt)
     body = _build_body(t, wt, gl_header)

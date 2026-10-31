@@ -106,15 +106,23 @@ async def _run_one(task_id: str, worker_model: str, review_model: str,
         store.append_event(task_id, "error", {"error": str(e)})
 
 
+def _latest_resume_note(task_id: str) -> str:
+    notes = [e["data"].get("note", "") for e in store.events(task_id)
+             if e["kind"] == "resume-request"]
+    return notes[-1] if notes else "Continue the task."
+
+
 async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
-                          effort: str, after_quota: bool = False) -> None:
+                          effort: str, note: str | None = None,
+                          after_quota: bool = False) -> None:
     """Auto-recovery for an orphan that had a live SDK session (see
     `_reclaim_orphans`): resume that session where it left off and re-run the
     gate->review->ship tail, instead of restarting from scratch. Same crash
     posture as `_run_one` — a failure lands at needs_human, never kills serve."""
-    note = (_QUOTA_NOTE if after_quota
-            else "coxd restarted while this task was mid-flight — continue from where you "
-                 "left off. Re-check the working tree first; some work may already be committed.")
+    note = note or (_QUOTA_NOTE if after_quota
+                    else "coxd restarted while this task was mid-flight — continue from "
+                         "where you left off. Re-check the working tree first; some work "
+                         "may already be committed.")
     try:
         await loop.resume_task(task_id, note, worker_model, review_model, effort=effort)
     except quota.QuotaWait as q:
@@ -146,7 +154,13 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
                 # An orphan reclaimed for auto-resume (session preserved) continues
                 # its SDK session; everything else — fresh dispatches AND board /retry,
                 # which clears the reason — starts from the brief.
-                if t.get("reason") in (_AUTO_RESUME, quota.QUOTA_RESUME) and t.get("session_id"):
+                if t.get("reason") == board.HUMAN_RESUME and t.get("session_id"):
+                    note = _latest_resume_note(t["id"])
+                    store.set_state(t["id"], "fixing")  # claim before the next scan
+                    _running[t["id"]] = asyncio.create_task(
+                        _run_one_resume(t["id"], worker_model, review_model, effort,
+                                        note=note))
+                elif t.get("reason") in (_AUTO_RESUME, quota.QUOTA_RESUME) and t.get("session_id"):
                     store.set_state(t["id"], "fixing")  # claim before the next scan
                     after_quota = t.get("reason") == quota.QUOTA_RESUME  # read before the claim
                     _running[t["id"]] = asyncio.create_task(
