@@ -16,6 +16,7 @@ import board
 import factory
 import landed
 import loop
+import quota
 import store
 import uvicorn
 
@@ -32,6 +33,9 @@ _running: dict[str, asyncio.Task] = {}
 # (see `_reclaim_orphans`): resume the preserved SDK session, or start fresh.
 _AUTO_RESUME = "auto-resume-on-restart"
 _AUTO_RETRY = "auto-retry-on-restart"
+_QUOTA_NOTE = ("You were cut off by the usage limit and the window has now reset. Run "
+               "`git status` and `git log` to see what is already done, then finish the "
+               "task. If it was already complete, just confirm and stop. Do not push.")
 
 
 def cancel(task_id: str) -> bool:
@@ -89,6 +93,8 @@ async def _run_one(task_id: str, worker_model: str, review_model: str,
                    effort: str) -> None:
     try:
         await loop.run_task(task_id, worker_model, review_model, effort=effort)
+    except quota.QuotaWait as q:
+        quota.park(task_id, q.reset_at, q.stage)
     except asyncio.CancelledError:
         # A human hit Stop (see `cancel()` above) — distinct from coxd-error so
         # the board doesn't read this as a crash. Not retryable via /retry from
@@ -101,17 +107,18 @@ async def _run_one(task_id: str, worker_model: str, review_model: str,
 
 
 async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
-                          effort: str) -> None:
+                          effort: str, after_quota: bool = False) -> None:
     """Auto-recovery for an orphan that had a live SDK session (see
     `_reclaim_orphans`): resume that session where it left off and re-run the
     gate->review->ship tail, instead of restarting from scratch. Same crash
     posture as `_run_one` — a failure lands at needs_human, never kills serve."""
+    note = (_QUOTA_NOTE if after_quota
+            else "coxd restarted while this task was mid-flight — continue from where you "
+                 "left off. Re-check the working tree first; some work may already be committed.")
     try:
-        await loop.resume_task(
-            task_id,
-            "coxd restarted while this task was mid-flight — continue from where you "
-            "left off. Re-check the working tree first; some work may already be committed.",
-            worker_model, review_model, effort=effort)
+        await loop.resume_task(task_id, note, worker_model, review_model, effort=effort)
+    except quota.QuotaWait as q:
+        quota.park(task_id, q.reset_at, q.stage)
     except asyncio.CancelledError:
         store.set_state(task_id, "needs_human", "stopped-by-user")
         store.append_event(task_id, "error", {"error": "stopped by user"})
@@ -125,8 +132,12 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
     while True:
         for tid in [t for t, task in _running.items() if task.done()]:
             del _running[tid]
+        # Usage limit: re-queue parked tasks whose window has reset; while any are
+        # still waiting, start nothing new — it would hit the same empty window.
+        quota.release_due(_AUTO_RETRY)
+        quota_blocked = quota.blocked_until() is not None
         # Factory OFF: start nothing new; whatever is already running finishes.
-        if len(_running) < concurrency and not factory.is_paused():
+        if len(_running) < concurrency and not factory.is_paused() and not quota_blocked:
             for t in store.queued_tasks():
                 if len(_running) >= concurrency:
                     break
@@ -135,10 +146,12 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
                 # An orphan reclaimed for auto-resume (session preserved) continues
                 # its SDK session; everything else — fresh dispatches AND board /retry,
                 # which clears the reason — starts from the brief.
-                if t.get("reason") == _AUTO_RESUME and t.get("session_id"):
+                if t.get("reason") in (_AUTO_RESUME, quota.QUOTA_RESUME) and t.get("session_id"):
                     store.set_state(t["id"], "fixing")  # claim before the next scan
+                    after_quota = t.get("reason") == quota.QUOTA_RESUME  # read before the claim
                     _running[t["id"]] = asyncio.create_task(
-                        _run_one_resume(t["id"], worker_model, review_model, effort))
+                        _run_one_resume(t["id"], worker_model, review_model, effort,
+                                        after_quota=after_quota))
                 else:
                     store.set_state(t["id"], "working")  # claim before the next scan
                     _running[t["id"]] = asyncio.create_task(

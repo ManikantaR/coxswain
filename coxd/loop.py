@@ -14,6 +14,7 @@ from pathlib import Path
 
 import gate
 import lane
+import quota
 import registry
 import store
 import worktree
@@ -43,6 +44,8 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5-5",
     store.set_session(task_id, wr.session_id)
     store.add_cost(task_id, wr.cost)
     store.set_summary(task_id, wr.summary)
+    if wr.quota_reset_at:  # cut off by the usage limit — park, don't fail (quota.py)
+        raise quota.QuotaWait(wr.quota_reset_at, "implement")
     if wr.is_error or not wr.session_id:
         return _terminal(task_id, "needs_human", "worker-error")
 
@@ -78,6 +81,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
     store.set_state(task_id, "reviewing")
     r = await lane.review(gate.diff(wt), review_model, emit, effort=effort)
     store.add_cost(task_id, r.cost)
+    if r.quota_reset_at:
+        raise quota.QuotaWait(r.quota_reset_at, "review")
     emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings})
     if r.outcome == "reviewed":
         store.set_review(task_id, r.verdict, r.findings)
@@ -103,6 +108,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         store.set_state(task_id, "reviewing")
         r = await lane.review(gate.diff(wt), review_model, emit, effort=effort)
         store.add_cost(task_id, r.cost)
+        if r.quota_reset_at:
+            raise quota.QuotaWait(r.quota_reset_at, "re-review")
         emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings,
                         "pass": "re-review"})
         if r.outcome == "reviewed":
@@ -172,6 +179,8 @@ async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
     store.set_summary(task_id, wr.summary)
     if wr.session_id:
         store.set_session(task_id, wr.session_id)
+    if wr.quota_reset_at:
+        raise quota.QuotaWait(wr.quota_reset_at, "fix")
 
 
 def _terminal(task_id: str, state: str, reason: str | None) -> str:

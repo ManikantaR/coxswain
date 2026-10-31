@@ -34,7 +34,7 @@ from starlette.routing import Route
 STAGES = ["implement", "gate", "review", "merge"]
 _STATE_STAGE = {"queued": 0, "provisioning": 0, "working": 0, "gating": 1,
                 "fixing": 1, "reviewing": 2, "shipping": 3, "ci-watching": 3,
-                "pr_ready": 3, "landed": 3}
+                "pr_ready": 3, "landed": 3, "waiting_quota": 1}
 _ACTIVE = {"provisioning", "working", "gating", "fixing", "reviewing", "shipping",
           "ci-watching"}
 _NEEDS_YOU = {"pr_ready", "needs_human"}
