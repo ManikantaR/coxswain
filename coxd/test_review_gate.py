@@ -32,7 +32,7 @@ notify.notify_async = lambda *a, **k: None  # type: ignore[assignment]
 
 
 async def fake_worker(*a, **k):
-    return SimpleNamespace(cost=0.0, summary="fixed", session_id="s1")
+    return SimpleNamespace(cost=0.0, summary="fixed", session_id="s1", quota_reset_at=None)
 
 lane.run_worker = fake_worker  # type: ignore[assignment]
 
@@ -46,7 +46,7 @@ def run(verdicts: list[str]) -> str:
     async def fake_review(*a, **k):
         v = next(seq)
         reviews.append(v)
-        return SimpleNamespace(outcome="reviewed", verdict=v, cost=0.0,
+        return SimpleNamespace(outcome="reviewed", verdict=v, cost=0.0, quota_reset_at=None,
                                findings=[{"severity": "high", "file": "x", "message": "m"}])
 
     lane.review = fake_review  # type: ignore[assignment]

@@ -49,7 +49,7 @@ def _conn() -> sqlite3.Connection:
                      ("summary", "TEXT"), ("gate_steps", "TEXT"),
                      ("review_verdict", "TEXT"), ("review_findings", "TEXT"),
                      ("test_output", "TEXT"), ("archived_at", "REAL"),
-                     ("intent", "TEXT")):
+                     ("intent", "TEXT"), ("resume_at", "REAL")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     return c
@@ -82,6 +82,19 @@ def set_pr_url(task_id: str, url: str) -> None:
     with _conn() as c:
         c.execute("UPDATE tasks SET pr_url=?, updated=? WHERE id=?",
                   (url, time.time(), task_id))
+
+
+def set_resume_at(task_id: str, ts: float | None) -> None:
+    """When a task parked at `waiting_quota` may continue (epoch seconds)."""
+    with _conn() as c:
+        c.execute("UPDATE tasks SET resume_at=?, updated=? WHERE id=?",
+                  (ts, time.time(), task_id))
+
+
+def waiting_quota_tasks() -> list[dict]:
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM tasks WHERE state='waiting_quota' ORDER BY created")]
 
 
 def set_session(task_id: str, session_id: str | None) -> None:
