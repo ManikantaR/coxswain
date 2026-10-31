@@ -117,6 +117,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "issue_url": issue_match.group(0) if issue_match else None,
             "archivable": t["state"] in _MANUAL_ARCHIVABLE,
             "archived": bool(t.get("archived_at")),
+            "resumable": bool(t.get("session_id")),
             # Deploy button shows on a landed task whose repo has a deploy command.
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
@@ -198,14 +199,18 @@ async def api_task_resume(req: Request) -> JSONResponse:
     t = store.get_task(tid)
     if not t:
         return JSONResponse({"error": "unknown task"}, status_code=404)
-    if t["state"] != "needs_human":
+    # pr_ready too: the lead's own review often finds something after coxd's reviewer
+    # approved — the fix goes back to the same session and onto the same open PR.
+    if t["state"] not in ("needs_human", "pr_ready"):
         return JSONResponse({"error": f"cannot resume from state '{t['state']}'"}, status_code=400)
     if not t["session_id"]:
         return JSONResponse({"error": "no prior session — use retry instead"}, status_code=400)
-    import loop
-    store.set_state(tid, "fixing")  # claim immediately so the board reflects it's active
-    asyncio.create_task(loop.resume_task(tid, note))
-    return JSONResponse({"ok": True})
+    # Queue it for the supervisor instead of running it here: that way it respects
+    # the concurrency cap, the factory switch and the usage-limit wait, Stop can cancel
+    # it, and a crash lands at needs_human instead of leaving it stuck "active".
+    store.append_event(tid, "resume-request", {"note": note})
+    store.set_state(tid, "queued", HUMAN_RESUME)
+    return JSONResponse({"ok": True, "queued": True})
 
 
 async def api_task_deploy(req: Request) -> JSONResponse:
@@ -398,6 +403,7 @@ async def icon(_: Request) -> Response:
 
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+HUMAN_RESUME = "human-resume"  # queued by /resume; supervisor reads the note from events
 
 
 def _allowed_hosts() -> set[str]:
@@ -576,7 +582,10 @@ h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+
 (t.state==='needs_human'?'<div class=retryrow>'+
  '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
  '<button class=rsb title="Keeps the existing session and any commits already made, and gives it your note as the next instruction. Cheaper and more targeted than Retry when real work already landed.">Resume w/ note</button>'+
- '<input class=rsnote hidden placeholder="what should it try differently?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':'')+
+ '<input class=rsnote hidden placeholder="what should it try differently?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':
+ t.state==='pr_ready'&&t.resumable?'<div class=retryrow>'+
+ '<button class=rsb title="Review found something? Sends your note to the same session; the fix is gated, re-reviewed and pushed to this same PR.">Send fixes w/ note</button>'+
+ '<input class=rsnote hidden placeholder="what needs fixing?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':'')+
 (t.deployable?'<div class=retryrow><button class=depb data-repo="'+esc(t.repo)+'" title="Build + recreate this repo\\'s containers on the NAS at current main, then run migrations. Human-gated — coxd does the work; watch Events for progress.">Deploy ▸</button><span class=depmsg></span></div>':'')+
 (t.archived?'<button class=arb data-mode=unarchive title="Bring this task back into the normal board view.">Unarchive</button>':t.archivable?'<button class=arb data-mode=archive title="Hide this completed task from the board now — same as it aging out on its own, just immediate.">Archive</button>':'')+
 '<button class=fb>'+(open.has(t.id)?'Hide':'Events')+'</button><div class="feed'+(open.has(t.id)?' open':'')+'"></div></div>'}
