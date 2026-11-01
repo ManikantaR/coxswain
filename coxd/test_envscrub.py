@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-env-"))
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-env-")
 os.environ["GH_TOKEN"] = "ghp_fake_for_test"
 os.environ["COXD_TG_TOKEN"] = "123:fake"
 os.environ["KEEP_ME"] = "1"
@@ -32,6 +32,10 @@ check("scrubbed_env drops secrets", "GH_TOKEN" not in env and "COXD_TG_TOKEN" no
 check("scrubbed_env keeps the rest + extras", env.get("KEEP_ME") == "1" and env.get("EXTRA") == "x")
 blank = envscrub.sdk_blanking()
 check("sdk_blanking blanks every secret", all(blank[k] == "" for k in envscrub.SECRET_VARS))
+real_home = os.environ["COXD_HOME"]
+check("scrubbed_env hides the live COXD_HOME", env["COXD_HOME"] != real_home)
+check("sdk_blanking hides the live COXD_HOME", blank["COXD_HOME"] not in ("", real_home))
+check("scratch home exists", os.path.isdir(envscrub.scratch_home()))
 
 # provision: a lifecycle script that tries to read the token sees nothing
 wt = __import__("pathlib").Path(tempfile.mkdtemp(prefix="coxd-wt-"))

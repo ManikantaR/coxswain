@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-test-"))
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-test-")
 
 import worktree  # noqa: E402
 
