@@ -16,6 +16,9 @@ services:
       GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN in deploy/.env}
       COXD_HOME: /data/coxswain
       COXD_REPO_ROOT: /repo
+      # Board header chip + (later) notification prefix; the Mac backup sets "mac".
+      COXD_HOST_LABEL: nas
+      COXD_ROLE: primary
       # Declares this isolated, LAN-only container as a sandbox so the claude CLI will
       # run headless as the container's root user. Without it, worker dispatch fails at
       # startup with "Fatal error in message reader". Safe here: the container is isolated.
