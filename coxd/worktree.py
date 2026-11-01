@@ -99,7 +99,9 @@ def provision(wt: Path) -> dict:
 
 
 def remove(repo_path: Path, wt: Path, branch: str) -> None:
-    # As the worker: it owns the worktree, so root deleting a path the worker controls
-    # (it could swap in a symlink) would be unsafe. Best-effort, like before.
+    # The worktree dir as the worker: it owns it, so root deleting a path the worker
+    # controls (it could swap in a symlink) would be unsafe. The branch ref as root, in
+    # the main checkout: deleting a ref rewrites .git/packed-refs, which is root-only.
+    # Best-effort, like before.
     sandbox.run_in_worktree(["git", "worktree", "remove", "--force", str(wt)], repo_path)
-    sandbox.run_in_worktree(["git", "branch", "-D", branch], repo_path)
+    subprocess.run(["git", "branch", "-D", branch], cwd=repo_path, capture_output=True)
