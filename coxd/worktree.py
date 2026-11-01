@@ -7,6 +7,7 @@ the control plane holding creds keep workers from pushing.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -41,8 +42,17 @@ def _fetch(repo_path: Path) -> None:
                            f"stale base: {(r.stderr or '').strip()[:300]}")
 
 
+def root() -> Path:
+    """Where task worktrees go. COXD_WORKTREES (the NAS sets /work) keeps them OUT of
+    COXD_HOME, so a worker's relative paths (`../..`) can't land on the live store,
+    registry or markers. Unset → the old <home>/worktrees (laptop default).
+    Tasks keep the absolute path stored at dispatch, so moving this only affects new ones."""
+    p = os.environ.get("COXD_WORKTREES")
+    return Path(p) if p else registry.home() / "worktrees"
+
+
 def create(repo_path: Path, task_id: str) -> Path:
-    wt = registry.home() / "worktrees" / task_id
+    wt = root() / task_id
     wt.parent.mkdir(parents=True, exist_ok=True)
     branch = f"coxd/{task_id}"
     _fetch(repo_path)

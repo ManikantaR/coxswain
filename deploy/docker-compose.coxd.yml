@@ -16,6 +16,9 @@ services:
       GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN in deploy/.env}
       COXD_HOME: /data/coxswain
       COXD_REPO_ROOT: /repo
+      # Task worktrees live OUTSIDE COXD_HOME (store/registry/markers), so a worker's
+      # relative paths can't reach them. Existing tasks keep their old paths.
+      COXD_WORKTREES: /work
       # Board header chip + (later) notification prefix; the Mac backup sets "mac".
       COXD_HOST_LABEL: nas
       COXD_ROLE: primary
@@ -44,6 +47,7 @@ services:
       - coxd-data:/data/coxswain     # sqlite store + per-repo registry (persistent)
       - claude-creds:/root/.claude   # `claude login` writes the Pro-subscription creds here
       - coxd-repos:/repo             # target repos, cloned in during setup (persistent)
+      - coxd-work:/work              # per-task git worktrees (+ node_modules), disposable
       # Deploy button (D-deploy): coxd drives the host Docker to build+recreate a
       # repo's containers, and needs the repos' live build path visible at the same
       # path the compose files use. ⚠ docker.sock is root-equivalent on the NAS —
@@ -72,6 +76,7 @@ volumes:
   coxd-data:
   claude-creds:
   coxd-repos:
+  coxd-work:
 
 networks:
   traefik-public:
