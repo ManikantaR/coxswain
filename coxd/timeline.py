@@ -38,10 +38,24 @@ def derive(task: dict, events: list, now: float) -> dict:
         started = states[0][0]
 
     finished = None
-    if cur in _FINISH_STATES:
+    landed = None
+    merge_wait = 0.0
+    if cur == "landed":
+        landed_i = next((i for i in range(len(states) - 1, -1, -1)
+                         if states[i][1] == "landed"), None)
+        if landed_i is not None:
+            landed = states[landed_i][0]
+            # Factory work ends at the last hand-off to a human before the merge;
+            # fall back to the landed timestamp when there was none.
+            fin_i = next((i for i in range(landed_i, -1, -1)
+                          if states[i][1] in ("pr_ready", "needs_human")), None)
+            finished = states[fin_i][0] if fin_i is not None else landed
+            merge_wait = max(0.0, landed - finished)
+            # The final hand-off -> landed segment is merge wait, not human wait.
+            if fin_i is not None and fin_i + 1 == landed_i:
+                buckets["human"] -= max(0.0, landed - finished)
+    elif cur in _FINISH_STATES:
         finished = next((ts for ts, st in reversed(states) if st in _FINISH_STATES), None)
-    landed = next((ts for ts, st in reversed(states) if st == "landed"), None) \
-        if cur == "landed" else None
 
     in_progress = cur not in _IDLE_STATES
     wall = 0.0
@@ -76,6 +90,6 @@ def derive(task: dict, events: list, now: float) -> dict:
         "in_progress": in_progress, "wall_s": wall,
         "active_s": sum(buckets[b] for b in _WORKING),
         "paused_quota_s": buckets["paused"], "human_wait_s": buckets["human"],
-        "ci_s": buckets["ci"], "attempts": attempts,
+        "ci_s": buckets["ci"], "merge_wait_s": merge_wait, "attempts": attempts,
         "gate_fixes": gate_fixes, "review_rounds": review_rounds,
     }

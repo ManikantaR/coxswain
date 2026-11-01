@@ -21,9 +21,9 @@ t = {"state": "landed", "created": 90}
 r = timeline.derive(t, [st(100, "queued"), st(110, "provisioning"), st(120, "working"),
                         st(220, "gating"), st(240, "reviewing"), st(300, "pr_ready"),
                         st(400, "landed")], 1000)
-assert r["started_at"] == 110 and r["finished_at"] == 400 and r["landed_at"] == 400, r
-assert r["wall_s"] == 290 and r["active_s"] == 190 and not r["in_progress"], r
-assert r["human_wait_s"] == 100 and r["attempts"] == 1, r
+assert r["started_at"] == 110 and r["finished_at"] == 300 and r["landed_at"] == 400, r
+assert r["wall_s"] == 190 and r["active_s"] == 190 and not r["in_progress"], r
+assert r["human_wait_s"] == 0 and r["merge_wait_s"] == 100 and r["attempts"] == 1, r
 
 # running task: wall grows with now
 t = {"state": "working", "created": 0}
@@ -41,7 +41,7 @@ assert r["paused_quota_s"] == 100 and r["active_s"] == 100, r
 t = {"state": "landed", "created": 0}
 r = timeline.derive(t, [st(0, "working"), st(10, "pr_ready"), st(70, "queued"),
                         st(71, "working"), st(100, "landed")], 500)
-assert r["human_wait_s"] == 60 and r["attempts"] == 1 and r["finished_at"] == 100, r
+assert r["human_wait_s"] == 60 and r["attempts"] == 1 and r["finished_at"] == 10, r
 
 # re-review round + gate fix
 t = {"state": "pr_ready", "created": 0}
