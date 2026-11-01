@@ -47,10 +47,25 @@ ENV DISABLE_AUTOUPDATER=1
 RUN git config --system credential.https://github.com.helper '' \
  && git config --system --add credential.https://github.com.helper '!/usr/bin/gh auth git-credential'
 
+# Shared git object store for the root control plane + the worker user (see
+# deploy/entrypoint.sh): new objects/refs stay group-writable, root trusts the
+# worker-owned worktrees, and auto-gc never repacks under a running worker.
+RUN git config --system core.sharedRepository group \
+ && git config --system --add safe.directory '*' \
+ && git config --system gc.auto 0
+
+# Worker user (coxd/sandbox.py): the claude CLI, its tools, the gate and `pnpm install`
+# run as this uid via setpriv (util-linux, in the base image). It cannot read the
+# store, /root, or root's /proc/<pid>/environ (GH_TOKEN, COXD_TG_TOKEN).
+RUN useradd --uid 10001 --create-home --shell /bin/sh coxw
+ENV COXD_WORKER_USER=coxw
+COPY deploy/coxd-claude /usr/local/bin/coxd-claude
+COPY deploy/entrypoint.sh /usr/local/bin/coxd-entrypoint
+
 # The claude CLI keeps its account/onboarding state in ~/.claude.json, which sits
-# OUTSIDE the claude-creds volume (/root/.claude) — so every rebuild "logged it out".
-# Point the whole config dir at the volume so login survives rebuilds.
-ENV CLAUDE_CONFIG_DIR=/root/.claude
+# OUTSIDE the config dir — so every rebuild "logged it out". Point the whole config
+# dir at the claude-creds volume, now in the worker's home (the worker runs claude).
+ENV CLAUDE_CONFIG_DIR=/home/coxw/.claude
 
 # pnpm for pnpm-monorepo targets (MoneyPulse, aura-tutor). Without it every worker
 # dispatch died at provisioning with `pnpm: not found`. corepack ships with node; the
@@ -60,7 +75,9 @@ ARG PNPM_VERSION=10.32.1
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable \
  && corepack prepare pnpm@${PNPM_VERSION} --activate \
- && pnpm --version
+ && pnpm --version \
+ && su coxw -c 'corepack prepare pnpm@'"${PNPM_VERSION}"' --activate && pnpm --version' \
+ && command -v setpriv
 
 WORKDIR /app
 COPY coxd /app/coxd
@@ -74,5 +91,5 @@ EXPOSE 8791
 # Concurrency 1: one Claude subscription — parallel workers drain the 5-hour window
 # ~N× faster and collide in shared files (factory Phase 0).
 # cli.py uses flat imports → its own dir is on sys.path[0]; run it by path.
-ENTRYPOINT ["tini", "--"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/coxd-entrypoint"]
 CMD ["python", "/app/coxd/cli.py", "serve", "--port", "8791", "--concurrency", "1"]

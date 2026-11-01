@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 import envscrub
+import sandbox
 
 
 def _check_migrations(worktree: Path) -> str | None:
@@ -47,8 +48,7 @@ def _check_migrations(worktree: Path) -> str | None:
 def _base_ref(worktree: Path) -> str:
     """The branch point to diff against — for turbo's `--filter=[<ref>]` affected scope."""
     for ref in ("origin/main", "origin/master", "main", "master"):
-        r = subprocess.run(["git", "rev-parse", "--verify", "-q", ref],
-                           cwd=worktree, capture_output=True, text=True)
+        r = sandbox.run_in_worktree(["git", "rev-parse", "--verify", "-q", ref], worktree)
         if r.returncode == 0:
             return ref
     return "HEAD~1"
@@ -88,8 +88,8 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
             continue
         if turbo:  # deterministic path to the local turbo bin; affected-only scope
             cmd = f"node_modules/.bin/turbo run {name} --filter='[{base}]'"
-        r = subprocess.run(["sh", "-c", cmd], cwd=worktree, capture_output=True,
-                           text=True, env=env)
+        r = subprocess.run(sandbox.wrap(["sh", "-c", cmd]), cwd=worktree,
+                           capture_output=True, text=True, env=env)
         steps[name] = "ok" if r.returncode == 0 else "red"
         if r.returncode != 0:
             return {"passed": False, "failing": name, "steps": steps,
@@ -114,8 +114,7 @@ def diff(worktree: Path, base: str | None = None) -> str:
     many commits (fix-rounds) are on the branch.
     """
     base = base or _base_ref(worktree)
-    r = subprocess.run(["git", "diff", f"{base}...HEAD"], cwd=worktree,
-                       capture_output=True, text=True)
+    r = sandbox.run_in_worktree(["git", "diff", f"{base}...HEAD"], worktree)
     if r.returncode != 0:  # e.g. no common ancestor — fall back to the last commit's diff
-        r = subprocess.run(["git", "show", "HEAD"], cwd=worktree, capture_output=True, text=True)
+        r = sandbox.run_in_worktree(["git", "show", "HEAD"], worktree)
     return r.stdout
