@@ -35,4 +35,7 @@ assert board._factory_payload()["role"] == "primary"
 assert "offline-panel" in board._HTML and "coxd is not running on this machine" in board._HTML
 assert "id=foff" in board._HTML and "FACTORY OFF" in board._HTML
 assert "coxd-v2" in open(board.__file__).read()
+assert "function timingLine" in board._HTML and "data-run=" in board._HTML
+assert "waiting_quota:['b-warn'" in board._HTML
+assert "t.timing" in board._HTML.split("const k=JSON.stringify")[1][:400]
 print("ok test_board factory/offline")
