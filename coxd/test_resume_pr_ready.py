@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-resume-"))
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-resume-")
 
 import board  # noqa: E402
 import ship  # noqa: E402

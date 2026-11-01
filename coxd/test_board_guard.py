@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-guard-"))
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-guard-")
 
 import board  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402

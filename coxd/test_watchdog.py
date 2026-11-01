@@ -13,7 +13,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-wd-"))
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-wd-")
 
 import notify  # noqa: E402
 import store  # noqa: E402

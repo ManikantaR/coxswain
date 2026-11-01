@@ -12,7 +12,7 @@ import tempfile
 import time as _t
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-dep-"))
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-dep-")
 
 import landed  # noqa: E402
 import registry  # noqa: E402
