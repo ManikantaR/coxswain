@@ -16,6 +16,8 @@ import re
 import subprocess
 import time
 
+import sandbox
+
 # Confirmed tonight (real MoneyPulse CI runs), not guessed: a hook-timeout in one
 # e2e spec file cascades into unrelated 401/403s in NEXT tests in that file, and a
 # DIFFERENT spec file fails on each rerun — the tell that distinguishes this from a
@@ -133,7 +135,7 @@ def _diff_touches_e2e(wt) -> bool:
     cascade. Lean toward escalating rather than auto-retrying in that case."""
     import gate
     base = gate._base_ref(wt)
-    r = _run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=str(wt))
+    r = sandbox.run_in_worktree(["git", "diff", "--name-only", f"{base}...HEAD"], wt)
     return any("e2e" in ln or "/test/" in ln for ln in r.stdout.splitlines())
 
 

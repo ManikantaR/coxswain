@@ -19,6 +19,7 @@ from pathlib import Path
 
 import envscrub
 import quota
+import sandbox
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -191,7 +192,7 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
             HookMatcher(matcher="Edit", hooks=[boundary]),
         ]},
         permission_mode="bypassPermissions",
-        env=envscrub.sdk_blanking(),
+        env=envscrub.sdk_blanking(), cli_path=sandbox.cli_path(),
         resume=resume, max_turns=100,
         task_budget={"total": task_budget_tokens} if task_budget_tokens else None,
         max_budget_usd=max_budget_usd,
@@ -291,7 +292,7 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium") -> R
     # mutating/spawning/network tool so the reviewer is genuinely read-only (it only emits JSON).
     options = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
                                  allowed_tools=[], max_turns=10, effort=effort,
-                                 env=envscrub.sdk_blanking(),
+                                 env=envscrub.sdk_blanking(), cli_path=sandbox.cli_path(),
                                  disallowed_tools=_WORKER_DENY + ["Bash", "Write", "Edit"],
                                  max_budget_usd=_REVIEW_MAX_BUDGET_USD,
                                  output_format={"type": "json_schema", "schema": _REVIEW_SCHEMA})

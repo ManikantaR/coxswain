@@ -16,6 +16,7 @@ from pathlib import Path
 import gate
 import greenlight
 import registry
+import sandbox
 import store
 
 _TEST_PATH_MARKERS = ("__tests__/", ".spec.ts", ".spec.tsx", ".test.ts", ".test.tsx")
@@ -28,8 +29,7 @@ def _has_gh_remote(repo_path: Path) -> bool:
 
 
 def _diff_stat_lines(wt: Path, base: str) -> list[str]:
-    r = subprocess.run(["git", "diff", "--stat", f"{base}...HEAD"], cwd=wt,
-                       capture_output=True, text=True)
+    r = sandbox.run_in_worktree(["git", "diff", "--stat", f"{base}...HEAD"], wt)
     return [ln for ln in r.stdout.splitlines() if ln.strip()]
 
 
@@ -38,11 +38,9 @@ def _new_test_count(wt: Path, base: str) -> int:
     in a touched test file. Not exact (doesn't catch every runner's syntax, e.g.
     pytest), but cheap, honest, and right for this (TS/JS) codebase — a count, never
     a coverage-% claim we can't actually compute here."""
-    r = subprocess.run(
+    r = sandbox.run_in_worktree(
         ["git", "diff", f"{base}...HEAD", "--",
-         "*.spec.ts", "*.spec.tsx", "*.test.ts", "*.test.tsx", "**/__tests__/**"],
-        cwd=wt, capture_output=True, text=True,
-    )
+         "*.spec.ts", "*.spec.tsx", "*.test.ts", "*.test.tsx", "**/__tests__/**"], wt)
     pattern = re.compile(r"^\+\s*(it|test)(\.\w+)?\(")
     return sum(1 for ln in r.stdout.splitlines() if pattern.match(ln))
 
@@ -87,8 +85,7 @@ _SUMMARY_MAX_CHARS = 2000
 def _diff_stat(wt: Path, base: str = "origin/main") -> tuple[list[str], int, int]:
     """Files changed + total +/- for the branch vs base — the greenlight diff-size
     input. Best-effort; a git failure yields an empty stat."""
-    r = subprocess.run(["git", "diff", "--numstat", f"{base}...HEAD"],
-                       cwd=wt, capture_output=True, text=True)
+    r = sandbox.run_in_worktree(["git", "diff", "--numstat", f"{base}...HEAD"], wt)
     files: list[str] = []
     added = deleted = 0
     if r.returncode == 0:
@@ -169,7 +166,9 @@ def ship(task_id: str) -> tuple[str, str | None]:
     if repo_path is None or not _has_gh_remote(repo_path):
         return ("local", None)  # nothing to push to — the work is on the local branch
 
-    push = subprocess.run(["git", "push", "-u", "origin", branch], cwd=wt,
+    # From the main checkout, never from the worker-owned worktree (see sandbox.py):
+    # the branch ref is shared, and root's config/hooks there are not worker-writable.
+    push = subprocess.run(["git", "push", "-u", "origin", branch], cwd=repo_path,
                           capture_output=True, text=True)
     if push.returncode != 0:
         store.append_event(task_id, "ship-error", {"stage": "push", "err": push.stderr[-300:]})
@@ -185,7 +184,7 @@ def ship(task_id: str) -> tuple[str, str | None]:
     body = _build_body(t, wt, gl_header)
     pr = subprocess.run(
         ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
-        cwd=wt, capture_output=True, text=True)
+        cwd=repo_path, capture_output=True, text=True)
     if pr.returncode != 0:
         store.append_event(task_id, "ship-error", {"stage": "pr", "err": pr.stderr[-300:]})
         return ("pr-error", None)
@@ -197,7 +196,7 @@ def ship(task_id: str) -> tuple[str, str | None]:
         if tier == "GREEN":  # pre-label low-risk PRs for one-click merge (best-effort)
             subprocess.run(["gh", "label", "create", "coxd-greenlight", "--color", "0E8A16",
                             "--description", "coxd: low-risk, safe to one-click merge", "--force"],
-                           cwd=wt, capture_output=True, text=True)
+                           cwd=repo_path, capture_output=True, text=True)
             subprocess.run(["gh", "pr", "edit", url, "--add-label", "coxd-greenlight"],
-                           cwd=wt, capture_output=True, text=True)
+                           cwd=repo_path, capture_output=True, text=True)
     return ("pr", url)

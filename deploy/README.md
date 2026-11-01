@@ -20,7 +20,7 @@ COXD_NTFY_TOPIC=coxd-<you>  # optional AFK pings via ntfy
 
 **3. 👉 YOUR STEP — authenticate (I can't; it needs your login):**
 ```bash
-ssh nas 'docker exec -it coxd claude login'     # device-code flow → auth in a browser.
+ssh nas 'docker exec -it -u coxw -e HOME=/home/coxw coxd claude login'     # device-code flow → auth in a browser.
                                                 # Creds persist in the claude-creds volume.
 ssh nas 'docker exec coxd gh auth setup-git'    # make git push/clone use GH_TOKEN
 ```
@@ -101,3 +101,22 @@ ssh nas 'docker exec coxd sh -c "cd /tmp && claude -p \"reply ok\" && git -C /re
 
 Versions are pinned (`CLAUDE_CODE_VERSION`, `CLAUDE_AGENT_SDK_VERSION` build args) and
 the CLI's self-updater is off. Bump deliberately, then re-run a proving task.
+
+
+## Worker sandbox (2026-10-31)
+
+The coxd process runs as **root** (store, registry, GitHub/Telegram credentials, push).
+Everything the LLM can influence runs as the unprivileged **`coxw`** user (uid 10001) via
+`setpriv`: the claude CLI and its tools (`deploy/coxd-claude`, `ClaudeAgentOptions.cli_path`),
+the gate's test/lint/build, `pnpm install`, and any git command inside a task worktree.
+See `coxd/sandbox.py` and `deploy/entrypoint.sh`.
+
+- `coxw` owns `/work` (task worktrees) and `/home/coxw/.claude` (the claude login).
+- `/repo/*/.git` objects and refs are group-writable; `.git`, `.git/config` and `.git/hooks`
+  stay root-only, so a worker cannot make root run its code.
+- Root never runs git inside a worktree: push and `gh pr create` run from `/repo/<name>`.
+- No `docker.sock` and no `/volume1/docker` in the container, so the board's Deploy button
+  is off until a separate deployer container exists.
+- `claude login` must now run as coxw (see the setup step above).
+- After every coxd deploy, prove the boundary:
+  `ssh nas 'docker exec -i coxd sh -s' < deploy/smoke-sandbox.sh` must print `ALL OK`.

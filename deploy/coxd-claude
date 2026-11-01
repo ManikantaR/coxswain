@@ -1,0 +1,6 @@
+#!/bin/sh
+# ClaudeAgentOptions.cli_path on the NAS (coxd/sandbox.py): run the claude CLI, and
+# every tool it spawns, as the unprivileged worker user, never as root.
+u="${COXD_WORKER_USER:?COXD_WORKER_USER not set}"
+exec setpriv --reuid="$u" --regid="$u" --init-groups --no-new-privs --inh-caps=-all \
+    env HOME="/home/$u" USER="$u" LOGNAME="$u" claude "$@"

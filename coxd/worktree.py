@@ -13,6 +13,7 @@ from pathlib import Path
 
 import envscrub
 import registry
+import sandbox
 
 
 def _default_base(repo_path: Path) -> str:
@@ -60,6 +61,9 @@ def create(repo_path: Path, task_id: str) -> Path:
         ["git", "worktree", "add", "-b", branch, str(wt), _default_base(repo_path)],
         cwd=repo_path, check=True, capture_output=True, text=True,
     )
+    # The worker owns its checkout and its per-worktree git admin dir (index, HEAD);
+    # the shared objects/refs are group-writable (see deploy/entrypoint.sh).
+    sandbox.own(wt, repo_path / ".git" / "worktrees" / task_id)
     return wt
 
 
@@ -85,8 +89,8 @@ def provision(wt: Path) -> dict:
     last: dict = {}
     for cmd in plans:
         # install runs package lifecycle scripts the worker may have edited → no secrets
-        r = subprocess.run(["sh", "-c", cmd], cwd=wt, capture_output=True, text=True,
-                           env=envscrub.scrubbed_env())
+        r = subprocess.run(sandbox.wrap(["sh", "-c", cmd]), cwd=wt, capture_output=True,
+                           text=True, env=envscrub.scrubbed_env())
         last = {"ran": cmd, "ok": r.returncode == 0}
         if r.returncode == 0:
             return last
@@ -95,6 +99,7 @@ def provision(wt: Path) -> dict:
 
 
 def remove(repo_path: Path, wt: Path, branch: str) -> None:
-    subprocess.run(["git", "worktree", "remove", "--force", str(wt)],
-                   cwd=repo_path, capture_output=True)
-    subprocess.run(["git", "branch", "-D", branch], cwd=repo_path, capture_output=True)
+    # As the worker: it owns the worktree, so root deleting a path the worker controls
+    # (it could swap in a symlink) would be unsafe. Best-effort, like before.
+    sandbox.run_in_worktree(["git", "worktree", "remove", "--force", str(wt)], repo_path)
+    sandbox.run_in_worktree(["git", "branch", "-D", branch], repo_path)
