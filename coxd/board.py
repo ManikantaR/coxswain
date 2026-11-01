@@ -125,6 +125,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
             "timing": timeline.derive(t, evs, now),
+            "resume_at": t.get("resume_at"),
             "_updated": t["updated"] or t["created"] or 0,
         })
     # needs-you first, then active, then most-recently-updated first within each
@@ -562,7 +563,7 @@ const STAGE_TIP=[
  'REVIEW — one pass from a second model (Opus) against the full diff since the branch point. Checks correctness/security/contract; verdict is approve, fix (resumes the worker once), or reject (stops for you).',
  'MERGE — pushes the branch, opens the PR, then watches its CI checks: known flakes get auto-retried (up to 2x), a real-looking failure or one touching e2e/test files stops for you. Passing CI still waits for YOUR merge click — that\\'s the one standing human gate.',
 ];
-const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed']};
+const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed'],waiting_quota:['b-warn','waiting quota']};
 function pipe(st){let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}
 h+='<div class="step '+c+'" data-stage="'+k+'" title="'+esc(STAGE_TIP[k])+'"><span class=dot>'+ic+'</span>'+STAGES[k]+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
 function fmtTime(ts){if(!ts)return'--:--:--';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
@@ -586,18 +587,35 @@ el.textContent=head+evs.map(e=>feedLine(e,'['+fmtTime(e.ts)+'] ')).join('\\n').r
 let FACTORY_PAUSED=null;
 let HOST='',GOT=false,offT=null;
 function setHost(h){HOST=h;const c=document.getElementById('hostchip');c.textContent=h;c.hidden=!h}
+let TZ='America/New_York';
+const num=v=>typeof v==='number'&&isFinite(v)&&v>=0;
+function dur(sec){if(!num(sec))return '';const m=Math.floor(sec/60);if(m<1)return Math.floor(sec)+'s';const h=Math.floor(m/60);return h?h+'h'+String(m%60).padStart(2,'0')+'m':m+'m'}
+function fmt(opts,ts){try{return new Intl.DateTimeFormat('en-US',Object.assign({timeZone:TZ,hourCycle:'h23'},opts)).format(new Date(ts*1000))}catch(e){return new Intl.DateTimeFormat('en-US',opts).format(new Date(ts*1000))}}
+function clock(ts){if(!num(ts))return '';const hm=fmt({hour:'2-digit',minute:'2-digit'},ts);return fmt({year:'numeric',month:'numeric',day:'numeric'},ts)===fmt({year:'numeric',month:'numeric',day:'numeric'},Date.now()/1000)?hm:fmt({month:'short',day:'numeric'},ts)+' '+hm}
+function ago(ts){return num(ts)?dur(Date.now()/1000-ts)+' ago':''}
+function timingLine(t){const m=t.timing;if(!m||typeof m!=='object')return '';const p=[];
+if(t.state==='waiting_quota'&&num(t.resume_at)){const r=t.resume_at-Date.now()/1000;p.push('paused · resumes '+clock(t.resume_at)+(r>0?' (in '+dur(r)+')':''))}
+if(m.in_progress&&num(m.started_at)&&t.state!=='waiting_quota')p.push('running '+dur(Date.now()/1000-m.started_at));
+else if(num(m.started_at)){p.push('started '+clock(m.started_at));if(num(m.finished_at))p.push('finished '+clock(m.finished_at));
+if(num(m.wall_s)&&m.wall_s>0){let d=dur(m.wall_s);const x=[];if(num(m.paused_quota_s)&&m.paused_quota_s>0)x.push(dur(m.paused_quota_s)+' paused · usage limit');d+=x.length?' ('+x.join(', ')+')':'';p.push(d)}}
+if(num(m.review_rounds)&&m.review_rounds>0)p.push(m.review_rounds+' review round'+(m.review_rounds===1?'':'s'));
+if(!p.length)return '';
+const tip=[num(m.started_at)?'started '+ago(m.started_at):'',num(m.finished_at)?'finished '+ago(m.finished_at):''].filter(Boolean).join(', ');
+return '<div class=tm'+(m.in_progress&&num(m.started_at)&&t.state!=='waiting_quota'?' data-run='+m.started_at:'')+(t.state==='waiting_quota'&&num(t.resume_at)?' data-resume='+t.resume_at:'')+' title="'+esc(tip)+'" style="font-size:12px;color:var(--dim);margin-top:2px">'+esc(p.join(' · '))+'</div>'}
+setInterval(()=>{for(const e of document.querySelectorAll('.tm[data-run]'))e.textContent=e.textContent.replace(/running \\S+/,'running '+dur(Date.now()/1000-parseFloat(e.dataset.run)));
+for(const e of document.querySelectorAll('.tm[data-resume]')){const r=parseFloat(e.dataset.resume)-Date.now()/1000;e.textContent=e.textContent.replace(/ \\(in [^)]*\\)/,r>0?' (in '+dur(r)+')':'')}},1000);
 function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').textContent='offline';const m=document.getElementById('board');m.innerHTML='<div class="empty offline" id=offline-panel><h2>coxd is not running on this machine</h2>'+(HOST?'<div class=meta>host: '+esc(HOST)+'</div>':'')+'<p><button id=retry>Retry</button></p></div>';document.getElementById('retry').onclick=()=>{m.innerHTML='<div class=empty>Loading…</div>';startWatch()}}
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
 function render(s){GOT=true;clearTimeout(offT);STAGES=s.stages||STAGES;renderFactory(s.factory);document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last,t.issue_url]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last,t.issue_url,t.resume_at,t.timing&&[t.timing.started_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
 h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
-'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+pipe(t.stage)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
+'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
 (t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
 (t.state==='needs_human'?'<div class=retryrow>'+
  '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
