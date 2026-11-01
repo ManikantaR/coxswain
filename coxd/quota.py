@@ -48,10 +48,20 @@ def reset_from_result(result) -> float | None:
     'usage limit reached|<epoch>' text."""
     if result is None:
         return None
+    if getattr(result, "api_error_status", None) == 429:
+        return time.time() + FALLBACK_WAIT_S
+    # Only an ERROR result can be the CLI's limit message. A normal end-of-run summary
+    # may well say "usage limit": the board-timing task (#22) described its own
+    # "usage limit" badge, was parked as quota-blocked, and looped every 30 min while
+    # holding the whole queue (2026-10-31).
+    if not getattr(result, "is_error", False):
+        return None
     text = str(getattr(result, "result", "") or "")
-    if getattr(result, "api_error_status", None) == 429 or "usage limit" in text.lower():
-        m = re.search(r"\|(\d{10})\b", text)
-        return float(m.group(1)) if m else time.time() + FALLBACK_WAIT_S
+    m = re.search(r"usage limit reached\|(\d{10})\b", text, re.IGNORECASE)
+    if m:
+        return float(m.group(1))
+    if "usage limit" in text.lower():
+        return time.time() + FALLBACK_WAIT_S
     return None
 
 

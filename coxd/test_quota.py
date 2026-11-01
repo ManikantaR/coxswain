@@ -37,9 +37,16 @@ check("rejected without time → fallback",
       quota.rejected_reset_at(NS(status="rejected", resets_at=None)) > now + 1000)
 check("429 result → fallback", quota.reset_from_result(NS(api_error_status=429, result="")) > now)
 check("CLI text with epoch",
-      quota.reset_from_result(NS(api_error_status=None,
+      quota.reset_from_result(NS(api_error_status=None, is_error=True,
                                  result="Claude AI usage limit reached|1793168400"))
       == 1793168400.0)
+check("summary that MENTIONS a usage limit → None (not an error)",
+      quota.reset_from_result(NS(api_error_status=None, is_error=False,
+                                 result="Cards now show a usage limit badge; resumes 14:05"))
+      is None)
+check("error result saying usage limit, no epoch → fallback wait",
+      (quota.reset_from_result(NS(api_error_status=None, is_error=True,
+                                  result="Claude usage limit reached")) or 0) > now)
 check("normal result → None", quota.reset_from_result(NS(api_error_status=None, result="ok"))
       is None)
 
