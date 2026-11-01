@@ -23,3 +23,14 @@ payload = board._tasks_payload()
 assert any(r["id"] == "t1" for r in payload["tasks"]), payload
 assert board._tasks_payload() == payload  # second pass uses the TTL cache, no crash
 print("ok test_board")
+
+os.environ["COXD_HOST_LABEL"] = "mac"
+fp = board._factory_payload()
+assert fp["host"] == "mac" and "role" in fp and "paused" in fp, fp
+del os.environ["COXD_HOST_LABEL"]
+assert board._factory_payload()["host"], "default host falls back to hostname"
+assert board._factory_payload()["role"] == "primary"
+assert "offline-panel" in board._HTML and "coxd is not running on this machine" in board._HTML
+assert "id=foff" in board._HTML and "FACTORY OFF" in board._HTML
+assert "coxd-v2" in open(board.__file__).read()
+print("ok test_board factory/offline")

@@ -29,7 +29,8 @@ def check(name: str, cond: bool) -> None:
 
 
 c = TestClient(board.app, base_url="http://localhost:8791")
-check("default ON", c.get("/api/factory").json() == {"paused": False})
+_d = c.get("/api/factory").json()
+check("default ON", _d["paused"] is False and "host" in _d and "role" in _d)
 check("payload carries status", board._tasks_payload()["factory"]["paused"] is False)
 r = c.post("/api/factory", json={"paused": True}).json()
 check("POST paused → OFF", r["paused"] is True and factory.is_paused())
