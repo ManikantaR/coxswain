@@ -54,6 +54,13 @@ assert denied("Grep", pattern="TOKEN")                           # cwd walk woul
 assert denied("Grep", pattern="x", path=".env")
 assert not denied("Grep", pattern="x", path="src")               # narrower path is fine
 
+# --- deny-by-default for every other tool ---
+for t in ("Monitor", "CronCreate", "ToolSearch", "TaskStop", "Bash", "mcp__x__y",
+          "SomeFutureTool", "StructuredOutputX", "Structured"):
+    assert denied(t), t
+assert not denied("StructuredOutput")
+assert lane._REVIEWER_EXTRA_ALLOWED == ("StructuredOutput",)
+
 # --- options passed to query ---
 captured: dict = {}
 
@@ -84,6 +91,7 @@ for t in ("Bash", "Write", "Edit", *lane._WORKER_DENY):
 assert not set(o.allowed_tools) & set(o.disallowed_tools)
 assert o.max_turns == lane._REVIEW_MAX_TURNS and o.max_budget_usd == lane._REVIEW_MAX_BUDGET_USD
 assert o.hooks["PreToolUse"], "reviewer hook must be installed"
+assert all(m.matcher is None for m in o.hooks["PreToolUse"]), "hook must match every tool"
 assert "DATA" in lane._CRITERIA and "NOT a finding" in lane._CRITERIA
 
 # --- review-error: SDK failure and limit hit ---

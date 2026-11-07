@@ -132,7 +132,9 @@ def _make_reviewer_hook(worktree: Path):
     async def hook(input_data: dict, tool_use_id: str | None, context: object):
         tool = input_data.get("tool_name")
         ti = input_data.get("tool_input") or {}
-        if tool not in ("Read", "Grep", "Glob"):
+        if tool in _REVIEWER_EXTRA_ALLOWED:
+            return {}
+        if tool not in _REVIEWER_TOOLS:  # deny-by-default: unknown built-ins, MCP, etc.
             return _deny(f"coxswain reviewer is read-only: {tool} is not allowed.")
         raw = ti.get("file_path") if tool == "Read" else ti.get("path")
         pattern = str(ti.get("pattern", "")) if tool == "Glob" else ""
@@ -240,6 +242,10 @@ _WORKER_MAX_BUDGET_USD = 8.0
 _REVIEW_MAX_TURNS = 40
 _REVIEW_MAX_BUDGET_USD = 4.0
 _REVIEWER_TOOLS = ["Read", "Grep", "Glob"]
+# The one other tool the reviewer may call: the CLI's synthetic tool that returns the
+# output_format json_schema result (name read from the claude CLI binary). Exact name,
+# never a prefix match.
+_REVIEWER_EXTRA_ALLOWED = ("StructuredOutput",)
 _REVIEWER_DENY = _WORKER_DENY + ["Bash", "BashOutput", "KillShell", "Write", "Edit",
                                  "MultiEdit", "NotebookEdit"]
 
@@ -374,7 +380,7 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium",
                                  env=envscrub.sdk_blanking(), cli_path=sandbox.cli_path(),
                                  disallowed_tools=list(_REVIEWER_DENY),
                                  hooks={"PreToolUse": [HookMatcher(
-                                     matcher="Read|Grep|Glob",
+                                     matcher=None,  # every tool; the hook denies by default
                                      hooks=[_make_reviewer_hook(worktree)])]},
                                  max_budget_usd=_REVIEW_MAX_BUDGET_USD,
                                  output_format={"type": "json_schema", "schema": _REVIEW_SCHEMA})
