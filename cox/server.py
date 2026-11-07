@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import home, render, store
+from . import home, proc, render, store
 from .model import NeedsHumanReason, TaskState
 
 _ACTIVE = {TaskState.PLANNING, TaskState.WORKING, TaskState.GATING, TaskState.FIXING}
@@ -360,17 +360,37 @@ def artifact_payload(task_id: str, kind: str) -> dict:
     return {"id": task_id, "kind": kind, "text": text[:_MAX_ARTIFACT]}
 
 
+def _is_session_leader(pid: int) -> bool:
+    try:
+        return os.getsid(pid) == pid
+    except OSError:
+        return False
+
+
 def stop_task(task_id: str) -> dict:
     """Captain's STOP: kill the worker process and mark the task failed."""
     meta = store.load_meta(task_id)
+    if meta.state in (TaskState.LANDED, TaskState.FAILED, TaskState.PR_OPEN):
+        # Already finished: leave state/log untouched and never signal a stale pid.
+        return {"stopped": False, "state": meta.state.value}
     pid_path = store.task_state_dir(task_id) / "pid"
     killed = False
     if pid_path.exists():
         try:
             pid = int(pid_path.read_text(encoding="utf-8").strip())
-            os.kill(pid, signal.SIGTERM)
-            killed = True
-        except (ValueError, ProcessLookupError, OSError):
+        except (ValueError, OSError):
+            pid = 0
+        # Workers are spawned as session leaders (start_new_session); a reused
+        # PID belonging to some other process will not be one.
+        if pid > 1 and proc.is_alive(pid) and _is_session_leader(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed = True
+            except OSError:
+                pass
+        try:
+            pid_path.unlink()
+        except OSError:
             pass
     meta = replace(meta, state=TaskState.FAILED, reason=NeedsHumanReason.WORKER_ERROR)
     store.save_meta(meta)
