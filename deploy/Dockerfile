@@ -17,6 +17,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# PostgreSQL 16 server binaries + pgvector 16 from PGDG (matches prod pgvector/pgvector:pg16).
+# Used only by the gate's migrate-run step, which starts its own throwaway server as the
+# worker user; no server runs at container start (create_main_cluster = false).
+RUN install -d /usr/share/postgresql-common/pgdg /etc/postgresql-common \
+ && echo "create_main_cluster = false" > /etc/postgresql-common/createcluster.conf \
+ && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-16 postgresql-16-pgvector \
+ && rm -rf /var/lib/apt/lists/*
+
 # Docker CLI + compose plugin (CLIENT only — no daemon in here). coxd drives the NAS
 # host's Docker via the mounted /var/run/docker.sock to build+recreate a repo's
 # containers when you tap Deploy on the board. See deploy/docker-compose.coxd.yml.
