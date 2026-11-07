@@ -129,10 +129,11 @@ def _added_sql(worktree: Path, mdir: str) -> list[str]:
                   if ln.endswith(".sql") and posixpath.dirname(ln) == mdir)
 
 
-def _read(path: str) -> str:
+def _read_fd(fd: int) -> str:
+    """Tail of the log via the fd root opened itself — never by path (worker-writable dir)."""
     try:
-        with open(path, errors="replace") as fh:
-            return fh.read()[-2048:]
+        size = os.fstat(fd).st_size
+        return os.pread(fd, 2048, max(0, size - 2048)).decode("utf-8", "replace")
     except OSError:
         return ""
 
@@ -195,8 +196,13 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
     tmp = None
     pg = None
     pgid = -1
+    logfd = -1
     try:
         tmp = tempfile.mkdtemp(prefix="m-", dir=envscrub.scratch_home())
+        # Open the log as root BEFORE the dir is handed to the worker, refusing symlinks;
+        # postgres inherits the fd, and root reads it back through the fd, never the path.
+        logfd = os.open(os.path.join(tmp, "pg.log"),
+                        os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         sandbox.own(Path(tmp))
         data = os.path.join(tmp, "data")
         r = _run([bins["initdb"], "-D", data, "-U", "postgres", "-A", "trust",
@@ -206,27 +212,22 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
         # Run postgres in the foreground as the worker user, in its own process group.
         # Root only ever signals the pgid it recorded here — never anything read from the
         # worker-owned data dir (postmaster.pid).
-        logf = open(os.path.join(tmp, "pg.log"), "wb")
-        try:
-            pg = subprocess.Popen(
-                sandbox.wrap([bins["postgres"], "-D", data, "-c", "listen_addresses=",
-                              "-c", f"unix_socket_directories={tmp}", "-c", "fsync=off"]),
-                env=env, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
-                start_new_session=True)
-        finally:
-            logf.close()
+        pg = subprocess.Popen(
+            sandbox.wrap([bins["postgres"], "-D", data, "-c", "listen_addresses=",
+                          "-c", f"unix_socket_directories={tmp}", "-c", "fsync=off"]),
+            env=env, stdin=subprocess.DEVNULL, stdout=logfd, stderr=logfd,
+            start_new_session=True)
         pgid = pg.pid  # session leader => pgid == pid
         host = quote(tmp, safe="")
         base_psql = [bins["psql"], "-X", "-q", "-v", "ON_ERROR_STOP=1"]
         while True:  # wait for the server to accept connections
             if pg.poll() is not None:
-                return "postgres failed to start: " + _tail(_read(os.path.join(tmp, "pg.log")))
+                return "postgres failed to start: " + _tail(_read_fd(logfd))
             r = _run(base_psql + [f"postgresql://postgres@/postgres?host={host}",
                                   "-c", "SELECT 1"], env, deadline)
             if r.returncode == 0:
                 break
             time.sleep(0.2)
-        host = quote(tmp, safe="")
         url = f"postgresql://postgres@/app?host={host}"
         r = _run(base_psql + [f"postgresql://postgres@/postgres?host={host}",
                               "-c", "CREATE DATABASE app"], env, deadline)
@@ -258,6 +259,8 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
         if tmp:
             if pg is not None:
                 _stop_postgres(pg, pgid, bins, os.path.join(tmp, "data"), env)
+            if logfd >= 0:
+                os.close(logfd)
             shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -287,7 +290,7 @@ def run_gate(worktree: Path, entry: dict, path: str = "full") -> dict:
         steps["migrations"] = "ok" if mig == "ok" else "red"
         if mig != "ok":
             return {"passed": False, "failing": "migrations", "steps": steps, "reason": mig}
-    if entry.get("migrate") and mig in (None, "ok"):
+    if entry.get("migrate"):
         why = _migrate_run(worktree, entry, env)
         steps["migrate-run"] = "ok" if why is None else "red"
         if why is not None:
