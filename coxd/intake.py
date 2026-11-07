@@ -3,9 +3,9 @@
 Polled from the supervisor (see `run`). Per repo it is opt-in (`intake: true` in the
 registry entry; default off). Merge stays human. Safety notes:
   - the label must have been added by a human with write/maintain/admin (checked via
-    the permissions API — never the issue author);
+    the permissions API - never the issue author);
   - title/body are stripped of invisible/bidi characters and PII-scanned before they
-    reach a brief; a hit adds a label only — never a comment, and the matched text and
+    reach a brief; a hit adds a label only - never a comment, and the matched text and
     rule detail never leave the machine (log: rule + location only).
 """
 
@@ -83,7 +83,9 @@ def _relabel(slug: str, number: int, add: str | None = None,
         args += ["--remove-label", remove]
     if add:
         args += ["--add-label", add]
-    _gh(args)
+    rc, _out = _gh(args)
+    if rc != 0:
+        raise RuntimeError("label update failed")
 
 
 def _ensure_labels(slug: str) -> None:
@@ -98,8 +100,8 @@ def _ensure_labels(slug: str) -> None:
     _labels_ready.add(slug)
 
 
-def _labeller(slug: str, number: int) -> dict | None:
-    """Actor of the most recent `labeled coxd-ready` timeline event."""
+def _labeller(slug: str, number: int) -> tuple[dict | None, str]:
+    """(actor, created_at) of the most recent `labeled coxd-ready` timeline event."""
     pages = _json(["api", f"repos/{slug}/issues/{number}/timeline",
                    "--paginate", "--slurp"]) or []
     events = [e for p in pages for e in (p if isinstance(p, list) else [p])]
@@ -107,7 +109,30 @@ def _labeller(slug: str, number: int) -> dict | None:
     for e in events:
         if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == READY:
             last = e
-    return (last or {}).get("actor") or None
+    last = last or {}
+    return last.get("actor") or None, str(last.get("created_at") or "")
+
+
+_EDIT_Q = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){"
+           "issue(number:$n){lastEditedAt userContentEdits(first:1){nodes{"
+           "editedAt editor{login __typename}}}}}}")
+
+
+def _edited_after(slug: str, number: int, label_at: str) -> dict | None:
+    """The editor of the issue title/body if it was edited after the label was added
+    (a maintainer approved the text they saw, not a later rewrite). {} if the editor
+    is unknown. None if not edited since. Raises if the lookup fails."""
+    owner, repo = slug.split("/", 1)
+    d = _json(["api", "graphql", "-f", f"query={_EDIT_Q}", "-f", f"o={owner}",
+               "-f", f"r={repo}", "-F", f"n={number}"]) or {}
+    issue = (((d.get("data") or {}).get("repository") or {}).get("issue")) or {}
+    edited = issue.get("lastEditedAt")
+    if not edited or not label_at or edited <= label_at:  # ISO-8601 UTC sorts lexically
+        return None
+    nodes = (issue.get("userContentEdits") or {}).get("nodes") or []
+    ed = (nodes[0].get("editor") if nodes else None) or {}
+    return {"login": ed.get("login"),
+            "type": "User" if ed.get("__typename") == "User" else ed.get("__typename")}
 
 
 def _is_trusted(slug: str, actor: dict | None) -> bool | None:
@@ -162,15 +187,25 @@ def _process_repo(name: str, path: str) -> int:
             break
         n, url = int(it["number"]), it["url"]
         try:
-            trusted = _is_trusted(slug, _labeller(slug, n))
+            if _has_task(url):
+                continue
+            actor, label_at = _labeller(slug, n)
+            trusted = _is_trusted(slug, actor)
             if trusted is None:
                 continue
             if not trusted:
                 _relabel(slug, n, add=UNTRUSTED, remove=READY)
-                print(f"intake: {name}#{n} untrusted label — blocked")
+                print(f"intake: {name}#{n} untrusted label - blocked")
                 continue
-            if _has_task(url):
-                continue
+            editor = _edited_after(slug, n, label_at)
+            if editor is not None:
+                ok = _is_trusted(slug, editor) if editor.get("login") else False
+                if ok is None:
+                    continue
+                if not ok:
+                    _relabel(slug, n, add=UNTRUSTED, remove=READY)
+                    print(f"intake: {name}#{n} edited after labelling - blocked")
+                    continue
             title, body = clean(it.get("title")), clean(it.get("body"))
             if _open_deps(slug, body):
                 if WAITING not in {lb.get("name") for lb in it.get("labels") or []}:

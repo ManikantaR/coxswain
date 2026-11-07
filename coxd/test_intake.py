@@ -39,6 +39,7 @@ issues: dict[int, dict] = {}
 actors: dict[int, dict] = {}
 perms: dict[str, str] = {"alice": "write", "rita": "read"}
 dispatched: list[str] = []
+edits: dict[int, tuple[str, str]] = {}
 
 
 def fake_gh(args):
@@ -67,7 +68,14 @@ def fake_gh(args):
     if a[0] == "api" and a[1].endswith("/timeline"):
         n = int(a[1].split("/")[4])
         return 0, json.dumps([[{"event": "labeled", "label": {"name": "coxd-ready"},
+                                "created_at": "2026-03-01T00:00:00Z",
                                 "actor": actors[n]}]])
+    if a[0] == "api" and a[1] == "graphql":
+        n = int(a[-1].split("=")[-1])
+        e = edits.get(n)
+        node = {"lastEditedAt": e[0], "userContentEdits": {"nodes": [
+            {"editedAt": e[0], "editor": {"login": e[1], "__typename": "User"}}]}} if e else {}
+        return 0, json.dumps({"data": {"repository": {"issue": node}}})
     if a[0] == "api" and "/collaborators/" in a[1]:
         who = a[1].split("/")[4]
         return 0, json.dumps({"permission": perms.get(who, "none")})
@@ -161,6 +169,19 @@ for i in range(10, 15):
     add(i, created=f"2026-02-{i:02d}T00:00:00Z")
 check("max 3 per poll", intake.poll_once() == 3)
 for i in range(10, 15):
+    issues[i]["state"] = "CLOSED"
+
+# edited after labelling by an untrusted user -> blocked; by a trusted one -> ok
+add(30, who="alice")
+add(31, who="alice")
+edits[30] = ("2026-03-02T00:00:00Z", "rita")
+edits[31] = ("2026-03-02T00:00:00Z", "alice")
+n0 = len(dispatched)
+check("trusted edit ok, untrusted edit blocked",
+      intake.poll_once() == 1 and len(dispatched) == n0 + 1
+      and names(30) == ["coxd-untrusted"] and names(31) == ["coxd-working"])
+edits.clear()
+for i in (30, 31):
     issues[i]["state"] = "CLOSED"
 
 # paused / flag off → no calls
