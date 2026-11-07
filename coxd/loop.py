@@ -79,7 +79,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
 
     # --- one review pass ---------------------------------------------------
     store.set_state(task_id, "reviewing")
-    r = await lane.review(gate.diff(wt), review_model, emit, effort=effort)
+    r = await lane.review(gate.diff(wt), review_model, emit, effort=effort,
+                          worktree=wt)
     store.add_cost(task_id, r.cost)
     if r.quota_reset_at:
         raise quota.QuotaWait(r.quota_reset_at, "review")
@@ -106,7 +107,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         # let two PRs land with their own reviewer's blocking finding still
         # open (2026-10). Only a fresh `approve` ships; anything else stops.
         store.set_state(task_id, "reviewing")
-        r = await lane.review(gate.diff(wt), review_model, emit, effort=effort)
+        r = await lane.review(gate.diff(wt), review_model, emit, effort=effort,
+                          worktree=wt)
         store.add_cost(task_id, r.cost)
         if r.quota_reset_at:
             raise quota.QuotaWait(r.quota_reset_at, "re-review")
