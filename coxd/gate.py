@@ -9,6 +9,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import posixpath
 import re
 import shutil
 import signal
@@ -69,11 +70,17 @@ def _tail(text: str) -> str:
     return (text or "").strip()[-1024:]
 
 
+def _is_db_var(name: str) -> bool:
+    """Variables that could carry a real database location or credentials."""
+    return (name.startswith("PG") or name == "DATABASE_URL"
+            or name.endswith(("_DATABASE_URL", "_DB_URL")))
+
+
 def _pg_bins(env: dict) -> dict | None:
-    """Absolute paths of initdb/pg_ctl/psql (PATH first, then the PGDG layout)."""
+    """Absolute paths of initdb/pg_ctl/postgres/psql (PATH first, then the PGDG layout)."""
     found = {}
     dirs = sorted(glob.glob("/usr/lib/postgresql/*/bin"), reverse=True)
-    for name in ("initdb", "pg_ctl", "psql"):
+    for name in ("initdb", "pg_ctl", "postgres", "psql"):
         p = shutil.which(name, path=env.get("PATH"))
         if not p:
             for d in dirs:
@@ -106,7 +113,7 @@ def _run(argv: list[str], env: dict, deadline: float, cwd=None):
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
 
 
-def _added_sql(worktree: Path) -> list[str]:
+def _added_sql(worktree: Path, mdir: str) -> list[str]:
     base = _base_ref(worktree)
     r = sandbox.run_in_worktree(
         ["git", "diff", "--name-only", "--diff-filter=A", f"{base}...HEAD", "--", "*.sql"],
@@ -117,7 +124,45 @@ def _added_sql(worktree: Path) -> list[str]:
             worktree)
     if r.returncode != 0:
         raise _Red("cannot list migrations added by this branch: " + _tail(r.stderr))
-    return sorted(ln for ln in r.stdout.splitlines() if ln.strip())
+    # only .sql files added DIRECTLY in the migrations dir; seeds/templates elsewhere are ignored
+    return sorted(ln for ln in r.stdout.splitlines()
+                  if ln.endswith(".sql") and posixpath.dirname(ln) == mdir)
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path, errors="replace") as fh:
+            return fh.read()[-2048:]
+    except OSError:
+        return ""
+
+
+def _stop_postgres(pg: subprocess.Popen, pgid: int, bins: dict, data: str, env: dict) -> None:
+    """Stop the server we started: pg_ctl fast, then immediate (both as the worker), then
+    SIGKILL the recorded process group if it is still ours and still running."""
+    for mode in ("fast", "immediate"):
+        if pg.poll() is not None:
+            break
+        try:
+            subprocess.run(sandbox.wrap([bins["pg_ctl"], "-D", data, "-m", mode,
+                                         "-w", "-t", "10", "stop"]),
+                           env=env, capture_output=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+        except Exception:
+            pass
+        try:
+            pg.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    if pg.poll() is None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        pg.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
@@ -131,18 +176,25 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
         return "migrate.cmd missing in registry — RED"
     if not isinstance(url_env, str) or not _NAME_RE.match(url_env):
         return f"migrate.url_env is not a valid environment variable name: {url_env!r}"
+    mdir = cfg.get("dir")
+    if not isinstance(mdir, str) or not mdir.strip():
+        return "migrate.dir missing in registry (e.g. db/migrations) — RED"
+    mdir = posixpath.normpath(mdir.strip())
+    if mdir.startswith("/") or mdir == ".." or mdir.startswith("../"):
+        return "migrate.dir must be a relative path inside the repo"
     if not isinstance(exts, list) or not all(
             isinstance(x, str) and _NAME_RE.match(x) for x in exts):
         return "migrate.extensions must be a list of plain extension names"
     # No stray PG* settings or real DB URLs may reach the throwaway server or the command.
-    env = {k: v for k, v in env.items() if not k.startswith("PG") and k != url_env}
+    env = {k: v for k, v in env.items() if not _is_db_var(k) and k != url_env}
     bins = _pg_bins(env)
     if not bins:
-        return ("PostgreSQL binaries (initdb, pg_ctl, psql) not found — install "
+        return ("PostgreSQL binaries (initdb, pg_ctl, postgres, psql) not found — install "
                 "postgresql-16 (see deploy/Dockerfile); cannot run migrations")
     deadline = time.monotonic() + MIGRATE_TIMEOUT
     tmp = None
-    started = False
+    pg = None
+    pgid = -1
     try:
         tmp = tempfile.mkdtemp(prefix="m-", dir=envscrub.scratch_home())
         sandbox.own(Path(tmp))
@@ -151,16 +203,31 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
                   "-E", "UTF8", "--no-locale", "--no-sync"], env, deadline)
         if r.returncode != 0:
             return "initdb failed: " + _tail(r.stderr or r.stdout)
-        started = True  # from here a postmaster may exist
-        r = _run([bins["pg_ctl"], "-D", data, "-w", "-t", "60", "-l",
-                  os.path.join(tmp, "pg.log"), "-o",
-                  f"-c listen_addresses= -c unix_socket_directories={tmp} -c fsync=off",
-                  "start"], env, deadline)
-        if r.returncode != 0:
-            return "postgres failed to start: " + _tail(r.stderr or r.stdout)
+        # Run postgres in the foreground as the worker user, in its own process group.
+        # Root only ever signals the pgid it recorded here — never anything read from the
+        # worker-owned data dir (postmaster.pid).
+        logf = open(os.path.join(tmp, "pg.log"), "wb")
+        try:
+            pg = subprocess.Popen(
+                sandbox.wrap([bins["postgres"], "-D", data, "-c", "listen_addresses=",
+                              "-c", f"unix_socket_directories={tmp}", "-c", "fsync=off"]),
+                env=env, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+                start_new_session=True)
+        finally:
+            logf.close()
+        pgid = pg.pid  # session leader => pgid == pid
+        host = quote(tmp, safe="")
+        base_psql = [bins["psql"], "-X", "-q", "-v", "ON_ERROR_STOP=1"]
+        while True:  # wait for the server to accept connections
+            if pg.poll() is not None:
+                return "postgres failed to start: " + _tail(_read(os.path.join(tmp, "pg.log")))
+            r = _run(base_psql + [f"postgresql://postgres@/postgres?host={host}",
+                                  "-c", "SELECT 1"], env, deadline)
+            if r.returncode == 0:
+                break
+            time.sleep(0.2)
         host = quote(tmp, safe="")
         url = f"postgresql://postgres@/app?host={host}"
-        base_psql = [bins["psql"], "-X", "-q", "-v", "ON_ERROR_STOP=1"]
         r = _run(base_psql + [f"postgresql://postgres@/postgres?host={host}",
                               "-c", "CREATE DATABASE app"], env, deadline)
         if r.returncode != 0:
@@ -175,7 +242,7 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
             return "migrate cmd failed: " + _tail(r.stderr or r.stdout)
         # Re-run check: every .sql this branch adds must apply a second time.
         root = worktree.resolve()
-        for rel in _added_sql(worktree):
+        for rel in _added_sql(worktree, mdir):
             f = (worktree / rel).resolve()
             if not f.is_relative_to(root) or not f.is_file():
                 continue
@@ -189,19 +256,8 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
         return f"migrate-run timed out after {MIGRATE_TIMEOUT}s"
     finally:
         if tmp:
-            if started:
-                try:
-                    subprocess.run(sandbox.wrap([bins["pg_ctl"], "-D", os.path.join(tmp, "data"),
-                                                 "-m", "immediate", "-w", "-t", "20", "stop"]),
-                                   env=env, capture_output=True, timeout=40,
-                                   stdin=subprocess.DEVNULL)
-                except Exception:
-                    pass
-                try:  # belt and braces: kill a postmaster that did not stop
-                    with open(os.path.join(tmp, "data", "postmaster.pid")) as fh:
-                        os.kill(int(fh.readline()), signal.SIGKILL)
-                except (OSError, ValueError):
-                    pass
+            if pg is not None:
+                _stop_postgres(pg, pgid, bins, os.path.join(tmp, "data"), env)
             shutil.rmtree(tmp, ignore_errors=True)
 
 

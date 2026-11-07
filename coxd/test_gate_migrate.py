@@ -58,6 +58,11 @@ def fake_bins(psql_script: str) -> dict:
     scripts = {
         "initdb": 'while [ $# -gt 0 ]; do [ "$1" = -D ] && mkdir -p "$2"; shift; done',
         "pg_ctl": "exit 0",
+        # foreground "server": record our pid, plant a pid file naming a canary, then block
+        "postgres": ('while [ $# -gt 0 ]; do [ "$1" = -D ] && D="$2"; shift; done\n'
+                     'echo $$ > "$FAKE_PG_PID_OUT"\n'
+                     '[ -n "$CANARY_PID" ] && echo "$CANARY_PID" > "$D/postmaster.pid"\n'
+                     'exec sleep 300'),
         "psql": psql_script,
     }
     out = {}
@@ -72,7 +77,7 @@ def fake_bins(psql_script: str) -> dict:
 def run(repo: Path, migrate: dict | None) -> dict:
     entry = {"test": "true", "lint": "true", "build": False}
     if migrate is not None:
-        entry["migrate"] = migrate
+        entry["migrate"] = {"dir": "db/migrations", **migrate}
     return gate.run_gate(repo, entry)
 
 
@@ -82,6 +87,7 @@ def real_pg() -> bool:
 
 def main() -> int:
     fails = 0
+    os.environ["FAKE_PG_PID_OUT"] = os.path.join(tempfile.mkdtemp(prefix="coxd-pid0-"), "p")
 
     def check(name: str, cond: bool, detail: object = "") -> None:
         nonlocal fails
@@ -108,7 +114,8 @@ def main() -> int:
     # 3. fake psql failing -> RED with error text (cut to 1 KB); temp dir removed;
     #    cmd sees url_env pointing at a socket and no real DB URL
     os.environ["DATABASE_URL"] = "postgresql://real.example.invalid/prod"
-    noisy = 'echo "$(printf x%.0s $(seq 1 2000)) ERROR: boom" >&2; exit 1'
+    noisy = ('case "$*" in *"SELECT 1"*) exit 0;; esac\n'
+             'echo "$(printf x%.0s $(seq 1 2000)) ERROR: boom" >&2; exit 1')
     gate._pg_bins = lambda env: fake_bins(noisy)
     try:
         before = scratch_entries()
@@ -133,6 +140,68 @@ def main() -> int:
     finally:
         gate._pg_bins = real
         os.environ.pop("DATABASE_URL", None)
+
+    # 4b. env scrub: every DB-looking var is gone, url_env is the throwaway socket
+    gate._pg_bins = lambda env: fake_bins("exit 0")
+    leaks = {"DATABASE_URL": "x", "APP_DATABASE_URL": "x", "MAIN_DB_URL": "x", "PGHOST": "x",
+             "PGPASSWORD": "x", "MY_URL": "x"}
+    os.environ.update(leaks)
+    try:
+        out = Path(tempfile.mkdtemp(prefix="coxd-out-")) / "env"
+        g = run(repo, {"cmd": f"env > {out}", "url_env": "MY_URL"})
+        seen = out.read_text() if out.exists() else ""
+        names = {ln.split("=", 1)[0] for ln in seen.splitlines()}
+        check("db vars stripped", g["passed"] and not (names & set(leaks) - {"MY_URL"}), names)
+        check("url_env points at socket", "MY_URL=postgresql://postgres@/app?host=" in seen)
+    finally:
+        for k in leaks:
+            os.environ.pop(k, None)
+        gate._pg_bins = real
+
+    # 4c. root never kills via a (worker-writable) pid file; recorded pgid is used instead.
+    #     fake pg_ctl cannot stop the server, so the pgid kill path must fire.
+    canary = subprocess.Popen(["sleep", "60"])
+    pid_out = Path(tempfile.mkdtemp(prefix="coxd-pid-")) / "pg.pid"
+    os.environ["CANARY_PID"] = str(canary.pid)
+    os.environ["FAKE_PG_PID_OUT"] = str(pid_out)
+    gate._pg_bins = lambda env: fake_bins("exit 0")
+    try:
+        before = scratch_entries()
+        g = run(repo, {"cmd": "true"})
+        pg_pid = int(pid_out.read_text())
+        check("pid-file run ok", g["passed"], g)
+        check("canary PID from pid file NOT killed", canary.poll() is None)
+        try:
+            os.kill(pg_pid, 0)
+            alive = True
+        except ProcessLookupError:
+            alive = False
+        check("started server group killed via recorded pgid", not alive, pg_pid)
+        check("temp dir removed (pid file case)", scratch_entries() == before)
+    finally:
+        canary.kill()
+        canary.wait()
+        os.environ.pop("CANARY_PID", None)
+        gate._pg_bins = real
+
+    # 4d. re-run only .sql files added directly in migrate.dir; seeds/templates ignored
+    ran = Path(tempfile.mkdtemp(prefix="coxd-ran-")) / "log"
+    psql_log = f'case "$*" in *"-f "*) echo "$*" >> {ran};; esac; exit 0'
+    gate._pg_bins = lambda env: fake_bins(psql_log)
+    try:
+        r2 = fixture_repo({"db/migrations/0001_a.sql": "select 1;\n",
+                           "db/migrations/sub/0002_nested.sql": "select 1;\n",
+                           "db/seeds/seed.sql": "select 1;\n",
+                           "app/queries/report.sql": "select 1;\n"})
+        g = run(r2, {"cmd": "true"})
+        log = ran.read_text() if ran.exists() else ""
+        check("only files in migrate.dir re-run",
+              g["passed"] and "0001_a.sql" in log and "seed.sql" not in log
+              and "report.sql" not in log and "nested" not in log, log)
+        g = run(r2, {"cmd": "true", "dir": ""})
+        check("missing migrate.dir -> RED", not g["passed"] and "migrate.dir" in g["reason"], g)
+    finally:
+        gate._pg_bins = real
 
     # 5. timeout stays RED and cleans up
     gate._pg_bins = lambda env: fake_bins("exit 0")
