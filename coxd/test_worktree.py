@@ -21,6 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-test-")
+# worktree.root() reads COXD_WORKTREES; never use the real (sandbox-owned) worktree root.
+os.environ["COXD_WORKTREES"] = tempfile.mkdtemp(prefix="coxd-wts-")
 
 import worktree  # noqa: E402
 

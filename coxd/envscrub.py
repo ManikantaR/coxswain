@@ -19,10 +19,7 @@ def scratch_home() -> str:
     with the real COXD_HOME wrote 27 fixture tasks into the live store (2026-10-31)."""
     p = os.path.join(tempfile.gettempdir(), "coxd-worker-home")
     os.makedirs(p, exist_ok=True)
-    try:
-        os.chmod(p, 0o1777)  # the worker runs as another uid (sandbox.py)
-    except PermissionError:
-        pass  # dir owned by another uid (created by the supervisor); mode is already set
+    os.chmod(p, 0o1777)  # the worker runs as another uid (sandbox.py)
     return p
 
 

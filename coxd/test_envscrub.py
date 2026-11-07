@@ -11,6 +11,9 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-env-")
+# envscrub.scratch_home() lives under gettempdir(); use our own so a pre-existing shared
+# /tmp/coxd-worker-home (other owner) can't break its chmod.
+tempfile.tempdir = tempfile.mkdtemp(prefix="coxd-tmp-")
 os.environ["GH_TOKEN"] = "ghp_fake_for_test"
 os.environ["COXD_TG_TOKEN"] = "123:fake"
 os.environ["KEEP_ME"] = "1"
