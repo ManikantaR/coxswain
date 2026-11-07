@@ -131,16 +131,16 @@ check("dep closed → dispatched", intake.poll_once() == 1 and names(5) == ["cox
 issues[5]["state"] = "CLOSED"
 
 # zero-width stripped
-add(7, body="Fix​ the‮ bug﻿", title="Ti​tle")
+add(7, body="Fix\u200b the\u202e bug\ufeff", title="Ti\u200btle")
 intake.poll_once()
-check("zero-width stripped", "​" not in dispatched[-1] and "‮" not in dispatched[-1]
-      and "﻿" not in dispatched[-1] and "Fix the bug" in dispatched[-1])
+check("zero-width stripped", "\u200b" not in dispatched[-1] and "\u202e" not in dispatched[-1]
+      and "\ufeff" not in dispatched[-1] and "Fix the bug" in dispatched[-1])
 issues[7]["state"] = "CLOSED"
 
 # PII hit
 open(pii.denylist_path(), "w").write("Zebulon Quux\n")
 add(8, body="Contact zebulon quux about it")
-add(9, body="zebu​lon quux sneaky")
+add(9, body="zebu\u200blon quux sneaky")
 n0, c0 = len(dispatched), len(calls)
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):

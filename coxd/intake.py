@@ -39,8 +39,8 @@ LABELS = {
 MAX_PER_REPO = 3
 _TRUSTED_PERMS = {"write", "maintain", "admin"}
 _LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]|\[bot\])*$")
-_INVISIBLE_RE = re.compile("[­؜᠎​-‏‪-‮"
-                           "⁠-⁯﻿]")
+_INVISIBLE_RE = re.compile("[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e"
+                           "\u2060-\u206f\ufeff]")
 _DEP_RE = re.compile(
     r"^[ \t>*-]*depends\s+on\s+(?:#(\d+)|https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+))\b",
     re.IGNORECASE | re.MULTILINE)
