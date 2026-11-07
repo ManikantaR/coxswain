@@ -12,6 +12,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-resume-")
+# envscrub.scratch_home() lives under gettempdir(); isolate from a shared /tmp dir.
+tempfile.tempdir = tempfile.mkdtemp(prefix="coxd-tmp-")
 
 import board  # noqa: E402
 import ship  # noqa: E402

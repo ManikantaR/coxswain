@@ -72,15 +72,20 @@ def main() -> int:
     print("reachable remote → worktree created:", (wt2 / "f.txt").exists())
 
     home = Path(os.environ["COXD_HOME"]).resolve()
-    fails += not wt.resolve().is_relative_to(home)
-    print("unset COXD_WORKTREES → under home:", wt.resolve().is_relative_to(home))
+    saved = os.environ.pop("COXD_WORKTREES")  # root() only reads it; creates nothing
+    try:
+        under_home = worktree.root().resolve().is_relative_to(home)
+    finally:
+        os.environ["COXD_WORKTREES"] = saved
+    fails += not under_home
+    print("unset COXD_WORKTREES → under home:", under_home)
 
     work = Path(tempfile.mkdtemp(prefix="coxd-work-"))
     os.environ["COXD_WORKTREES"] = str(work)
     try:
         wt3 = worktree.create(scratch, "scratch-2")
     finally:
-        del os.environ["COXD_WORKTREES"]
+        os.environ["COXD_WORKTREES"] = saved
     w3 = wt3.resolve()
     outside = w3.is_relative_to(work.resolve()) and not w3.is_relative_to(home)
     fails += not (outside and (wt3 / "f.txt").exists())
