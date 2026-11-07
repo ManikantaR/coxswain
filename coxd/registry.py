@@ -46,6 +46,7 @@ def scout(repo_path: Path) -> dict:
     """
     entry: dict = {"test": None, "lint": None, "build": None,
                    "target_branch": "main", "source": None, "runner": None,
+                   "intake": False,  # opt-in: poll for `coxd-ready` issues (intake.py)
                    "gate_env": {},  # env the gate injects to match CI (e.g. NODE_OPTIONS heap)
                    # Opt-in auto-deploy after a merge lands (landed.py). Disabled by
                    # default — set enabled+command per repo. cwd defaults to the repo;

@@ -14,6 +14,7 @@ import os
 
 import board
 import factory
+import intake
 import landed
 import loop
 import quota
@@ -205,4 +206,5 @@ async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
     await asyncio.gather(server.serve(),
                          _runner(concurrency, worker_model, review_model, effort),
                          _cleanup_loop(),
-                         watchdog.run())
+                         watchdog.run(),
+                         intake.run())
