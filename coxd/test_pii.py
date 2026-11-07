@@ -188,6 +188,7 @@ def hunk(path: str, line: str) -> str:
 
 
 ship._pii_items = fake_items
+ship._git_text = lambda *a: "abc123\n"  # pinned sha for the stubbed integration
 ship.subprocess.run = fake_run
 ship._greenlight = lambda t, wt: ("", "")
 ship._build_body = lambda t, wt, h="": "body"
@@ -259,6 +260,17 @@ state["diff"] = ""
 check("worker-side env never sees the real COXD_HOME (allow file unreachable)",
       envscrub.scrubbed_env()["COXD_HOME"] != os.environ["COXD_HOME"])
 
+
+# --- review round: long group runs don't hang; pinned sha; quoted/UTF-8 paths
+import time  # noqa: E402
+
+t0 = time.time()
+check("long run of groups is linear-ish", rules("1 " * 200000) == set() and time.time() - t0 < 5)
+check("all-zero span not a card", rules("0000 0000 0000 0000") == set())
+q = 'diff --git a/x b/x\n+++ "b/we\\tird.txt"\n@@ -0,0 +1 @@\n+hi\n'
+check("quoted header path unquoted", "we\\tird.txt" in ship._added_lines(q))
+pushes = [c for c in calls if c[:2] == ["git", "push"]]
+check("push pins the scanned sha", bool(pushes) and pushes[-1][-1] == "abc123:refs/heads/coxd/t1")
 ship._build_body = lambda t, wt, h="": 1 / 0
 calls.clear()
 out, _ = ship.ship("t1")

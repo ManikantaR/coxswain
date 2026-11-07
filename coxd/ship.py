@@ -185,6 +185,8 @@ def _added_lines(diff: str) -> dict[str, str]:
             cur = None
         elif ln.startswith("+++ "):
             p = ln[4:].strip()
+            if len(p) > 1 and p.startswith('"') and p.endswith('"'):
+                p = p[1:-1]  # quoted (tab/quote/backslash); quotePath=false handles UTF-8
             if p == "/dev/null":
                 cur = None
             else:
@@ -201,7 +203,8 @@ def _added_lines(diff: str) -> dict[str, str]:
 def _git_text(repo_path: Path, *args: str) -> str:
     """Run git in the MAIN checkout (never the worker-owned worktree); raise on failure.
     Output decoded with errors='replace' so non-UTF-8 bytes can't crash the scan."""
-    r = subprocess.run(["git", *args], cwd=repo_path, capture_output=True)
+    r = subprocess.run(["git", "-c", "core.quotePath=false", *args], cwd=repo_path,
+                       capture_output=True)
     if r.returncode != 0:
         raise RuntimeError(f"git {args[0]} failed")
     return r.stdout.decode("utf-8", errors="replace")
@@ -261,19 +264,25 @@ def _pii_block(task_id: str, reason: str, data: dict) -> str:
     return reason
 
 
-def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path) -> str | None:
+def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
+              ctx: dict | None = None) -> str | None:
     """None if clean, else the block reason ('pii-block' | 'pii-scan-error').
     Fails closed on ANY error, including building the title/body."""
     try:
         title = _pr_title(t)
         _tier, gl_header = _greenlight(t, wt)
         body = _build_body(t, wt, gl_header)
+        # Pin the exact commit: scan this sha and push this sha (no check-then-use gap).
+        sha = _git_text(repo_path, "rev-parse", "--verify",
+                        f"refs/heads/{branch}^{{commit}}").strip()
+        if ctx is not None:
+            ctx.update(sha=sha, title=title, body=body, tier=_tier)
         entry = registry.load(t["repo"]) or {}
         base = _resolve_base(repo_path, entry.get("target_branch"))
         deny, missing = pii.load_denylist()
         if missing:
             store.append_event(task_id, "pii-denylist-missing", {})
-        hits = pii.scan(_pii_items(repo_path, base, f"refs/heads/{branch}", title, body, deny),
+        hits = pii.scan(_pii_items(repo_path, base, sha, title, body, deny),
                         deny)
         allow = pii.load_allow()
         kept = []
@@ -302,13 +311,16 @@ def ship(task_id: str) -> tuple[str, str | None]:
     if repo_path is None or not _has_gh_remote(repo_path):
         return ("local", None)  # nothing to push to — the work is on the local branch
 
-    reason = _pii_gate(task_id, t, repo_path, branch, wt)
+    ctx: dict = {}
+    reason = _pii_gate(task_id, t, repo_path, branch, wt, ctx)
     if reason:  # loop.py owns the state transition (needs_human / <reason>)
         return (reason, None)
 
     # From the main checkout, never from the worker-owned worktree (see sandbox.py):
     # the branch ref is shared, and root's config/hooks there are not worker-writable.
-    push = subprocess.run(["git", "push", "-u", "origin", branch], cwd=repo_path,
+    sha = ctx.get("sha")
+    refspec = [f"{sha}:refs/heads/{branch}"] if sha else [branch]
+    push = subprocess.run(["git", "push", "origin", *refspec], cwd=repo_path,
                           capture_output=True, text=True)
     if push.returncode != 0:
         store.append_event(task_id, "ship-error", {"stage": "push", "err": push.stderr[-300:]})
@@ -319,9 +331,12 @@ def ship(task_id: str) -> tuple[str, str | None]:
         # pr_ready): the push above updated that PR; never open a second one.
         return ("pr", t["pr_url"])
 
-    title = _pr_title(t)
-    tier, gl_header = _greenlight(t, wt)
-    body = _build_body(t, wt, gl_header)
+    if ctx:  # reuse exactly what was scanned
+        title, body, tier = ctx["title"], ctx["body"], ctx["tier"]
+    else:
+        title = _pr_title(t)
+        tier, gl_header = _greenlight(t, wt)
+        body = _build_body(t, wt, gl_header)
     pr = subprocess.run(
         ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
         cwd=repo_path, capture_output=True, text=True)

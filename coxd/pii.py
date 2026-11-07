@@ -69,7 +69,10 @@ def _has_card(text: str) -> bool:
         for si in range(len(groups)):
             for ei in range(si + 1, len(groups) + 1):
                 lo, hi = starts[si], starts[ei]
-                if 13 <= hi - lo <= 19 and not any(covered[lo:hi]) and _luhn(digits[lo:hi]):
+                if hi - lo > 19:
+                    break  # bounds the inner loop (a long run of groups must not go O(G^2))
+                if (hi - lo >= 13 and not any(covered[lo:hi]) and set(digits[lo:hi]) != {"0"}
+                        and _luhn(digits[lo:hi])):
                     return True
     return False
 
@@ -97,8 +100,11 @@ def allow_path() -> Path:
 
 def load_allow() -> set[tuple[str, str, str]]:
     """Owner-maintained false-positive overrides: `<rule>|<location>|<task-id>` per line.
-    Lives in COXD_HOME (control-plane/root-owned; workers get a scratch COXD_HOME and
-    cannot reach it), read fresh each scan. `secret` entries are always ignored."""
+    Lives in COXD_HOME. Under the sandbox (COXD_WORKER_USER) that is root-owned and workers
+    get a scratch COXD_HOME; in unsandboxed laptop mode a worker shares the uid and CAN
+    write it, so only trust it with the sandbox on. `path:<i>` locations are index-based
+    and shift when the changed-path set changes — prefer `diff:`/`commit:` entries.
+    Read fresh each scan. `secret` entries are always ignored."""
     p = allow_path()
     out: set[tuple[str, str, str]] = set()
     if not p.is_file():
