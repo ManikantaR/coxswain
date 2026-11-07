@@ -124,6 +124,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
     import ship
     outcome, url = ship.ship(task_id)
     emit("ship", {"outcome": outcome, "pr_url": url})
+    if outcome in ("pii-block", "pii-scan-error"):
+        return _terminal(task_id, "needs_human", outcome)
     if outcome == "push-error":
         return _terminal(task_id, "needs_human", "push-rejected")
     if outcome == "pr-error":

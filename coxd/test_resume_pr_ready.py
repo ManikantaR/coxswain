@@ -12,6 +12,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-resume-")
+# envscrub.scratch_home() lives under gettempdir(); isolate from a shared /tmp dir.
+tempfile.tempdir = tempfile.mkdtemp(prefix="coxd-tmp-")
 
 import board  # noqa: E402
 import ship  # noqa: E402
@@ -80,6 +82,7 @@ def fake_run(cmd, **k):
 
 ship.subprocess.run = fake_run
 ship._has_gh_remote = lambda p: True
+ship._pii_gate = lambda *a, **k: None  # gate covered in test_pii.py
 out = ship.ship("p1")
 check("ship reuses the open PR", out == ("pr", "https://github.com/o/r/pull/9"))
 check("pushed, no pr create", any(c[:2] == ["git", "push"] for c in calls)
