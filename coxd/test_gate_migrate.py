@@ -19,6 +19,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-test-"))
 os.environ.pop("COXD_WORKER_USER", None)  # run unprivileged-as-self, no setpriv
 
+# private tmp so envscrub.scratch_home() (chmod 1777) is ours, never a shared /tmp dir
+tempfile.tempdir = tempfile.mkdtemp(prefix="coxd-tmp-")
+
 import envscrub  # noqa: E402
 import gate  # noqa: E402
 
