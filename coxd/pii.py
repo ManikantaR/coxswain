@@ -24,7 +24,7 @@ _SECRET_RES = [re.compile(p) for p in (
     r"sk-ant-[A-Za-z0-9_-]{20,}",
 )]
 _SSN_RE = re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")
-_CARD_RE = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-]?\d)(?!\w)")
+_CARD_RUN_RE = re.compile(r"(?<![\w-])\d(?:[ -]?\d)*(?![\w-]?\d)(?!\w)")
 
 # Well-known published test card numbers (processor docs).
 _TEST_CARDS = {
@@ -49,10 +49,28 @@ def _luhn(digits: str) -> bool:
 
 
 def _has_card(text: str) -> bool:
-    for m in _CARD_RE.finditer(text):
-        digits = re.sub(r"\D", "", m.group())
-        if 13 <= len(digits) <= 19 and digits not in _TEST_CARDS and _luhn(digits):
-            return True
+    """Each digit run is split into separator-delimited groups; every contiguous span of
+    whole groups totalling 13-19 digits is Luhn-checked, so a card next to a short group
+    (e.g. an expiry) is still caught while one unbroken run is checked only as a whole.
+    Spans overlapping a published test card number are skipped."""
+    for m in _CARD_RUN_RE.finditer(text):
+        groups = re.split(r"[ -]", m.group())
+        digits = "".join(groups)
+        covered = [False] * len(digits)
+        for tc in _TEST_CARDS:
+            i = digits.find(tc)
+            while i != -1:
+                for j in range(i, i + len(tc)):
+                    covered[j] = True
+                i = digits.find(tc, i + 1)
+        starts = [0]
+        for g in groups:
+            starts.append(starts[-1] + len(g))
+        for si in range(len(groups)):
+            for ei in range(si + 1, len(groups) + 1):
+                lo, hi = starts[si], starts[ei]
+                if 13 <= hi - lo <= 19 and not any(covered[lo:hi]) and _luhn(digits[lo:hi]):
+                    return True
     return False
 
 
@@ -71,6 +89,28 @@ def load_denylist() -> tuple[list[str], bool]:
         if ln and not ln.startswith("#"):
             terms.append(ln)
     return terms, False
+
+
+def allow_path() -> Path:
+    return registry.home() / "pii-allow.txt"
+
+
+def load_allow() -> set[tuple[str, str, str]]:
+    """Owner-maintained false-positive overrides: `<rule>|<location>|<task-id>` per line.
+    Lives in COXD_HOME (control-plane/root-owned; workers get a scratch COXD_HOME and
+    cannot reach it), read fresh each scan. `secret` entries are always ignored."""
+    p = allow_path()
+    out: set[tuple[str, str, str]] = set()
+    if not p.is_file():
+        return out
+    for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        parts = [x.strip() for x in ln.split("|")]
+        if len(parts) == 3 and all(parts) and parts[0] != "secret":
+            out.add((parts[0], parts[1], parts[2]))
+    return out
 
 
 def scan(items: dict[str, str], denylist: list[str]) -> list[Hit]:

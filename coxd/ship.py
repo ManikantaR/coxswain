@@ -210,19 +210,45 @@ def _git_text(repo_path: Path, *args: str) -> str:
 _PATCH_FLAGS = ("--no-color", "-U0", "--text", "--no-ext-diff", "--no-textconv")
 
 
-def _pii_items(repo_path: Path, base: str, ref: str, title: str, body: str) -> dict[str, str]:
-    """Everything publishing `ref` would expose: each commit's own patch (so
-    add-then-remove history is seen), the net diff, every commit message, title, body."""
+def _resolve_base(repo_path: Path, preferred: str | None = None) -> str:
+    """The base the worktree was branched from: the registry's explicit target branch,
+    else origin/HEAD, origin/main, origin/master. Raises (fail closed) if none resolves."""
+    cands = ([f"origin/{preferred}"] if preferred else []) + [
+        "origin/HEAD", "origin/main", "origin/master"]
+    for ref in cands:
+        r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                           cwd=repo_path, capture_output=True)
+        if r.returncode == 0:
+            return ref
+    raise RuntimeError("no base ref resolves")
+
+
+def _pii_items(repo_path: Path, base: str, ref: str, title: str, body: str,
+               deny: list[str] | None = None) -> dict[str, str]:
+    """What publishing `ref` would expose, as scan items: each commit's own patch
+    (add-then-remove history; merges diffed against the first parent), the net diff,
+    changed file paths, every commit message, the PR title and body. Author/committer
+    names are NOT scanned. Changed paths are scanned too; a path that itself hits is
+    reported only as `path:<i>` / `diff:path:<i>`, never by name."""
     _git_text(repo_path, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
     _git_text(repo_path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-    patches = _git_text(repo_path, "log", "-p", "--format=%x01%H", *_PATCH_FLAGS,
-                        f"{base}..{ref}")
+    flags = (*_PATCH_FLAGS, "--diff-merges=first-parent")
+    patches = _git_text(repo_path, "log", "-p", "--format=%x01%H", *flags, f"{base}..{ref}")
     net = _git_text(repo_path, "diff", *_PATCH_FLAGS, f"{base}...{ref}")
+    names = (_git_text(repo_path, "log", "--name-only", "-z", "--format=",
+                       "--diff-merges=first-parent", f"{base}..{ref}")
+             + "\0" + _git_text(repo_path, "diff", "--name-only", "-z", f"{base}...{ref}"))
+    paths = sorted({x for x in names.split("\0") if x})
     msgs = _git_text(repo_path, "log", "--format=%B%x00", f"{base}..{ref}")
+    idx = {pth: i for i, pth in enumerate(paths)}
+    dirty = {pth for pth in paths if pii.scan({"p": pth}, deny or [])}
     items: dict[str, str] = {}
+    for pth in paths:
+        items[f"path:{idx[pth]}"] = pth
     for src in (patches, net):
-        for p, txt in _added_lines(src).items():
-            items[f"diff:{p}"] = items.get(f"diff:{p}", "") + "\n" + txt
+        for pth, txt in _added_lines(src).items():
+            loc = f"diff:path:{idx[pth]}" if pth in dirty and pth in idx else f"diff:{pth}"
+            items[loc] = items.get(loc, "") + "\n" + txt
     for i, msg in enumerate(x for x in msgs.split("\0") if x.strip()):
         items[f"commit:{i}"] = msg
     items["pr-title"] = title
@@ -243,11 +269,20 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path) -> 
         _tier, gl_header = _greenlight(t, wt)
         body = _build_body(t, wt, gl_header)
         entry = registry.load(t["repo"]) or {}
-        base = f"origin/{entry.get('target_branch', 'main')}"
+        base = _resolve_base(repo_path, entry.get("target_branch"))
         deny, missing = pii.load_denylist()
         if missing:
             store.append_event(task_id, "pii-denylist-missing", {})
-        hits = pii.scan(_pii_items(repo_path, base, f"refs/heads/{branch}", title, body), deny)
+        hits = pii.scan(_pii_items(repo_path, base, f"refs/heads/{branch}", title, body, deny),
+                        deny)
+        allow = pii.load_allow()
+        kept = []
+        for h in hits:  # `secret` is never overridable (load_allow drops it too)
+            if h.rule != "secret" and (h.rule, h.location, task_id) in allow:
+                store.append_event(task_id, "pii-allowed", {"rule": h.rule, "location": h.location})
+            else:
+                kept.append(h)
+        hits = kept
     except Exception as e:  # noqa: BLE001 — fail closed
         return _pii_block(task_id, "pii-scan-error", {"error": type(e).__name__})
     if hits:
