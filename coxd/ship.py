@@ -157,55 +157,102 @@ def _pr_title(t: dict) -> str:
     return first[:70]
 
 
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+
+
 def _added_lines(diff: str) -> dict[str, str]:
-    """Added lines only of a unified diff, keyed by file path."""
+    """Added lines only of unified-diff text, keyed by file path. Hunk-aware: line
+    counts from each `@@` header decide what is content, so an added line that merely
+    looks like a `+++ ` header (or `--- `) is still scanned. Splits on newline only."""
     out: dict[str, list[str]] = {}
-    cur = None
-    for ln in diff.splitlines():
-        if ln.startswith("+++ "):
+    cur: str | None = None
+    old = new = 0
+    for ln in diff.split("\n"):
+        if old > 0 or new > 0:  # inside a hunk body
+            if ln.startswith("+"):
+                new -= 1
+                if cur is not None:
+                    out[cur].append(ln[1:])
+            elif ln.startswith("-"):
+                old -= 1
+            elif ln.startswith("\\"):
+                pass  # "\ No newline at end of file"
+            else:
+                old -= 1
+                new -= 1
+            continue
+        if ln.startswith("\x01") or ln.startswith("diff --git"):
+            cur = None
+        elif ln.startswith("+++ "):
             p = ln[4:].strip()
             if p == "/dev/null":
                 cur = None
             else:
                 cur = p[2:] if p.startswith("b/") else p
                 out.setdefault(cur, [])
-        elif ln.startswith("--- ") or ln.startswith("diff --git"):
-            if ln.startswith("diff --git"):
-                cur = None
-        elif cur is not None and ln.startswith("+"):
-            out[cur].append(ln[1:])
+        else:
+            m = _HUNK_RE.match(ln)
+            if m:
+                old = int(m.group(1)) if m.group(1) is not None else 1
+                new = int(m.group(2)) if m.group(2) is not None else 1
     return {k: "\n".join(v) for k, v in out.items()}
 
 
-def _pii_items(wt: Path, base: str, title: str, body: str) -> dict[str, str]:
-    d = sandbox.run_in_worktree(["git", "diff", "--no-color", "-U0", f"{base}...HEAD"], wt)
-    m = sandbox.run_in_worktree(["git", "log", "--format=%B%x00", f"{base}..HEAD"], wt)
-    if d.returncode != 0 or m.returncode != 0:
-        raise RuntimeError("git diff/log failed")
-    items = {f"diff:{p}": txt for p, txt in _added_lines(d.stdout).items()}
-    for i, msg in enumerate(x for x in m.stdout.split("\0") if x.strip()):
+def _git_text(repo_path: Path, *args: str) -> str:
+    """Run git in the MAIN checkout (never the worker-owned worktree); raise on failure.
+    Output decoded with errors='replace' so non-UTF-8 bytes can't crash the scan."""
+    r = subprocess.run(["git", *args], cwd=repo_path, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git {args[0]} failed")
+    return r.stdout.decode("utf-8", errors="replace")
+
+
+_PATCH_FLAGS = ("--no-color", "-U0", "--text", "--no-ext-diff", "--no-textconv")
+
+
+def _pii_items(repo_path: Path, base: str, ref: str, title: str, body: str) -> dict[str, str]:
+    """Everything publishing `ref` would expose: each commit's own patch (so
+    add-then-remove history is seen), the net diff, every commit message, title, body."""
+    _git_text(repo_path, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+    _git_text(repo_path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    patches = _git_text(repo_path, "log", "-p", "--format=%x01%H", *_PATCH_FLAGS,
+                        f"{base}..{ref}")
+    net = _git_text(repo_path, "diff", *_PATCH_FLAGS, f"{base}...{ref}")
+    msgs = _git_text(repo_path, "log", "--format=%B%x00", f"{base}..{ref}")
+    items: dict[str, str] = {}
+    for src in (patches, net):
+        for p, txt in _added_lines(src).items():
+            items[f"diff:{p}"] = items.get(f"diff:{p}", "") + "\n" + txt
+    for i, msg in enumerate(x for x in msgs.split("\0") if x.strip()):
         items[f"commit:{i}"] = msg
     items["pr-title"] = title
     items["pr-body"] = body
     return items
 
 
-def _pii_gate(task_id: str, wt: Path, title: str, body: str) -> str | None:
-    """None if clean, else the block reason. Fails closed on any scan error."""
+def _pii_block(task_id: str, reason: str, data: dict) -> str:
+    store.append_event(task_id, "pii-block", {"reason": reason, **data})
+    return reason
+
+
+def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path) -> str | None:
+    """None if clean, else the block reason ('pii-block' | 'pii-scan-error').
+    Fails closed on ANY error, including building the title/body."""
     try:
+        title = _pr_title(t)
+        _tier, gl_header = _greenlight(t, wt)
+        body = _build_body(t, wt, gl_header)
+        entry = registry.load(t["repo"]) or {}
+        base = f"origin/{entry.get('target_branch', 'main')}"
         deny, missing = pii.load_denylist()
         if missing:
             store.append_event(task_id, "pii-denylist-missing", {})
-        hits = pii.scan(_pii_items(wt, gate._base_ref(wt), title, body), deny)
+        hits = pii.scan(_pii_items(repo_path, base, f"refs/heads/{branch}", title, body), deny)
     except Exception as e:  # noqa: BLE001 — fail closed
-        store.append_event(task_id, "pii-block", {"reason": "pii-scan-error",
-                                                  "error": type(e).__name__})
-        return "pii-scan-error"
+        return _pii_block(task_id, "pii-scan-error", {"error": type(e).__name__})
     if hits:
-        store.append_event(task_id, "pii-block", {
-            "reason": "pii-block",
+        return _pii_block(task_id, "pii-block", {
             "hits": [{"rule": h.rule, "location": h.location} for h in hits]})
-        return "pii-block"
     return None
 
 
@@ -220,12 +267,8 @@ def ship(task_id: str) -> tuple[str, str | None]:
     if repo_path is None or not _has_gh_remote(repo_path):
         return ("local", None)  # nothing to push to — the work is on the local branch
 
-    title = _pr_title(t)
-    tier, gl_header = _greenlight(t, wt)
-    body = _build_body(t, wt, gl_header)
-    reason = _pii_gate(task_id, wt, title, body)
-    if reason:
-        store.set_state(task_id, "needs_human", reason)
+    reason = _pii_gate(task_id, t, repo_path, branch, wt)
+    if reason:  # loop.py owns the state transition (needs_human / <reason>)
         return (reason, None)
 
     # From the main checkout, never from the worker-owned worktree (see sandbox.py):
@@ -241,6 +284,9 @@ def ship(task_id: str) -> tuple[str, str | None]:
         # pr_ready): the push above updated that PR; never open a second one.
         return ("pr", t["pr_url"])
 
+    title = _pr_title(t)
+    tier, gl_header = _greenlight(t, wt)
+    body = _build_body(t, wt, gl_header)
     pr = subprocess.run(
         ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
         cwd=repo_path, capture_output=True, text=True)

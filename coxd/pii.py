@@ -24,7 +24,7 @@ _SECRET_RES = [re.compile(p) for p in (
     r"sk-ant-[A-Za-z0-9_-]{20,}",
 )]
 _SSN_RE = re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")
-_CARD_RE = re.compile(r"(?<![\d])\d(?:[ -]?\d){12,18}(?!\d)")
+_CARD_RE = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-]?\d)(?!\w)")
 
 # Well-known published test card numbers (processor docs).
 _TEST_CARDS = {
