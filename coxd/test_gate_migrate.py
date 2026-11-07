@@ -105,7 +105,8 @@ def main() -> int:
     # 3. fake psql failing -> RED with error text (cut to 1 KB); temp dir removed;
     #    cmd sees url_env pointing at a socket and no real DB URL
     os.environ["DATABASE_URL"] = "postgresql://real.example.invalid/prod"
-    gate._pg_bins = lambda env: fake_bins('echo "$(printf x%.0s $(seq 1 2000)) ERROR: boom" >&2; exit 1')
+    noisy = 'echo "$(printf x%.0s $(seq 1 2000)) ERROR: boom" >&2; exit 1'
+    gate._pg_bins = lambda env: fake_bins(noisy)
     try:
         before = scratch_entries()
         g = run(repo, {"cmd": "true", "url_env": "DATABASE_URL"})

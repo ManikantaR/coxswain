@@ -102,7 +102,7 @@ def _run(argv: list[str], env: dict, deadline: float, cwd=None):
         except OSError:
             pass
         p.communicate()
-        raise _Timeout()
+        raise _Timeout() from None
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
 
 
@@ -117,7 +117,7 @@ def _added_sql(worktree: Path) -> list[str]:
             worktree)
     if r.returncode != 0:
         raise _Red("cannot list migrations added by this branch: " + _tail(r.stderr))
-    return sorted(l for l in r.stdout.splitlines() if l.strip())
+    return sorted(ln for ln in r.stdout.splitlines() if ln.strip())
 
 
 def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
@@ -131,7 +131,8 @@ def _migrate_run(worktree: Path, entry: dict, env: dict) -> str | None:
         return "migrate.cmd missing in registry — RED"
     if not isinstance(url_env, str) or not _NAME_RE.match(url_env):
         return f"migrate.url_env is not a valid environment variable name: {url_env!r}"
-    if not isinstance(exts, list) or not all(isinstance(x, str) and _NAME_RE.match(x) for x in exts):
+    if not isinstance(exts, list) or not all(
+            isinstance(x, str) and _NAME_RE.match(x) for x in exts):
         return "migrate.extensions must be a list of plain extension names"
     # No stray PG* settings or real DB URLs may reach the throwaway server or the command.
     env = {k: v for k, v in env.items() if not k.startswith("PG") and k != url_env}
