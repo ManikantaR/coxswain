@@ -10,7 +10,9 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ.setdefault("COXD_HOME", tempfile.mkdtemp(prefix="coxd-rro-"))
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-rro-")
+# envscrub.scratch_home() lives under gettempdir(); isolate it from any shared dir.
+tempfile.tempdir = tempfile.mkdtemp(prefix="coxd-tmp-")
 
 import lane  # noqa: E402
 import loop  # noqa: E402
@@ -24,7 +26,6 @@ outside = Path(tempfile.mkdtemp(prefix="coxd-rro-out-")).resolve()
 (outside / "note.txt").write_text("hi\n")
 (wt / "link").symlink_to(outside)
 
-lane.envscrub.sdk_blanking = lambda: {}  # avoid touching the shared scratch home
 hook = lane._make_reviewer_hook(wt)
 
 
