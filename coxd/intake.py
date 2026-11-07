@@ -18,7 +18,6 @@ import re
 import subprocess
 import time
 
-import board
 import ci_triage
 import dispatch
 import factory
@@ -29,12 +28,14 @@ import store
 
 READY, WORKING, WAITING = "coxd-ready", "coxd-working", "coxd-waiting"
 UNTRUSTED, PII_BLOCK = "coxd-untrusted", "coxd-pii-block"
+NEEDS_HUMAN = "coxd-needs-human"
 LABELS = {
     READY: ("Queued for coxd pickup", "0e8a16"),
     WORKING: ("coxd is working on this", "1d76db"),
     WAITING: ("Waiting on a dependency issue", "fbca04"),
     UNTRUSTED: ("coxd-ready was added by an untrusted user", "b60205"),
     PII_BLOCK: ("coxd blocked: possible sensitive data", "b60205"),
+    NEEDS_HUMAN: ("coxd task needs a human look", "d93f0b"),
 }
 MAX_PER_REPO = 3
 _TRUSTED_PERMS = {"write", "maintain", "admin"}
@@ -77,10 +78,10 @@ def clean(text: str) -> str:
 
 
 def _relabel(slug: str, number: int, add: str | None = None,
-             remove: str | None = None) -> None:
+             remove: str | list[str] | None = None) -> None:
     args = ["issue", "edit", str(number), "-R", slug]
-    if remove:
-        args += ["--remove-label", remove]
+    for r in ([remove] if isinstance(remove, str) else remove or []):
+        args += ["--remove-label", r]
     if add:
         args += ["--add-label", add]
     rc, _out = _gh(args)
@@ -100,8 +101,9 @@ def _ensure_labels(slug: str) -> None:
     _labels_ready.add(slug)
 
 
-def _labeller(slug: str, number: int) -> tuple[dict | None, str]:
-    """(actor, created_at) of the most recent `labeled coxd-ready` timeline event."""
+def _labeller(slug: str, number: int) -> tuple[dict | None, str, list[dict]]:
+    """(actor, created_at, renamers) of the most recent `labeled coxd-ready` timeline
+    event, plus the actors of any `renamed` events after it (a title edit)."""
     pages = _json(["api", f"repos/{slug}/issues/{number}/timeline",
                    "--paginate", "--slurp"]) or []
     events = [e for p in pages for e in (p if isinstance(p, list) else [p])]
@@ -110,7 +112,11 @@ def _labeller(slug: str, number: int) -> tuple[dict | None, str]:
         if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == READY:
             last = e
     last = last or {}
-    return last.get("actor") or None, str(last.get("created_at") or "")
+    at = str(last.get("created_at") or "")
+    renamers = [e.get("actor") or {} for e in events
+                if e.get("event") == "renamed" and at
+                and str(e.get("created_at") or "") > at]
+    return last.get("actor") or None, at, renamers
 
 
 _EDIT_Q = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){"
@@ -167,7 +173,7 @@ def _open_deps(slug: str, body: str) -> bool:
 def _has_task(url: str) -> bool:
     pat = re.compile(r"^GitHub issue: " + re.escape(url) + r"\s*$", re.MULTILINE)
     return any(pat.search(t.get("brief") or "") for t in store.list_tasks()
-               if not board._is_archived(t))
+               if not store.is_archived(t))
 
 
 def _process_repo(name: str, path: str) -> int:
@@ -189,7 +195,7 @@ def _process_repo(name: str, path: str) -> int:
         try:
             if _has_task(url):
                 continue
-            actor, label_at = _labeller(slug, n)
+            actor, label_at, renamers = _labeller(slug, n)
             trusted = _is_trusted(slug, actor)
             if trusted is None:
                 continue
@@ -198,14 +204,15 @@ def _process_repo(name: str, path: str) -> int:
                 print(f"intake: {name}#{n} untrusted label - blocked")
                 continue
             editor = _edited_after(slug, n, label_at)
-            if editor is not None:
-                ok = _is_trusted(slug, editor) if editor.get("login") else False
-                if ok is None:
-                    continue
-                if not ok:
-                    _relabel(slug, n, add=UNTRUSTED, remove=READY)
-                    print(f"intake: {name}#{n} edited after labelling - blocked")
-                    continue
+            editors = ([editor] if editor is not None else []) + renamers
+            verdicts = [_is_trusted(slug, e) if e.get("login") else False
+                        for e in editors]
+            if None in verdicts:
+                continue
+            if not all(verdicts):
+                _relabel(slug, n, add=UNTRUSTED, remove=READY)
+                print(f"intake: {name}#{n} edited after labelling - blocked")
+                continue
             title, body = clean(it.get("title")), clean(it.get("body"))
             if _open_deps(slug, body):
                 if WAITING not in {lb.get("name") for lb in it.get("labels") or []}:
@@ -227,6 +234,44 @@ def _process_repo(name: str, path: str) -> int:
     return taken
 
 
+_synced: dict[str, float] = {}
+
+
+def _issue_of(slug: str, brief: str) -> int | None:
+    m = re.search(r"^GitHub issue: https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)\s*$",
+                  brief or "", re.MULTILINE)
+    return int(m.group(2)) if m and m.group(1) == slug else None
+
+
+def _reconcile_stuck(name: str, path: str) -> None:
+    """Tasks that ended without landing (needs_human / failed / archived): swap
+    `coxd-working` for `coxd-needs-human` on their issue. Labels only, no comment."""
+    slug = ci_triage.repo_slug(path)
+    if not slug:
+        return
+    for t in store.list_tasks():
+        if t.get("repo_path") != path and t["repo"] != name:
+            continue
+        if not (t["state"] in ("needs_human", "failed")
+                or (store.is_archived(t) and t["state"] != "landed")):
+            continue
+        mark = t["updated"] or 0
+        n = _issue_of(slug, t.get("brief"))
+        if n is None or _synced.get(t["id"]) == mark:
+            continue
+        try:
+            _ensure_labels(slug)
+            have = {lb.get("name") for lb in (_json(
+                ["issue", "view", str(n), "-R", slug, "--json", "labels"]) or {})
+                .get("labels") or []}
+            if WORKING in have or NEEDS_HUMAN not in have:
+                _relabel(slug, n, add=None if NEEDS_HUMAN in have else NEEDS_HUMAN,
+                         remove=WORKING if WORKING in have else None)
+            _synced[t["id"]] = mark
+        except Exception as e:  # noqa: BLE001
+            print(f"intake: {name}#{n} stuck-label sync failed: {type(e).__name__}")
+
+
 def enabled_repos() -> list[dict]:
     return [r for r in repos.list_repos()
             if (registry.load(r["name"]) or {}).get("intake") is True]
@@ -239,6 +284,7 @@ def poll_once() -> int | None:
     taken = 0
     for r in enabled_repos():
         try:
+            _reconcile_stuck(r["name"], r["path"])
             taken += _process_repo(r["name"], r["path"])
         except Exception as e:  # noqa: BLE001
             print(f"intake: {r['name']} poll failed: {type(e).__name__}")
@@ -247,13 +293,14 @@ def poll_once() -> int | None:
 
 
 def clear_working(repo_name: str, slug: str, brief: str) -> None:
-    """A task landed: drop `coxd-working` from its issue (intake-enabled repos only)."""
+    """A task landed: drop `coxd-working` / `coxd-needs-human` from its issue
+    (intake-enabled repos only)."""
     if (registry.load(repo_name) or {}).get("intake") is not True:
         return
-    m = re.search(r"^GitHub issue: https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)\s*$",
-                  brief or "", re.MULTILINE)
-    if m and m.group(1) == slug:
-        _relabel(slug, int(m.group(2)), remove=WORKING)
+    n = _issue_of(slug, brief)
+    if n is not None:
+        _ensure_labels(slug)
+        _relabel(slug, n, remove=[WORKING, NEEDS_HUMAN])
 
 
 async def run() -> None:

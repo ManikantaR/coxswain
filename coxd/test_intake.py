@@ -37,9 +37,10 @@ URL = f"https://github.com/{SLUG}/issues/"
 calls: list[list[str]] = []
 issues: dict[int, dict] = {}
 actors: dict[int, dict] = {}
-perms: dict[str, str] = {"alice": "write", "rita": "read"}
+perms: dict[str, str] = {"bob": "write", "alice": "write", "rita": "read"}
 dispatched: list[str] = []
 edits: dict[int, tuple[str, str]] = {}
+renames: dict[int, str] = {}
 
 
 def fake_gh(args):
@@ -54,22 +55,26 @@ def fake_gh(args):
                               if "coxd-ready" in [lb["name"] for lb in i["labels"]]
                               and i["state"] == "OPEN"])
     if a[0] == "issue" and a[1] == "view":
-        return 0, json.dumps({"state": issues[int(a[2])]["state"]})
+        i = issues[int(a[2])]
+        return 0, json.dumps({"state": i["state"], "labels": i["labels"]})
     if a[0] == "issue" and a[1] == "edit":
         i = issues[int(a[2])]
         names = [lb["name"] for lb in i["labels"]]
         for k, v in enumerate(a):
             if v == "--remove-label":
-                names.remove(a[k + 1])
+                names = [x for x in names if x != a[k + 1]]
             if v == "--add-label":
                 names.append(a[k + 1])
         i["labels"] = [{"name": n} for n in names]
         return 0, ""
     if a[0] == "api" and a[1].endswith("/timeline"):
         n = int(a[1].split("/")[4])
-        return 0, json.dumps([[{"event": "labeled", "label": {"name": "coxd-ready"},
-                                "created_at": "2026-03-01T00:00:00Z",
-                                "actor": actors[n]}]])
+        evs = [{"event": "labeled", "label": {"name": "coxd-ready"},
+                "created_at": "2026-03-01T00:00:00Z", "actor": actors[n]}]
+        if n in renames:
+            evs.append({"event": "renamed", "created_at": "2026-03-02T00:00:00Z",
+                        "actor": {"login": renames[n], "type": "User"}})
+        return 0, json.dumps([evs])
     if a[0] == "api" and a[1] == "graphql":
         n = int(a[-1].split("=")[-1])
         e = edits.get(n)
@@ -183,6 +188,38 @@ check("trusted edit ok, untrusted edit blocked",
 edits.clear()
 for i in (30, 31):
     issues[i]["state"] = "CLOSED"
+
+# rename after labelling: untrusted renamer blocked, trusted renamer ok
+add(32)
+add(33)
+renames[32] = "rita"
+renames[33] = "bob"
+n0 = len(dispatched)
+check("rename: untrusted blocked, trusted ok",
+      intake.poll_once() == 1 and len(dispatched) == n0 + 1
+      and names(32) == ["coxd-untrusted"] and names(33) == ["coxd-working"])
+renames.clear()
+for i in (32, 33):
+    issues[i]["state"] = "CLOSED"
+
+# stuck tasks: working -> needs-human; landed later clears it
+add(40, labels=("coxd-working",))
+add(41, labels=("coxd-working",))
+store.create_task("widgets-stuck1", "widgets", f"x\n\nGitHub issue: {URL}40", "/tmp/x",
+                  repo_path="/tmp/widgets")
+store.create_task("widgets-stuck2", "widgets", f"x\n\nGitHub issue: {URL}41", "/tmp/x",
+                  repo_path="/tmp/widgets")
+store.set_state("widgets-stuck1", "needs_human", "gate-red")
+store.set_state("widgets-stuck2", "failed")
+intake.poll_once()
+check("stuck labels swapped", names(40) == ["coxd-needs-human"]
+      and names(41) == ["coxd-needs-human"])
+c0 = len(calls)
+intake.poll_once()
+check("stuck sync idempotent", not any(c[:2] == ["issue", "edit"] for c in calls[c0:]))
+check("no comment on stuck", not any(c[:2] == ["issue", "comment"] for c in calls))
+intake.clear_working("widgets", SLUG, f"x\n\nGitHub issue: {URL}40")
+check("landed clears needs-human", names(40) == [])
 
 # paused / flag off → no calls
 add(20)

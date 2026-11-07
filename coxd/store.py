@@ -10,6 +10,7 @@ if the board (or coxd) restarts, the db is the truth and sessions resume.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -217,3 +218,17 @@ def decide_rule_suggestion(sid: int, status: str) -> None:
     with _conn() as c:
         c.execute("UPDATE rule_suggestions SET status=?, decided=? WHERE id=?",
                   (status, time.time(), sid))
+
+
+# Terminal, resolved states eligible for silent age-based archiving (see board.py).
+ARCHIVABLE = {"landed", "failed"}
+ARCHIVE_DAYS = float(os.environ.get("COXD_ARCHIVE_DAYS", "14"))
+
+
+def is_archived(t: dict) -> bool:
+    if t.get("archived_at"):  # manually archived via the board's per-tile button
+        return True
+    if t["state"] not in ARCHIVABLE:
+        return False
+    age_days = (time.time() - (t["updated"] or t["created"] or 0)) / 86400
+    return age_days > ARCHIVE_DAYS
