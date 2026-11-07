@@ -210,7 +210,8 @@ def _pii_gate(task_id: str, wt: Path, title: str, body: str) -> str | None:
 
 
 def ship(task_id: str) -> tuple[str, str | None]:
-    """Returns (outcome, pr_url). outcome: 'pr' | 'local' | 'push-error' | 'pr-error' | 'pii-block' | 'pii-scan-error'."""
+    """Returns (outcome, pr_url). outcome: 'pr' | 'local' | 'push-error' | 'pr-error'
+    | 'pii-block' | 'pii-scan-error'."""
     t = store.get_task(task_id)
     wt = Path(t["worktree"])
     repo_path = Path(t["repo_path"]) if t["repo_path"] else None
