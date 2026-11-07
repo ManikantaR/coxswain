@@ -59,6 +59,7 @@ _REASON_STAGE = {
     "gate-red": 1,
     "review-error": 2, "review-findings": 2,
     "push-rejected": 3, "pr-error": 3,
+    "pii-block": 3, "pii-scan-error": 3,
 }
 
 

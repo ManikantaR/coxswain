@@ -15,6 +15,7 @@ from pathlib import Path
 
 import gate
 import greenlight
+import pii
 import registry
 import sandbox
 import store
@@ -156,8 +157,60 @@ def _pr_title(t: dict) -> str:
     return first[:70]
 
 
+def _added_lines(diff: str) -> dict[str, str]:
+    """Added lines only of a unified diff, keyed by file path."""
+    out: dict[str, list[str]] = {}
+    cur = None
+    for ln in diff.splitlines():
+        if ln.startswith("+++ "):
+            p = ln[4:].strip()
+            if p == "/dev/null":
+                cur = None
+            else:
+                cur = p[2:] if p.startswith("b/") else p
+                out.setdefault(cur, [])
+        elif ln.startswith("--- ") or ln.startswith("diff --git"):
+            if ln.startswith("diff --git"):
+                cur = None
+        elif cur is not None and ln.startswith("+"):
+            out[cur].append(ln[1:])
+    return {k: "\n".join(v) for k, v in out.items()}
+
+
+def _pii_items(wt: Path, base: str, title: str, body: str) -> dict[str, str]:
+    d = sandbox.run_in_worktree(["git", "diff", "--no-color", "-U0", f"{base}...HEAD"], wt)
+    m = sandbox.run_in_worktree(["git", "log", "--format=%B%x00", f"{base}..HEAD"], wt)
+    if d.returncode != 0 or m.returncode != 0:
+        raise RuntimeError("git diff/log failed")
+    items = {f"diff:{p}": txt for p, txt in _added_lines(d.stdout).items()}
+    for i, msg in enumerate(x for x in m.stdout.split("\0") if x.strip()):
+        items[f"commit:{i}"] = msg
+    items["pr-title"] = title
+    items["pr-body"] = body
+    return items
+
+
+def _pii_gate(task_id: str, wt: Path, title: str, body: str) -> str | None:
+    """None if clean, else the block reason. Fails closed on any scan error."""
+    try:
+        deny, missing = pii.load_denylist()
+        if missing:
+            store.append_event(task_id, "pii-denylist-missing", {})
+        hits = pii.scan(_pii_items(wt, gate._base_ref(wt), title, body), deny)
+    except Exception as e:  # noqa: BLE001 — fail closed
+        store.append_event(task_id, "pii-block", {"reason": "pii-scan-error",
+                                                  "error": type(e).__name__})
+        return "pii-scan-error"
+    if hits:
+        store.append_event(task_id, "pii-block", {
+            "reason": "pii-block",
+            "hits": [{"rule": h.rule, "location": h.location} for h in hits]})
+        return "pii-block"
+    return None
+
+
 def ship(task_id: str) -> tuple[str, str | None]:
-    """Returns (outcome, pr_url). outcome: 'pr' | 'local' | 'push-error' | 'pr-error'."""
+    """Returns (outcome, pr_url). outcome: 'pr' | 'local' | 'push-error' | 'pr-error' | 'pii-block' | 'pii-scan-error'."""
     t = store.get_task(task_id)
     wt = Path(t["worktree"])
     repo_path = Path(t["repo_path"]) if t["repo_path"] else None
@@ -165,6 +218,14 @@ def ship(task_id: str) -> tuple[str, str | None]:
 
     if repo_path is None or not _has_gh_remote(repo_path):
         return ("local", None)  # nothing to push to — the work is on the local branch
+
+    title = _pr_title(t)
+    tier, gl_header = _greenlight(t, wt)
+    body = _build_body(t, wt, gl_header)
+    reason = _pii_gate(task_id, wt, title, body)
+    if reason:
+        store.set_state(task_id, "needs_human", reason)
+        return (reason, None)
 
     # From the main checkout, never from the worker-owned worktree (see sandbox.py):
     # the branch ref is shared, and root's config/hooks there are not worker-writable.
@@ -179,9 +240,6 @@ def ship(task_id: str) -> tuple[str, str | None]:
         # pr_ready): the push above updated that PR; never open a second one.
         return ("pr", t["pr_url"])
 
-    title = _pr_title(t)
-    tier, gl_header = _greenlight(t, wt)
-    body = _build_body(t, wt, gl_header)
     pr = subprocess.run(
         ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
         cwd=repo_path, capture_output=True, text=True)
