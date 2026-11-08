@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
+import uuid
 from pathlib import Path
 
 import registry
@@ -48,7 +50,10 @@ def _line(t: dict) -> str:
     return " ".join((t.get("intent") or t.get("brief") or "").split())[:80]
 
 
-def _last_deploy(repo: str, tasks: list[dict]) -> str:
+def _last_deploy(repo: str, tasks: list[dict] | None = None) -> str:
+    """Newest `deployed` event across EVERY task of the repo, archived included."""
+    if tasks is None:
+        tasks = [t for t in store.list_tasks() if t["repo"] == repo]
     ts = None
     for t in tasks:
         for e in store.events(t["id"]):
@@ -58,8 +63,8 @@ def _last_deploy(repo: str, tasks: list[dict]) -> str:
 
 
 def render(repo: str) -> str:
-    tasks = [t for t in store.list_tasks()
-             if t["repo"] == repo and not store.is_archived(t)]
+    all_tasks = [t for t in store.list_tasks() if t["repo"] == repo]
+    tasks = [t for t in all_tasks if not store.is_archived(t)]
     open_ = [t for t in tasks if t["state"] in ("queued", "running", "waiting_quota")]
     ready = [t for t in tasks if t["state"] == "pr_ready"]
     stuck = [t for t in tasks if t["state"] in ("needs_human", "failed")]
@@ -73,7 +78,7 @@ def render(repo: str) -> str:
     out.append(f"## Stuck ({len(stuck)})")
     out += [f"- {t['id']} [{t['state']}: {t.get('reason') or '-'}] next: {_next_step(t)}"
             for t in stuck] or ["- none"]
-    out += ["", f"Last deploy: {_last_deploy(repo, tasks)}",
+    out += ["", f"Last deploy: {_last_deploy(repo, all_tasks)}",
             f"Merge level: {tier or 'n/a'} (latest greenlight tier)",
             f"Clean streak: {store.get_clean_streak(repo)}", ""]
     return "\n".join(out)
@@ -82,7 +87,7 @@ def render(repo: str) -> str:
 def write(repo: str) -> Path:
     p = status_path(repo)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp")
     tmp.write_text(render(repo))
     os.replace(tmp, p)
     return p
@@ -94,5 +99,18 @@ def refresh_for_task(task_id: str) -> None:
         t = store.get_task(task_id)
         if t and t.get("repo"):
             write(t["repo"])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def refresh_all() -> None:
+    """Best-effort: rewrite every repo's file. Age-based archive happens by the
+    clock with no event, so the watchdog calls this each pass."""
+    try:
+        for repo in sorted({t["repo"] for t in store.list_tasks() if t.get("repo")}):
+            try:
+                write(repo)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception:  # noqa: BLE001
         pass

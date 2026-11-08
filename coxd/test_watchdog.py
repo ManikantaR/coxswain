@@ -58,6 +58,18 @@ check("summary lists ready PR", "Ready to merge (1)" in txt and "pull/1" in txt)
 check("summary lists needs-you + reason", "Needs you (1)" in txt and "gate-red" in txt)
 check("summary lists running", "Running: w1" in txt)
 
+# grouped by repo, with deploys + merge-level changes since the previous digest
+store.create_task("g1", "alpha-app", "brief", "/wt")
+store.append_event("g1", "greenlight", {"tier": "GREEN"})
+store.append_event("g1", "deployed", {"command": "x"})
+store.create_task("g2", "beta-svc", "brief", "/wt")
+store.set_state("g2", "needs_human", "gate-red")
+g = watchdog.summary_text(since=time.time() - 60)
+check("two repo headers", "== alpha-app ==" in g and "== beta-svc ==" in g)
+check("beta needs-you under beta", g.index("== beta-svc ==") < g.index("g2") and g.index("g2") > g.index("== alpha-app =="))
+check("deploy + tier shown", "Deploys since last digest: 1" in g and "g1 → GREEN" in g)
+check("old events excluded", "Deploys since" not in watchdog.summary_text(since=time.time() + 60))
+
 # morning summary: not before 07:20, once per day
 sent.clear()
 send = watchdog.maybe_send_morning_summary
