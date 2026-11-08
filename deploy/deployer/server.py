@@ -4,8 +4,15 @@ Stdlib only. Config (JSON, deployer's own file, mounted read-only) maps repo nam
 {"cmd": [argv...], "cwd": "/abs/path"}. Request bodies are never read, so nothing a
 caller sends can change what runs. Commands run as argv (no shell).
 
-  POST /deploy/<repo>        start a deploy      -> 202 {"id", "repo", "status"}
-  GET  /deploys/<id>/status  status              -> {"id","repo","status","exit_code"}
+  POST /deploy/<repo>/<sha>[?timeout_s=N]
+                             start a deploy of commit <sha> (40 hex, else 400)
+                                                     -> 202 {"id", "repo", "status"}
+                             The command gets EXPECTED_SHA in its env and must sync the
+                             source to it; afterwards `git rev-parse HEAD` in cwd must equal
+                             it, else the job fails with reason "stale-source".
+                             timeout_s (clamped to the deployer's own cap) lets the per-repo
+                             deploy.timeout_s reach the job.
+  GET  /deploys/<id>/status  status              -> {"id","repo","status","exit_code","reason"}
   GET  /deploys/<id>/log     stream log (chunked until the deploy finishes)
 Auth: `Authorization: Bearer <DEPLOYER_TOKEN>` on every request.
 """
@@ -20,10 +27,13 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+STALE_RC = 65  # exit_code reported when the command succeeded but HEAD != EXPECTED_SHA
 
 
 MAX_JOBS = 50
@@ -81,7 +91,7 @@ class Deployer:
             return False
         return hmac.compare_digest(header[7:].encode(), self.token.encode())
 
-    def start(self, repo: str) -> dict | None:
+    def start(self, repo: str, sha: str, timeout_s: float | None = None) -> dict | None:
         """Job dict; {'busy': id} if one is already running; None if repo not allowlisted."""
         ent = self.allowlist.get(repo)
         if ent is None:
@@ -91,7 +101,10 @@ class Deployer:
                 if j["repo"] == repo and j["status"] == "running":
                     return {"busy": j["id"]}
             jid = uuid.uuid4().hex
-            job = {"id": jid, "repo": repo, "status": "running", "exit_code": None,
+            job = {"id": jid, "repo": repo, "sha": sha, "status": "running", "exit_code": None,
+                   "reason": None,
+                   "timeout_s": (min(timeout_s, self.job_timeout_s)
+                                 if timeout_s and timeout_s > 0 else self.job_timeout_s),
                    "log": os.path.join(self.log_dir, jid + ".log")}
             open(job["log"], "wb").close()
             self.jobs[jid] = job
@@ -126,18 +139,26 @@ class Deployer:
                         raise OSError(f"cwd {ent['cwd']} is no longer inside {self.src_root}")
                     p = subprocess.Popen(ent["cmd"], cwd=ent["cwd"], stdin=subprocess.DEVNULL,
                                          stdout=log, stderr=subprocess.STDOUT,
+                                         env={**os.environ, "EXPECTED_SHA": job["sha"]},
                                          start_new_session=True)
                     try:
-                        code = p.wait(timeout=self.job_timeout_s)
+                        code = p.wait(timeout=job["timeout_s"])
                     except subprocess.TimeoutExpired:
                         try:
                             os.killpg(p.pid, signal.SIGKILL)
                         except (ProcessLookupError, PermissionError):
                             p.kill()
                         p.wait()
-                        log.write(f"\ndeployer: timed out after {self.job_timeout_s:.0f}s, "
+                        log.write(f"\ndeployer: timed out after {job['timeout_s']:.0f}s, "
                                   "killed\n".encode())
                         code = 124
+                    if code == 0:
+                        head = self._head(ent["cwd"])
+                        if head != job["sha"]:
+                            log.write(f"\ndeployer: stale-source: HEAD is {head or 'unknown'}, "
+                                      f"expected {job['sha']}\n".encode())
+                            job["reason"] = "stale-source"
+                            code = STALE_RC
                 except OSError as e:
                     log.write(f"deployer: failed to start: {e}\n".encode())
         finally:
@@ -145,8 +166,17 @@ class Deployer:
             job["status"] = "succeeded" if code == 0 else "failed"
 
     @staticmethod
+    def _head(cwd: str) -> str | None:
+        try:
+            r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True,
+                               text=True, timeout=30, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip().lower() if r.returncode == 0 else None
+
+    @staticmethod
     def public(job: dict) -> dict:
-        return {k: job[k] for k in ("id", "repo", "status", "exit_code")}
+        return {k: job[k] for k in ("id", "repo", "status", "exit_code", "reason")}
 
 
 def make_handler(d: Deployer):
@@ -176,10 +206,21 @@ def make_handler(d: Deployer):
             self.close_connection = True
             if not self._gate():
                 return
-            m = re.fullmatch(r"/deploy/([^/]+)", self.path)
+            u = urllib.parse.urlsplit(self.path)
+            m = re.fullmatch(r"/deploy/([^/]+)/([^/]+)", u.path)
             if not m:
                 return self._json(404, {"error": "not found"})
-            job = d.start(m.group(1))
+            if not SHA_RE.match(m.group(2)):
+                return self._json(400, {"error": "bad sha: need 40 lowercase hex characters"})
+            t = None
+            try:
+                raw = urllib.parse.parse_qs(u.query).get("timeout_s", [None])[0]
+                t = float(raw) if raw is not None else None
+                if t is not None and not (0 < t < float("inf")):
+                    raise ValueError
+            except ValueError:
+                return self._json(400, {"error": "bad timeout_s"})
+            job = d.start(m.group(1), m.group(2), t)
             if job is None:
                 return self._json(404, {"error": "unknown repo"})
             if "busy" in job:

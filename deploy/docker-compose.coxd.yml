@@ -100,7 +100,8 @@ services:
       - ${DEPLOYER_SRC_ROOT:-/volume1/docker}:${DEPLOYER_SRC_ROOT:-/volume1/docker}
       - ./deployer/allowlist.json:/etc/deployer/allowlist.json:ro
     networks:
-      - deployer-internal
+      - deployer-internal            # coxd reaches the deployer only here
+      - deployer-egress              # normal network: lets the command fetch from GitHub
 
 volumes:
   coxd-data:
@@ -113,3 +114,4 @@ networks:
     external: true
   deployer-internal:
     internal: true                   # no egress, no host publish
+  deployer-egress:                   # outbound only (git fetch); deployer publishes no ports

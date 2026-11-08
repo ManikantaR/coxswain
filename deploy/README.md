@@ -63,20 +63,36 @@ Setup: run the deployer (below) and set `COXD_DEPLOYER_TOKEN` (same value as the
 deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; set `COXD_DEPLOYER_URL=http://deployer:8792`
 to enable it. With the URL unset the board's Deploy returns an error and calls nothing.
 
-**Not usable for real deploys yet.** The deployer container has no git and no network
-egress today, so nothing refreshes the source it builds (issue #76), and migration holds are
-not in place (#53). Until both land, the post-merge path is held: a merged repo with
-`deploy.enabled` only gets a `deploy-held` event and a ping, and never calls the deployer.
-Only the manual board button can reach it.
+**Source freshness is verified.** coxd calls `POST /deploy/<repo>/<sha>` with the merged
+commit (40 hex characters, else 400; the body is never read). The deployer exports
+`EXPECTED_SHA=<sha>` to the allowlisted command, which must fetch and check out that commit.
+After the command exits 0 the deployer runs `git -C <cwd> rev-parse HEAD`; if it differs (or
+cannot be read) the job is `failed` with reason `stale-source` and coxd records `deploy-failed`
+and pings. The deployer image includes `git`.
+
+Networks: the deployer sits on `deployer-internal` (`internal: true`, the only network coxd
+shares with it) and also on `deployer-egress`, a normal network, so its command can reach
+GitHub to fetch. It publishes no ports and is not on `traefik-public`; nothing outside
+`deployer-internal` can reach it.
+
+Post-merge deploys: a merged repo with `deploy.enabled` deploys its merge commit. It is **held**
+(`deploy-held` event + ping, nothing deployed) when the PR touches migration files
+(`migrations/`, `alembic/`, `db/migrate/`, `*.sql`; #53), when that cannot be determined, or
+when the merge commit cannot be resolved. The manual board button deploys the current head of
+`deploy.branch` (default `main`). A 409 (deploy already running) ends the attempt as
+`deploy-start` then `deploy-skipped` and does not write the coalesce stamp; repeat deploys are
+only coalesced for the *same* commit within 3 minutes.
 
 Rules for a repo's deploy command (the allowlist entry):
-- **Source freshness is unsolved** (#76): coxd's clone in `/repo` is not visible to the deployer,
-  and the deployer cannot `git pull`, so it builds whatever is already on disk.
+- **Sync to `$EXPECTED_SHA` yourself.** coxd's clone in `/repo` is not visible to the deployer,
+  so the command must `git fetch` and `git checkout --detach "$EXPECTED_SHA"` in its cwd
+  before building (the deployer only verifies HEAD afterwards).
 - **Container-native — no `ssh nas`.** Use a script like MoneyPulse's `deploy/coxd-deploy.sh`.
 - Non-interactive (stdin is `/dev/null`). coxd stops waiting after `deploy.timeout_s`
   (default 2700 s = 45 min) and records `deploy-failed` rc=124. The deployer also kills a job
   after `DEPLOYER_JOB_TIMEOUT_S` (default 2700), so a hung build cannot block later deploys;
-  a repo's `deploy.timeout_s` must not exceed `DEPLOYER_JOB_TIMEOUT_S`.
+  coxd passes its `deploy.timeout_s` as `?timeout_s=` and the deployer uses
+  `min(that, DEPLOYER_JOB_TIMEOUT_S)`, so the two cannot disagree beyond that cap.
 
 Watching a deploy: the deployer log is relayed live to `docker logs -f coxd` (lines prefixed
 `[deploy <task-id>]`), and a `deploy-progress` event with the latest line lands in the
