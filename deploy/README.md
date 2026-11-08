@@ -120,3 +120,33 @@ See `coxd/sandbox.py` and `deploy/entrypoint.sh`.
 - `claude login` must now run as coxw (see the setup step above).
 - After every coxd deploy, prove the boundary:
   `ssh nas 'docker exec -i coxd sh -s' < deploy/smoke-sandbox.sh` must print `ALL OK`.
+
+## Deployer (optional, opt-in)
+
+A separate `deployer` container is the only thing with `docker.sock`; coxd reaches it over the
+internal `deployer-internal` network. It is behind a compose profile, so plain
+`docker compose up -d` (what `deploy-coxd.sh` runs) never starts it and needs none of these files.
+
+1. Create `deploy/deployer.env` on the NAS (never commit it):
+   ```
+   DEPLOYER_TOKEN=<long random string>
+   ```
+2. Create `deploy/deployer/allowlist.json` on the NAS (never commit it). Repo name -> argv + cwd.
+   `cwd` must be inside `DEPLOYER_SRC_ROOT` (default `/volume1/docker`, mounted at the same path
+   inside the container). Invented example:
+   ```json
+   {
+     "example-app": {
+       "cmd": ["docker", "compose", "up", "-d", "--build"],
+       "cwd": "/volume1/docker/example-app"
+     }
+   }
+   ```
+3. Start it: `docker compose -f docker-compose.coxd.yml --profile deployer up -d --build deployer`.
+
+If the allowlist is missing, a directory, or has a cwd outside the root, the deployer logs a
+`FATAL config error` line and exits (retried at most 3 times).
+
+API: `POST /deploy/<repo>`, `GET /deploys/<id>/status`, `GET /deploys/<id>/log`, bearer token.
+Only the last 50 deploys are kept (older logs are deleted); history is in memory and is lost on
+restart.
