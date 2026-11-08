@@ -66,7 +66,8 @@ store.create_task("g2", "beta-svc", "brief", "/wt")
 store.set_state("g2", "needs_human", "gate-red")
 g = watchdog.summary_text(since=time.time() - 60)
 check("two repo headers", "== alpha-app ==" in g and "== beta-svc ==" in g)
-check("beta needs-you under beta", g.index("== beta-svc ==") < g.index("g2") and g.index("g2") > g.index("== alpha-app =="))
+check("beta needs-you under beta",
+      g.index("== alpha-app ==") < g.index("== beta-svc ==") < g.index("g2"))
 check("deploy + tier shown", "Deploys since last digest: 1" in g and "g1 → GREEN" in g)
 check("old events excluded", "Deploys since" not in watchdog.summary_text(since=time.time() + 60))
 
