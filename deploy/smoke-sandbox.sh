@@ -20,15 +20,22 @@ denied sh -c 'touch /repo/MoneyPulse/.git/hooks/pre-push'
 [ -e /var/run/docker.sock ] && bad "docker.sock is mounted" || ok "no docker.sock"
 [ -d /volume1/docker ] && bad "/volume1/docker is mounted" || ok "no /volume1/docker"
 # No NAS share, cloud-storage or document volume may be mounted in the container
-# (gate for setting intake: true on a repo with data_globs). Mountpoints are field 5,
-# fstype is the field after the "-" separator in /proc/self/mountinfo.
+# (gate for setting intake: true on a repo with data_globs). Fail-closed: every mountpoint
+# and filesystem type must be on the allowlist of what compose creates; anything else fails.
+# mountinfo fields: $4 = mount root on the source fs, $5 = mountpoint (spaces as \040);
+# fstype is the field after the "-" separator.
 if [ -r /proc/self/mountinfo ]; then
-  netfs=$(awk '{for(i=1;i<=NF;i++) if($i=="-"){print $(i+1), $5; break}}' /proc/self/mountinfo \
-    | grep -Ei '^(nfs|nfs4|cifs|smb3?|smbfs|afs|ceph|glusterfs|9p|davfs|fuse\.(rclone|sshfs|gdrive|davfs2?|s3fs|gcsfuse|onedrive|smbnetfs)[^ ]*) ' || true)
-  [ -z "$netfs" ] && ok "no network/cloud filesystem mounted" || bad "network/cloud filesystem mounted"
-  docs=$(awk '{print $5}' /proc/self/mountinfo \
-    | grep -Ei '^/(volume[0-9]+(/|$)|share|shares|nas|media|mnt|srv|documents|docs|dropbox|gdrive|onedrive|icloud)|/(Dropbox|Google Drive|OneDrive|iCloud|Documents|CloudStorage)(/|$)' || true)
-  [ -z "$docs" ] && ok "no document/data volume mounted" || bad "document/data volume mounted"
+  mounts=$(awk '{t=""; for(i=1;i<=NF;i++) if($i=="-"){t=$(i+1); break} print $5, t, $4}' /proc/self/mountinfo)
+  badmp=$(echo "$mounts" | awk -v home="${COXD_HOME:-/data/coxswain}" -v u="$u" '
+    $1=="/" || $1==home || $1=="/repo" || $1=="/work" || $1=="/home/" u "/.claude" { next }
+    $1=="/etc/hosts" || $1=="/etc/hostname" || $1=="/etc/resolv.conf" { next }
+    $1 ~ /^\/(proc|sys|dev)(\/|$)/ { next }
+    { print $1 }')
+  [ -z "$badmp" ] && ok "only expected mountpoints present" || bad "unexpected mountpoint(s): $(echo $badmp)"
+  badfs=$(echo "$mounts" | awk '$2 !~ /^(overlay|btrfs|ext[234]|xfs|proc|sysfs|tmpfs|devtmpfs|devpts|mqueue|cgroup2?|shm)$/ { print $2 }' | sort -u)
+  [ -z "$badfs" ] && ok "no network/cloud filesystem mounted" || bad "unexpected filesystem type(s): $(echo $badfs)"
+  badroot=$(echo "$mounts" | awk '$3 ~ /^\/volume[0-9]+(\/|$)/ { print $1 }')
+  [ -z "$badroot" ] && ok "no document/data volume mounted" || bad "host share bind-mounted at: $(echo $badroot)"
 else
   bad "cannot read /proc/self/mountinfo to check data mounts"
 fi
