@@ -334,8 +334,14 @@ def _pr_base(pr_url: str, repo_slug: str) -> str | None:
         return None
 
 
-_MIGRATION_RE = re.compile(r"(^|/)(migrations?|alembic|prisma/migrations|db/migrate)(/|$)"
-                           r"|\.sql$", re.I)
+_DEFAULT_MIGRATION_DIRS = ["migrations", "alembic"]
+
+
+def _in_migration_dir(path: str, dirs: list[str]) -> bool:
+    """Is `path` under one of `dirs`? Entries may be multi-segment (e.g. `db/migrations`)
+    and match at any depth."""
+    parent = "/" + "/".join(path.strip().split("/")[:-1]) + "/"
+    return any(f"/{d.strip('/')}/" in parent for d in dirs if d and d.strip("/"))
 
 
 def _deployed_sha_file(repo_name: str) -> Path:
@@ -360,7 +366,8 @@ def _record_deployed(repo_name: str, sha: str) -> None:
 def _compare(slug: str, base: str, head: str) -> tuple[str, list[str], bool] | None:
     """GitHub compare base...head -> (status, changed files, truncated). None on any error."""
     r = _run(["gh", "api", f"repos/{slug}/compare/{base}...{head}", "--jq",
-              "{status: .status, files: [.files[].filename], n: (.files | length)}"])
+              "{status: .status, n: (.files | length),"
+              " files: [.files[] | .filename, (.previous_filename // empty)]}"])
     if r.returncode != 0:
         return None
     try:
@@ -370,7 +377,8 @@ def _compare(slug: str, base: str, head: str) -> tuple[str, list[str], bool] | N
         return None
 
 
-def _migration_hold(slug: str, repo_name: str, sha: str) -> str | None:
+def _migration_hold(slug: str, repo_name: str, sha: str,
+                    dirs: list[str] | None = None) -> str | None:
     """Why an unattended deploy of `sha` must be held (#53), or None if it may proceed.
 
     A deploy ships the whole tree at `sha`, so the check covers everything between the last
@@ -380,8 +388,6 @@ def _migration_hold(slug: str, repo_name: str, sha: str) -> str | None:
     base = _last_deployed_sha(repo_name)
     if base is None:
         return "no deployed-commit baseline yet (deploy once by hand)"
-    if base == sha:
-        return "this commit is already deployed"
     cmp = _compare(slug, base, sha)
     if cmp is None:
         return "could not compare against the last deployed commit"
@@ -390,7 +396,7 @@ def _migration_hold(slug: str, repo_name: str, sha: str) -> str | None:
         return f"merge commit is not ahead of the last deployed commit ({status})"
     if truncated:
         return "too many changed files to check for migrations"
-    if any(_MIGRATION_RE.search(f) for f in files):
+    if any(_in_migration_dir(f, dirs or _DEFAULT_MIGRATION_DIRS) for f in files):
         return "changes since the last deploy include migrations"
     return None
 
@@ -464,11 +470,11 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False, sha: str | None = No
     return {"error": f"deploy failed (rc={rc})", "detail": err}
 
 
-def _hold(t: dict, slug: str, reason: str) -> None:
+def _hold(t: dict, slug: str, reason: str, prio: str = "default") -> None:
     store.append_event(t["id"], "deploy-held", {"reason": reason})
     notify.notify_async("coxd: deploy held",
                         f"{slug}: merged, auto-deploy held ({reason}) — deploy by hand",
-                        "default")
+                        prio)
 
 
 def _maybe_deploy(t: dict, slug: str) -> None:
@@ -490,9 +496,12 @@ def _maybe_deploy(t: dict, slug: str) -> None:
     sha = _pr_merge_sha(t["pr_url"], slug) if t.get("pr_url") else None
     if sha is None:
         return _hold(t, slug, "could not resolve the merge commit")
-    why = _migration_hold(slug, t["repo"], sha)
+    if _last_deployed_sha(t["repo"]) == sha:
+        return  # already deployed: silent no-op
+    why = _migration_hold(slug, t["repo"], sha,
+                          dep.get("migration_dirs") or _DEFAULT_MIGRATION_DIRS)
     if why:
-        return _hold(t, slug, why)
+        return _hold(t, slug, why, "high" if "migrations" in why else "default")
     started = _deploy_bg(t, slug, manual=False, sha=sha)
     if not started:
         _hold(t, slug, "another deploy for this repo is running")

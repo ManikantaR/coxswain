@@ -114,7 +114,7 @@ base_ref = "main"
 landed._pr_base = lambda url, slug: base_ref  # type: ignore[assignment]
 landed._pr_merge_sha = lambda url, slug: merge_sha  # type: ignore[assignment]
 landed._migration_hold = (  # type: ignore[assignment]
-    lambda slug, repo, sha: hold)
+    lambda slug, repo, sha, dirs=None: hold)
 _real_bg = landed._deploy_bg
 landed._deploy_bg = lambda t, slug, manual, sha=None: (  # type: ignore[assignment]
     landed.run_deploy(t, slug, manual=manual, sha=sha) or True)
@@ -125,12 +125,14 @@ check("post-merge → deploys the merge commit",
       deploy_ran == ["aura-tutor"] and streamed[-1][1] == merge_sha
       and "deployed" in kinds("t4b") and "deploy-held" not in kinds("t4b"))
 hold = 'changes since the last deploy include migrations'
+merge_sha = "e" * 40
 deploy_ran.clear()
 landed._maybe_deploy(mk("t4e"), "o/aura-tutor")
 check("post-merge with migrations → held, not deployed",
       not deploy_ran and "deploy-held" in kinds("t4e") and "deploy-start" not in kinds("t4e")
       and "coxd: deploy held" in pings0)
 hold = 'could not compare'
+merge_sha = "f" * 40
 landed._maybe_deploy(mk("t4f"), "o/aura-tutor")
 check("post-merge, migrations unknown → held", not deploy_ran and "deploy-held" in kinds("t4f"))
 hold = None
@@ -164,6 +166,9 @@ cmp_out.update(status="behind", files=[], n=0)
 check("older sha → held", "not ahead" in (landed._migration_hold("o/hr", "hr", "c" * 40) or ""))
 cmp_out.clear()
 check("compare error → held", landed._migration_hold("o/hr", "hr", "c" * 40) is not None)
+check("multi-segment migration dir matches",
+      landed._in_migration_dir("app/db/migrations/001.sql", ["db/migrations"])
+      and not landed._in_migration_dir("app/db/other/001.sql", ["db/migrations"]))
 landed._run = fake_run  # type: ignore[assignment]
 landed._deploy_bg = _real_bg  # type: ignore[assignment]
 

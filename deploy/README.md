@@ -79,8 +79,8 @@ GitHub to fetch. It publishes no ports and is not on `traefik-public`; nothing o
 
 Post-merge deploys: a merged repo with `deploy.enabled` deploys its merge commit. It is **held**
 (`deploy-held` event + ping, nothing deployed) when any commit between the last successfully
-deployed one and the merge commit touches migration files (`migrations/`, `alembic/`,
-`db/migrate/`, `*.sql`; #53) - so a held migration stays held until a human deploys it - when
+deployed one and the merge commit touches migration files (`deploy.migration_dirs`, default `migrations`, `alembic`;
+multi-segment values like `db/migrations` match; #53) - so a held migration stays held until a human deploys it - when
 the merge commit is not strictly ahead of the last deployed one (no rollbacks from a
 late-detected older merge), when there is no deployed baseline yet (deploy once by hand; a
 successful deploy of any kind records it), when the comparison fails, when the merge commit
