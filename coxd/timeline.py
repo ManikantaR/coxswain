@@ -43,6 +43,8 @@ def derive(task: dict, events: list, now: float) -> dict:
     started = next((ts for ts, st in states[(last_q or 0):] if st in _START_STATES), None)
     if started is None and states and cur != "queued":
         started = states[last_q or 0][0]
+    if started is None and cur != "queued":
+        started = created  # legacy task with no recorded state events
 
     finished = None
     landed = None
@@ -54,7 +56,7 @@ def derive(task: dict, events: list, now: float) -> dict:
             landed = states[landed_i][0]
             # Factory work ends at the last hand-off to a human before the merge;
             # fall back to the landed timestamp when there was none.
-            fin_i = next((i for i in range(landed_i, -1, -1)
+            fin_i = next((i for i in range(landed_i, (last_q or 0) - 1, -1)
                           if states[i][1] in ("pr_ready", "needs_human")), None)
             finished = states[fin_i][0] if fin_i is not None else landed
             merge_wait = max(0.0, landed - finished)
@@ -62,7 +64,7 @@ def derive(task: dict, events: list, now: float) -> dict:
             if fin_i is not None and fin_i + 1 == landed_i:
                 buckets["human"] -= max(0.0, landed - finished)
     elif cur in _FINISH_STATES:
-        finished = next((ts for ts, st in reversed(states) if st in _FINISH_STATES), None)
+        finished = next((ts for ts, st in reversed(states[(last_q or 0):]) if st in _FINISH_STATES), None)
 
     in_progress = cur not in _IDLE_STATES
     wall = 0.0

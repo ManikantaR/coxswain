@@ -41,7 +41,13 @@ assert r["paused_quota_s"] == 100 and r["active_s"] == 100, r
 t = {"state": "landed", "created": 0}
 r = timeline.derive(t, [st(0, "working"), st(10, "pr_ready"), st(70, "queued"),
                         st(71, "working"), st(100, "landed")], 500)
-assert r["human_wait_s"] == 60 and r["attempts"] == 1 and r["finished_at"] == 10, r
+assert r["human_wait_s"] == 60 and r["attempts"] == 1, r
+# finish is bounded to the latest attempt: never before started
+assert r["started_at"] == 71 and r["finished_at"] == 100 and r["wall_s"] == 29, r
+
+# legacy non-queued task with no events falls back to created
+r = timeline.derive({"state": "working", "created": 5}, [], 15)
+assert r["started_at"] == 5 and r["wall_s"] == 10, r
 
 # re-review round + gate fix
 t = {"state": "pr_ready", "created": 0}
