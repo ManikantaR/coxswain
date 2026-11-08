@@ -20,6 +20,7 @@ import ci_triage
 import envscrub
 import factory
 import gate
+import gitident
 import quota
 import registry
 import sandbox
@@ -32,6 +33,8 @@ CONFLICT_NOTE = ("Your PR branch no longer rebases cleanly onto the latest targe
                  "`origin/{target}` into your branch (do NOT rebase or rewrite history — "
                  "the push is a plain fast-forward), resolve the conflicts, re-run the "
                  "checks and commit. Do not push.")
+
+NO_IDENTITY = "no identity"
 
 _lock = threading.Lock()
 
@@ -71,11 +74,9 @@ def _out(cwd, *args: str) -> str | None:
 
 
 def identity(repo_path: Path) -> tuple[str, str] | None:
-    """coxd's own commit identity (name, email): COXD_GIT_* override, else the main
-    checkout's git config. None → unknown (fail closed: nothing is rebased)."""
-    name = os.environ.get("COXD_GIT_NAME") or _out(repo_path, "config", "user.name")
-    email = os.environ.get("COXD_GIT_EMAIL") or _out(repo_path, "config", "user.email")
-    return (name, email) if name and email else None
+    """coxd's own commit identity (name, email); see gitident for the lookup order.
+    None → unknown (fail closed: nothing is rebased)."""
+    return gitident.identity(repo_path)
 
 
 def _foreign_commits(repo_path: Path, base: str, branch: str, email: str) -> bool:
@@ -92,6 +93,7 @@ def _foreign_commits(repo_path: Path, base: str, branch: str, email: str) -> boo
 
 def _done_for(tid: str, sha: str) -> bool:
     return any(e["kind"] in EVENTS and e["data"].get("target_sha") == sha
+               and e["data"].get("reason") != NO_IDENTITY  # transient: retry
                for e in store.events(tid))
 
 
@@ -205,15 +207,27 @@ def rebase_repo(repo: str, running=0, concurrency: int = 2) -> bool:
         return False
     repo_path = Path(tasks[0]["repo_path"])
     slug = ci_triage.repo_slug(str(repo_path))
-    who = identity(repo_path)
     target = (registry.load(repo) or {}).get("target_branch") or "main"
-    if not slug or not who:
+    if not slug:
         return True
     if _git(repo_path, "fetch", "--quiet", "--prune").returncode != 0:
         return False
     sha = _out(repo_path, "rev-parse", "--verify", f"refs/remotes/origin/{target}")
     if not sha:
         return True
+    who = identity(repo_path)
+    if not who:
+        # Never silently drop the sweep: say so on each task (once per target sha)
+        # and stay pending so it retries once an identity is configured.
+        for t in tasks:
+            if not any(e["kind"] == "rebase-skipped"
+                       and e["data"].get("reason") == NO_IDENTITY
+                       and e["data"].get("target_sha") == sha
+                       for e in store.events(t["id"])):
+                store.append_event(t["id"], "rebase-skipped",
+                                   {"target_sha": sha, "target": target,
+                                    "reason": NO_IDENTITY})
+        return False
     for t in tasks:
         if _blocked(running, concurrency):
             return False

@@ -19,6 +19,7 @@ from collections import deque
 from pathlib import Path
 
 import ci_triage
+import gitident
 import notify
 import registry
 import store
@@ -104,16 +105,9 @@ def _pr_merged(pr_url: str, repo_slug: str) -> tuple[bool, str | None]:
 
 
 def coxd_identity_email(repo_path: str | None) -> str:
-    """coxd's own commit identity: COXD_GIT_EMAIL, else GIT_AUTHOR_EMAIL, else the
-    repo's git config user.email. Empty string if none resolvable (→ nothing is clean)."""
-    for k in ("COXD_GIT_EMAIL", "GIT_AUTHOR_EMAIL"):
-        if os.environ.get(k):
-            return os.environ[k].strip()
-    if repo_path:
-        r = _run(["git", "-C", repo_path, "config", "user.email"])
-        if r.returncode == 0:
-            return r.stdout.strip()
-    return ""
+    """coxd's own commit identity email (see gitident). Empty string if none
+    resolvable (→ nothing is clean)."""
+    return gitident.email(repo_path)
 
 
 def is_clean_merge(tier: str | None, ci_green: bool, commits: list[tuple[str, str]],

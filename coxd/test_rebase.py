@@ -199,6 +199,51 @@ check("worktree git env scrubbed of tokens",
 check("branch lookup went through the sandbox path", any(
     c[-3:] == ["symbolic-ref", "--short", "HEAD"] for c, _ in wt_calls))
 
+# --- identity resolution (#73): no COXD_GIT_*, only GIT_AUTHOR_* (the NAS container) ---
+empty_cfg = root / "empty.gitconfig"
+empty_cfg.write_text("")
+saved = dict(os.environ)
+for k in ("COXD_GIT_NAME", "COXD_GIT_EMAIL"):
+    os.environ.pop(k, None)
+os.environ["GIT_CONFIG_GLOBAL"] = str(empty_cfg)
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+make_task("late", "f.txt", "mine\n")
+commit(repo, "b.txt", "changed upstream again\n")
+git(repo, "push", "-q", "origin", "main")
+
+for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"):
+    os.environ.pop(k, None)
+repo_cfg = subprocess.run(["git", "-C", str(repo), "config", "user.name"],
+                          capture_output=True, text=True).stdout.strip()
+if not repo_cfg:
+    pushes.clear()
+    rebase.mark_merged("rbrepo")
+    rebase.process_pending(0, 2)
+    sk = [e for e in store.events("late") if e["kind"] == "rebase-skipped"]
+    check("no identity: rebase-skipped recorded, repo stays pending, no push",
+          len(sk) == 1 and sk[0]["data"]["reason"] == "no identity"
+          and "rbrepo" in rebase._load_pending() and not pushes
+          and store.get_task("late")["state"] == "pr_ready")
+    rebase.process_pending(0, 2)
+    check("no identity: retry does not spam events",
+          len([e for e in store.events("late") if e["kind"] == "rebase-skipped"]) == 1)
+
+os.environ["GIT_AUTHOR_NAME"] = "coxd-bot"
+os.environ["GIT_AUTHOR_EMAIL"] = "bot@example.invalid"
+check("identity falls back to GIT_AUTHOR_*",
+      rebase.identity(repo) == ("coxd-bot", "bot@example.invalid"))
+os.environ["COXD_GIT_NAME"] = "override"
+check("COXD_GIT_NAME wins over GIT_AUTHOR_NAME",
+      rebase.identity(repo) == ("override", "bot@example.invalid"))
+os.environ.pop("COXD_GIT_NAME")
+pushes.clear()
+rebase.process_pending(0, 2)
+check("GIT_AUTHOR_* only: behind PR rebased and pushed",
+      len([e for e in store.events("late") if e["kind"] == "rebased"]) == 1
+      and len(pushes) == 1 and "rbrepo" not in rebase._load_pending())
+os.environ.clear()
+os.environ.update(saved)
+
 # CAS: a concurrent human resume is never overwritten
 store.set_state("clean", "pr_ready")
 check("cas applies when state matches",
