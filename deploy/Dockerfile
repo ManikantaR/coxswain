@@ -49,7 +49,7 @@ RUN install -m 0755 -d /usr/share/keyrings \
 ARG CLAUDE_CODE_VERSION=2.1.316
 ARG CLAUDE_AGENT_SDK_VERSION=0.2.174
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
- && pip install --no-cache-dir "claude-agent-sdk==${CLAUDE_AGENT_SDK_VERSION}" uvicorn starlette
+ && pip install --no-cache-dir "claude-agent-sdk==${CLAUDE_AGENT_SDK_VERSION}" uvicorn starlette yamllint
 # Stop the CLI self-updating at runtime (that is how the pin drifted before).
 ENV DISABLE_AUTOUPDATER=1
 
