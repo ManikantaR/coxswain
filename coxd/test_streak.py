@@ -35,7 +35,8 @@ store.record_merge("acme-widgets", clean)
 check("streak up to 2", store.get_clean_streak("acme-widgets") == 2)
 check("other repo independent", store.get_clean_streak("zeta-gizmos") == 0)
 
-check("human commit not clean", not landed.is_clean_merge("GREEN", True, ["coxd", "bob-example"], BOTS))
+check("human commit not clean",
+      not landed.is_clean_merge("GREEN", True, ["coxd", "bob-example"], BOTS))
 check("AMBER not clean", not landed.is_clean_merge("AMBER", True, ["coxd"], BOTS))
 check("red CI not clean", not landed.is_clean_merge("GREEN", False, ["coxd"], BOTS))
 check("no commits info not clean", not landed.is_clean_merge("GREEN", True, [], BOTS))
