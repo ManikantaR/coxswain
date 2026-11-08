@@ -209,6 +209,8 @@ def fair_order(tasks: list[dict], after_repo: str | None = None) -> list[dict]:
 
 
 def _over_cap(repo: str | None) -> bool:
+    """Soft cap: checked only when a task is about to start, so a task already
+    running may push the repo past it; the repo then waits until the next day."""
     if not repo:
         return False
     cap = registry.daily_cost_cap(repo)
@@ -228,12 +230,15 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
         if len(_running) < concurrency and not factory.is_paused() and not quota_blocked:
             busy = _busy_repos()
             global _last_started_repo
+            capped: dict[str | None, bool] = {}  # one cap check per repo per tick
             for t in fair_order(store.queued_tasks(), _last_started_repo):
                 if len(_running) >= concurrency:
                     break
                 if t["id"] in _running or t.get("repo") in busy:
                     continue
-                if _over_cap(t.get("repo")):
+                if t.get("repo") not in capped:
+                    capped[t.get("repo")] = _over_cap(t.get("repo"))
+                if capped[t.get("repo")]:
                     continue  # over its daily cost cap: waits for tomorrow, others run
                 busy.add(t.get("repo"))
                 _last_started_repo = t.get("repo")

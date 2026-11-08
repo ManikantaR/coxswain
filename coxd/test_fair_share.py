@@ -33,4 +33,11 @@ eligible = [t["id"] for t in supervisor.fair_order(store.queued_tasks())
 assert eligible == ["b1"], eligible
 # yesterday's spend doesn't count
 assert store.cost_today("alpha", now=store.time.time() + 2 * 86400) == 0
+# a no-cost update today (e.g. merge/archive) must not make old spend count as today's
+import time  # noqa: E402
+with store._conn() as c:
+    c.execute("UPDATE cost_ledger SET ts=? WHERE task_id='a1'", (time.time() - 2 * 86400,))
+store.set_state("a1", "queued")  # bumps `updated`
+assert store.cost_today("alpha") == 0
+assert not supervisor._over_cap("alpha")
 print("ok")
