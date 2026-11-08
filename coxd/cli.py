@@ -49,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list", help="list tasks")
 
+    st = sub.add_parser("status", help="print a repo's STATUS.md (refreshed first)")
+    st.add_argument("--repo", required=True)
+
     m = sub.add_parser("mine-sessions",
                        help="mine ~/.claude session transcripts for candidate compounding rules")
     m.add_argument("--since", type=float, default=None,
@@ -69,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "list":
         for row in store.list_tasks():
             print(f"{row['state']:<12} {row['id']:<40} ${row['cost'] or 0:.3f}")
+        return 0
+    if a.cmd == "status":
+        import status
+        print(status.write(a.repo).read_text(), end="")
         return 0
     if a.cmd == "tail":
         seen = 0

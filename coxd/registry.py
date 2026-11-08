@@ -48,6 +48,21 @@ def daily_cost_cap(repo_name: str) -> float | None:
     return float(cap)
 
 
+DATA_GUARD_NOTE = ("\n\n---\nDATA GUARD: this is a document repo. Use synthetic fixtures only; "
+                   "never open data folders or real documents. New files matching {globs} "
+                   "may only be added under `{fixture}`.")
+
+
+def data_guard_brief(entry: dict | None, brief: str) -> str:
+    """Append the synthetic-fixtures-only rule when the repo sets `data_globs`."""
+    globs = [g for g in ((entry or {}).get("data_globs") or []) if isinstance(g, str)]
+    if not globs:
+        return brief
+    fixture = (entry or {}).get("fixture_dir") or "(no fixture dir configured)"
+    return brief + DATA_GUARD_NOTE.format(globs=", ".join(f"`{g}`" for g in globs),
+                                          fixture=fixture)
+
+
 def scout(repo_path: Path) -> dict:
     """Discover commands from the repo's manifests. Deterministic, zero tokens.
 
@@ -64,6 +79,9 @@ def scout(repo_path: Path) -> dict:
                               "gate_on_ci": True, "branch": "main"},
                    # Paths whose change forces a RED greenlight (read every line).
                    # Secrets/migrations by default; add the repo's sacred code per-repo.
+                   # Document repos: new files matching data_globs outside fixture_dir
+                   # block the PII gate (empty = off). e.g. ["**/*.pdf", "inbox/**"].
+                   "data_globs": [], "fixture_dir": None,
                    "sacred_globs": [".env", "env*", "**/*secret*",
                                     "**/migrations/**", "**/alembic/**"]}
     pkg = repo_path / "package.json"

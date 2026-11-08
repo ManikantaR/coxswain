@@ -144,7 +144,10 @@ def record_merge(repo: str, clean: bool, task_id: str | None = None) -> int:
             c.execute("INSERT INTO events(task_id,ts,kind,data) VALUES(?,?,?,?)",
                       (task_id, time.time(), "streak",
                        json.dumps({"clean": clean, "streak": n})))
-        return n
+    if task_id is not None:
+        import status
+        status.refresh_for_task(task_id)
+    return n
 
 
 def set_resume_at(task_id: str, ts: float | None) -> None:
@@ -213,10 +216,16 @@ def unarchive_task(task_id: str) -> None:
                   (time.time(), task_id))
 
 
+_STATUS_KINDS = {"created", "state", "deployed", "streak"}
+
+
 def append_event(task_id: str, kind: str, data: dict | None = None) -> None:
     with _conn() as c:
         c.execute("INSERT INTO events(task_id,ts,kind,data) VALUES(?,?,?,?)",
                   (task_id, time.time(), kind, json.dumps(data or {})))
+    if kind in _STATUS_KINDS:
+        import status  # lazy: status imports store
+        status.refresh_for_task(task_id)
 
 
 def get_task(task_id: str) -> dict | None:
