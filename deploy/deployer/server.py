@@ -45,6 +45,8 @@ def load_allowlist(path: str, src_root: str = DEFAULT_SRC_ROOT) -> dict[str, dic
         raise ValueError("allowlist must be a JSON object")
     out: dict[str, dict] = {}
     for name, ent in raw.items():
+        if not isinstance(ent, dict):
+            raise ValueError(f"{name}: entry must be a JSON object with cmd and cwd")
         cmd, cwd = ent.get("cmd"), ent.get("cwd")
         if not REPO_RE.match(name):
             raise ValueError(f"bad repo name {name!r}")
@@ -59,10 +61,12 @@ def load_allowlist(path: str, src_root: str = DEFAULT_SRC_ROOT) -> dict[str, dic
 
 
 class Deployer:
-    def __init__(self, allowlist: dict[str, dict], token: str, log_dir: str | None = None):
+    def __init__(self, allowlist: dict[str, dict], token: str, log_dir: str | None = None,
+                 src_root: str | None = None):
         if not token:
             raise ValueError("DEPLOYER_TOKEN is empty; refusing to start")
         self.allowlist = allowlist
+        self.src_root = src_root  # when set, cwd is re-checked right before every spawn
         self.token = token
         self.log_dir = log_dir or tempfile.mkdtemp(prefix="deployer-")
         os.makedirs(self.log_dir, exist_ok=True)
@@ -113,6 +117,10 @@ class Deployer:
         try:
             with open(job["log"], "ab") as log:
                 try:
+                    # Re-check at spawn time: a symlink swapped in since startup must not
+                    # redirect the command outside the source root.
+                    if self.src_root is not None and not _inside(self.src_root, ent["cwd"]):
+                        raise OSError(f"cwd {ent['cwd']} is no longer inside {self.src_root}")
                     p = subprocess.Popen(ent["cmd"], cwd=ent["cwd"], stdin=subprocess.DEVNULL,
                                          stdout=log, stderr=subprocess.STDOUT)
                     code = p.wait()
@@ -165,6 +173,8 @@ def make_handler(d: Deployer):
             self._json(202, d.public(job))
 
         def do_GET(self):
+            if int(self.headers.get("Content-Length") or 0) > 0 or self.headers.get("Transfer-Encoding"):
+                self.close_connection = True  # unread body must not be parsed as a request
             if not self._gate():
                 return
             m = re.fullmatch(r"/deploys/([0-9a-f]{32})/(status|log)", self.path)
@@ -201,7 +211,7 @@ def main() -> None:
     cfg = os.environ.get("DEPLOYER_CONFIG", "/etc/deployer/allowlist.json")
     root = os.environ.get("DEPLOYER_SRC_ROOT", DEFAULT_SRC_ROOT)
     try:
-        d = Deployer(load_allowlist(cfg, root), token, os.environ.get("DEPLOYER_LOG_DIR"))
+        d = Deployer(load_allowlist(cfg, root), token, os.environ.get("DEPLOYER_LOG_DIR"), root)
     except (ValueError, OSError) as e:
         print(f"deployer: FATAL config error: {e}. See deploy/README.md (deployer setup).",
               flush=True)

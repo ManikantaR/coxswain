@@ -51,25 +51,24 @@ Headless refresh of the Pro-subscription OAuth token is the one unproven bit. If
 inside the container won't hold, the fallback is `ANTHROPIC_API_KEY` in `.env` (API billing, not
 Pro) — coxd's SDK honors it. Try the Pro login first.
 
-## The board's Deploy button (in-container deploys)
-Deploy runs the repo's registry `deploy.command` **inside the coxd container**, with cwd =
-the repo clone in `/repo/<name>`, after `git pull --ff-only origin <branch>` and a CI gate.
-The container drives the host Docker through the mounted `/var/run/docker.sock` and sees
-`/volume1/docker` at the same path the app compose files use.
+## The board's Deploy button (via the deployer)
+coxd does **not** run deploys itself: it has no `docker.sock` and no `/volume1/docker`.
+After `git pull --ff-only origin <branch>` and the CI gate, `run_deploy` calls the
+[deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>`, then streams the job log).
+The deployer runs the allowlisted argv for that repo name; the registry's `deploy.command`
+only marks the repo as deployable, coxd never executes it. Auto-deploy after merge and the
+board button share this path.
 
-Rules for a repo's deploy command on the NAS:
-- **Must be container-native — no `ssh nas`.** The image has no ssh client or key and the
-  NAS can't ssh to itself from here. Use a script like MoneyPulse's
-  `deploy/coxd-deploy.sh` (sync build context into `/volume1/docker/<app>/repo` →
-  `docker compose build` → `up -d --force-recreate` → migrate). A workstation script like
-  aura-tutor's `./deploy-to-nas.sh` (ssh/scp) will fail here — aura-tutor needs its own
-  `coxd-deploy.sh` before its Deploy button can work on the NAS.
-- Non-interactive (stdin is `/dev/null`) and bounded: coxd kills it after
-  `deploy.timeout_s` (default 2700 s = 45 min) and records `deploy-failed` rc=124.
-- `docker compose build` needs the buildx plugin (compose v5 builds via `buildx bake`);
-  it's in the image.
+Setup: run the deployer (below) and set `COXD_DEPLOYER_TOKEN` (same value as the
+deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; `COXD_DEPLOYER_URL` defaults to
+`http://deployer:8792`. Without them a deploy records `deploy-failed` rc=127.
 
-Watching a deploy: output streams live to `docker logs -f coxd` (lines prefixed
+Rules for a repo's deploy command (the allowlist entry):
+- **Container-native — no `ssh nas`.** Use a script like MoneyPulse's `deploy/coxd-deploy.sh`.
+- Non-interactive (stdin is `/dev/null`). coxd stops waiting after `deploy.timeout_s`
+  (default 2700 s = 45 min) and records `deploy-failed` rc=124.
+
+Watching a deploy: the deployer log is relayed live to `docker logs -f coxd` (lines prefixed
 `[deploy <task-id>]`), and a `deploy-progress` event with the latest line lands in the
 task's Events feed every ~20 s. Every deploy ends in exactly one of `deployed` /
 `deploy-failed` (including timeouts and coxd-side crashes) — a `deploy-start` with nothing
@@ -115,8 +114,8 @@ See `coxd/sandbox.py` and `deploy/entrypoint.sh`.
 - `/repo/*/.git` objects and refs are group-writable; `.git`, `.git/config` and `.git/hooks`
   stay root-only, so a worker cannot make root run its code.
 - Root never runs git inside a worktree: push and `gh pr create` run from `/repo/<name>`.
-- No `docker.sock` and no `/volume1/docker` in the container, so the board's Deploy button
-  is off until a separate deployer container exists.
+- No `docker.sock` and no `/volume1/docker` in the container; deploys go through the
+  separate deployer container (see the Deploy button section).
 - `claude login` must now run as coxw (see the setup step above).
 - After every coxd deploy, prove the boundary:
   `ssh nas 'docker exec -i coxd sh -s' < deploy/smoke-sandbox.sh` must print `ALL OK`.

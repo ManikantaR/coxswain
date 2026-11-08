@@ -9,12 +9,16 @@ and do the bookkeeping automatically instead of repeating it by hand every time.
 
 from __future__ import annotations
 
+import http.client
+import json
 import os
 import re
-import signal
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -44,51 +48,83 @@ DEFAULT_DEPLOY_TIMEOUT_S = 45 * 60
 _PROGRESS_EVERY_S = 20.0
 
 
-def _stream_deploy(tid: str, command: str, cwd: str, timeout_s: float) -> tuple[int, str]:
-    """Run the deploy command, STREAMING its output instead of capturing it to the end.
+DEFAULT_DEPLOYER_URL = "http://deployer:8792"
 
-    Why (the "Deploy button dies silently" bug): the old path was
-    subprocess.run(capture_output=True) with no timeout — a multi-minute docker build
-    produced zero visible output, a hung step blocked the thread forever, and nothing
-    ever reached `docker logs`. Now every line is echoed (flushed) to coxd's stdout so
-    `docker logs coxd` shows the build live, a `deploy-progress` event carries the
-    latest line to the board every ~20s, and a watchdog kills the whole process group
-    after `timeout_s`. Returns (returncode, tail-of-output); rc=124 on timeout."""
-    p = subprocess.Popen(
-        ["bash", "-lc", command], cwd=cwd, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        start_new_session=True,  # own process group → the watchdog can kill children too
-    )
-    timed_out = threading.Event()
 
-    def _kill() -> None:
-        timed_out.set()
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+class DeployerError(Exception):
+    """The deployer refused or could not be reached; message is user-facing."""
 
-    watchdog = threading.Timer(timeout_s, _kill)
-    watchdog.daemon = True
-    watchdog.start()
-    tail: deque[str] = deque(maxlen=40)
-    last_emit = time.monotonic()
+
+def _deployer_req(method: str, path: str, timeout: float = 30.0):
+    token = os.environ.get("COXD_DEPLOYER_TOKEN", "")
+    if not token:
+        raise DeployerError("COXD_DEPLOYER_TOKEN is not set — the deployer is not configured")
+    base = (os.environ.get("COXD_DEPLOYER_URL") or DEFAULT_DEPLOYER_URL).rstrip("/")
+    req = urllib.request.Request(base + path, method=method,
+                                 headers={"Authorization": f"Bearer {token}"},
+                                 data=b"" if method == "POST" else None)
     try:
-        assert p.stdout is not None
-        for line in p.stdout:
-            line = line.rstrip("\n")
-            tail.append(line)
-            print(f"[deploy {tid}] {line}", flush=True)
-            if time.monotonic() - last_emit >= _PROGRESS_EVERY_S:
-                store.append_event(tid, "deploy-progress", {"line": line[-200:]})
-                last_emit = time.monotonic()
-        rc = p.wait()
-    finally:
-        watchdog.cancel()
-    out = "\n".join(tail)
-    if timed_out.is_set():
-        return 124, f"timed out after {int(timeout_s)}s (killed)\n{out}"
-    return rc, out
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        detail = {401: "bad deployer token", 404: "repo is not in the deployer allowlist",
+                  409: "a deploy for this repo is already running"}.get(e.code, f"HTTP {e.code}")
+        raise DeployerError(f"deployer refused: {detail}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DeployerError(f"deployer unreachable: {e}") from e
+
+
+def _deployer_status(jid: str) -> dict:
+    with _deployer_req("GET", f"/deploys/{jid}/status") as r:
+        return json.loads(r.read())
+
+
+def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
+    """Trigger a deploy through the deployer container and relay its log.
+
+    coxd has no docker.sock; the deployer runs the allowlisted command for `repo`. Every
+    log line is echoed to coxd's stdout, a `deploy-progress` event carries the latest line
+    every ~20s, and we give up after `timeout_s`. Returns (exit_code, tail-of-output);
+    rc=124 on timeout, 127 if the deployer could not be reached or refused."""
+    try:
+        with _deployer_req("POST", f"/deploy/{urllib.parse.quote(repo, safe='')}") as r:
+            jid = json.loads(r.read())["id"]
+    except (DeployerError, ValueError, KeyError) as e:
+        return 127, f"could not start deploy: {e}"
+    deadline = time.monotonic() + timeout_s
+    tail: deque[str] = deque(maxlen=40)
+
+    def _relay() -> None:
+        last_emit = time.monotonic()
+        try:
+            with _deployer_req("GET", f"/deploys/{jid}/log", timeout=timeout_s + 30) as r:
+                for raw in r:
+                    line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    tail.append(line)
+                    print(f"[deploy {tid}] {line}", flush=True)
+                    if time.monotonic() - last_emit >= _PROGRESS_EVERY_S:
+                        store.append_event(tid, "deploy-progress", {"line": line[-200:]})
+                        last_emit = time.monotonic()
+        except (DeployerError, OSError, ValueError, http.client.HTTPException) as e:
+            tail.append(f"(log stream lost: {e})")
+
+    th = threading.Thread(target=_relay, daemon=True)
+    th.start()
+    th.join(max(0.0, deadline - time.monotonic()))
+    while True:
+        try:
+            st = _deployer_status(jid)
+        except (DeployerError, ValueError) as e:
+            if time.monotonic() >= deadline:
+                return 124, f"timed out after {int(timeout_s)}s ({e})\n" + "\n".join(tail)
+            time.sleep(2)
+            continue
+        if st.get("status") != "running":
+            th.join(5)  # let the relay drain the last lines
+            code = st.get("exit_code")
+            return (code if isinstance(code, int) else -1), "\n".join(tail)
+        if time.monotonic() >= deadline:
+            return 124, f"timed out after {int(timeout_s)}s (deployer job left running)\n" + "\n".join(tail)
+        time.sleep(2)
 
 
 def _pr_merged(pr_url: str, repo_slug: str) -> tuple[bool, str | None]:
@@ -244,8 +280,8 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
         pass
     timeout_s = float(dep.get("timeout_s") or DEFAULT_DEPLOY_TIMEOUT_S)
     try:
-        rc, out = _stream_deploy(t["id"], dep["command"], cwd, timeout_s)
-    except OSError as e:  # bash/cwd missing → still a loud, terminal event
+        rc, out = _stream_deploy(t["id"], t["repo"], timeout_s)
+    except Exception as e:  # still a loud, terminal event
         rc, out = 127, f"could not start deploy: {e}"
     if rc == 0:
         store.append_event(t["id"], "deployed", {"command": dep["command"]})

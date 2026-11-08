@@ -30,9 +30,9 @@ RUN install -d /usr/share/postgresql-common/pgdg /etc/postgresql-common \
  && apt-get install -y --no-install-recommends postgresql-16 postgresql-16-pgvector \
  && rm -rf /var/lib/apt/lists/*
 
-# Docker CLI + compose plugin (CLIENT only — no daemon in here). coxd drives the NAS
-# host's Docker via the mounted /var/run/docker.sock to build+recreate a repo's
-# containers when you tap Deploy on the board. See deploy/docker-compose.coxd.yml.
+# Docker CLI + compose plugin (CLIENT only — no daemon and NO docker.sock in this
+# container). Deploys are not run here: the Deploy button calls the separate deployer
+# container, the only one with docker.sock. See deploy/docker-compose.coxd.yml.
 RUN install -m 0755 -d /usr/share/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg \
         | gpg --dearmor -o /usr/share/keyrings/docker.gpg \
