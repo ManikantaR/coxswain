@@ -9,8 +9,8 @@ caller sends can change what runs. Commands run as argv (no shell).
                                                      -> 202 {"id", "repo", "status"}
                              The command gets EXPECTED_SHA in its env and must sync the
                              source to it; afterwards `git rev-parse HEAD` in cwd must equal
-                             it, else the job fails with reason "stale-source" (or "head-unreadable" if git cannot read
-                             HEAD at all).
+                             it, else the job fails with reason "stale-source" (or "head-unreadable"
+                             if git cannot read HEAD at all).
                              timeout_s (clamped to the deployer's own cap) lets the per-repo
                              deploy.timeout_s reach the job.
   GET  /deploys/<id>/status  status              -> {"id","repo","status","exit_code","reason"}
