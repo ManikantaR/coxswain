@@ -110,7 +110,8 @@ def run_files(args, cwd=None):
         return FakeProc(0, files_out)
     return _orig_run(args, cwd)
 landed._run = run_files  # type: ignore[assignment]
-pings0.clear(); deploy_ran.clear()
+pings0.clear()
+deploy_ran.clear()
 landed._maybe_deploy(mk("t4m"), "o/aura-tutor")
 ev = [e for e in store.events("t4m") if e["kind"] == "deploy-held"]
 check("migration merge → held (migration), no deployer call",
@@ -118,7 +119,8 @@ check("migration merge → held (migration), no deployer call",
       and "deploy-start" not in kinds("t4m") and len(pings0) == 1)
 # no migration → ordinary path (still never reaches the deployer here)
 files_out = "app/x.py\ndocs/migrations-notes.md\n"
-pings0.clear(); deploy_ran.clear()
+pings0.clear()
+deploy_ran.clear()
 landed._maybe_deploy(mk("t4n"), "o/aura-tutor")
 ev = [e for e in store.events("t4n") if e["kind"] == "deploy-held"]
 check("no migration → normal path, not migration hold",
