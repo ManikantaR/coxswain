@@ -103,6 +103,67 @@ def _pr_merged(pr_url: str, repo_slug: str) -> tuple[bool, str | None]:
     return (d.get("state") == "MERGED", d.get("mergedAt"))
 
 
+def coxd_identity_email(repo_path: str | None) -> str:
+    """coxd's own commit identity: COXD_GIT_EMAIL, else GIT_AUTHOR_EMAIL, else the
+    repo's git config user.email. Empty string if none resolvable (→ nothing is clean)."""
+    for k in ("COXD_GIT_EMAIL", "GIT_AUTHOR_EMAIL"):
+        if os.environ.get(k):
+            return os.environ[k].strip()
+    if repo_path:
+        r = _run(["git", "-C", repo_path, "config", "user.email"])
+        if r.returncode == 0:
+            return r.stdout.strip()
+    return ""
+
+
+def is_clean_merge(tier: str | None, ci_green: bool, commits: list[tuple[str, str]],
+                   bot_emails: list[str]) -> bool:
+    """Clean = tier GREEN, CI green, and every commit's PRIMARY author AND committer
+    email is coxd's identity (or an allowlisted extra). Co-Authored-By trailers are not
+    consulted. Unknown/empty commit list or identity is NOT clean (fail closed)."""
+    bots = {b.strip().lower() for b in bot_emails if b and b.strip()}
+    if tier != "GREEN" or not ci_green or not commits or not bots:
+        return False
+    return all((a or "").lower() in bots and (c or "").lower() in bots for a, c in commits)
+
+
+def _pr_facts(pr_url: str, slug: str) -> tuple[bool, list[tuple[str, str]]]:
+    """(ci_green, [(author_email, committer_email)]) for a PR; fail closed on error."""
+    import json
+    n = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    r = _run(["gh", "pr", "view", n, "-R", slug, "--json", "statusCheckRollup"])
+    if r.returncode != 0:
+        return (False, [])
+    try:
+        checks = json.loads(r.stdout).get("statusCheckRollup") or []
+    except (json.JSONDecodeError, ValueError):
+        return (False, [])
+    ci_green = bool(checks) and all(
+        (c.get("conclusion") or c.get("state")) in ("SUCCESS", "NEUTRAL", "SKIPPED")
+        for c in checks)
+    r = _run(["gh", "api", "--paginate", f"repos/{slug}/pulls/{n}/commits",
+              "--jq", ".[] | [.commit.author.email, .commit.committer.email] | @tsv"])
+    if r.returncode != 0:
+        return (False, [])
+    commits: list[tuple[str, str]] = []
+    for line in r.stdout.splitlines():
+        a, _, c = line.partition("\t")
+        commits.append((a.strip(), c.strip()))
+    return (ci_green, commits)
+
+
+def _record_streak(t: dict, slug: str) -> None:
+    """Idempotent per task (store.record_merge dedupes on the task's 'streak' event)."""
+    try:
+        ci_green, commits = _pr_facts(t["pr_url"], slug)
+        bots = [coxd_identity_email(t.get("repo_path"))]
+        bots += (registry.load(t["repo"]) or {}).get("bot_authors") or []
+        clean = is_clean_merge(t.get("greenlight_tier"), ci_green, commits, bots)
+        store.record_merge(t["repo"], clean, task_id=t["id"])
+    except Exception:  # noqa: BLE001 - bookkeeping must never block cleanup
+        pass
+
+
 def _close_issue_if_open(brief: str, repo_slug: str, pr_url: str) -> None:
     m = _ISSUE_URL_RE.search(brief or "")
     if not m or m.group(1) != repo_slug:
@@ -261,6 +322,7 @@ def check_and_cleanup_merged() -> None:
             continue
         store.append_event(t["id"], "auto-cleanup", {"pr_url": t["pr_url"]})
         _close_issue_if_open(t["brief"], slug, t["pr_url"])
+        _record_streak(t, slug)
         branch = f"coxd/{t['id']}"
         worktree.remove(Path(t["repo_path"]), Path(t["worktree"]), branch)
         _run(["git", "push", "origin", "--delete", branch], cwd=t["repo_path"])

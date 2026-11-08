@@ -41,6 +41,8 @@ def _conn() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT, text TEXT,
             source TEXT, evidence TEXT, status TEXT DEFAULT 'pending',
             created REAL, decided REAL);
+        CREATE TABLE IF NOT EXISTS repo_streaks(
+            repo TEXT PRIMARY KEY, clean_streak INTEGER NOT NULL DEFAULT 0, updated REAL);
         CREATE INDEX IF NOT EXISTS ev_task ON events(task_id, seq);
         """
     )
@@ -51,7 +53,8 @@ def _conn() -> sqlite3.Connection:
                      ("summary", "TEXT"), ("gate_steps", "TEXT"),
                      ("review_verdict", "TEXT"), ("review_findings", "TEXT"),
                      ("test_output", "TEXT"), ("archived_at", "REAL"),
-                     ("intent", "TEXT"), ("resume_at", "REAL")):
+                     ("intent", "TEXT"), ("resume_at", "REAL"),
+                     ("greenlight_tier", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     return c
@@ -100,6 +103,45 @@ def set_pr_url(task_id: str, url: str) -> None:
     with _conn() as c:
         c.execute("UPDATE tasks SET pr_url=?, updated=? WHERE id=?",
                   (url, time.time(), task_id))
+
+
+def set_greenlight_tier(task_id: str, tier: str | None) -> None:
+    with _conn() as c:
+        c.execute("UPDATE tasks SET greenlight_tier=?, updated=? WHERE id=?",
+                  (tier, time.time(), task_id))
+
+
+def get_clean_streak(repo: str) -> int:
+    with _conn() as c:
+        r = c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?", (repo,)).fetchone()
+    return int(r[0]) if r else 0
+
+
+def record_merge(repo: str, clean: bool, task_id: str | None = None) -> int:
+    """A clean merge bumps the repo's streak; any non-clean merge resets it to 0.
+    With task_id it is idempotent: the dedupe check, the counter update and the
+    'streak' event share one transaction, so a re-run (or a crash after the update)
+    never double-counts. Returns the current streak."""
+    with _conn() as c:
+        if task_id is not None and c.execute(
+                "SELECT 1 FROM events WHERE task_id=? AND kind='streak'",
+                (task_id,)).fetchone():
+            r = c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?",
+                          (repo,)).fetchone()
+            return int(r[0]) if r else 0
+        flag = 1 if clean else 0
+        c.execute(
+            "INSERT INTO repo_streaks(repo,clean_streak,updated) VALUES(?,?,?) "
+            "ON CONFLICT(repo) DO UPDATE SET "
+            "clean_streak=CASE WHEN ?=1 THEN clean_streak+1 ELSE 0 END, updated=excluded.updated",
+            (repo, flag, time.time(), flag))
+        n = int(c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?",
+                          (repo,)).fetchone()[0])
+        if task_id is not None:
+            c.execute("INSERT INTO events(task_id,ts,kind,data) VALUES(?,?,?,?)",
+                      (task_id, time.time(), "streak",
+                       json.dumps({"clean": clean, "streak": n})))
+        return n
 
 
 def set_resume_at(task_id: str, ts: float | None) -> None:
