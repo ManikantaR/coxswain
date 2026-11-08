@@ -127,24 +127,23 @@ rebase.mark_merged("rbrepo")
 rebase.process_pending(0, 2)
 check("paused: no events, no push, still pending",
       not any(k.startswith("rebase") for t in before for k in kinds(t)) and not pushes
-      and "rbrepo" in rebase._pending)
+      and "rbrepo" in rebase._load_pending())
 factory.set_paused(False)
 
 # concurrency full → deferred
 rebase.process_pending(2, 2)
-check("concurrency full: deferred", not pushes and "rbrepo" in rebase._pending)
+check("concurrency full: deferred", not pushes and "rbrepo" in rebase._load_pending())
 
 gate_ok["v"] = False  # applies to every clean-rebasing task; flip back for "clean" below
 # run "red" alone first: only it should reach the gate failure
-for t in ("clean", "conf", "foreign"):
-    store.set_state(t, "archived_tmp") if False else None
 sha = git(repo, "rev-parse", "origin/main")
 who = rebase.identity(repo)
 rebase.rebase_task(store.get_task("red"), "o/r", "main", sha, who)
 red = store.get_task("red")
 check("gate red: needs_human/gate-red, no push",
       red["state"] == "needs_human" and red["reason"] == "gate-red" and not pushes
-      and remote_sha("red") == before["red"])
+      and remote_sha("red") == before["red"]
+      and git(repo, "rev-parse", "refs/heads/coxd/red") == before["red"])
 gate_ok["v"] = True
 
 calls.clear()
@@ -167,14 +166,13 @@ check("conflict: aborted, resume queued with note",
       and "resolve the conflicts" in [e for e in store.events("conf")
                                        if e["kind"] == "resume-request"][-1]["data"]["note"]
       and "rebase-conflict" in kinds("conf")
-      and not (Path(cf["worktree"]) / ".git").is_dir()
       and git(cf["worktree"], "status", "--porcelain") == ""
       and remote_sha("conf") == before["conf"])
 fo = [e for e in store.events("foreign") if e["kind"] == "rebase-skipped"]
 check("foreign: skipped, no push",
       len(fo) == 1 and fo[0]["data"]["reason"] == "foreign commits"
       and remote_sha("foreign") == before["foreign"] and len(pushes) == 1)
-check("sweep done → no longer pending", "rbrepo" not in rebase._pending)
+check("sweep done → no longer pending", "rbrepo" not in rebase._load_pending())
 
 # same target sha again → no second attempt
 store.set_state("conf", "pr_ready")

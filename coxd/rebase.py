@@ -27,18 +27,36 @@ import store
 
 EVENTS = ("rebased", "rebase-skipped", "rebase-conflict", "rebase-failed")
 CONFLICT_NOTE = ("Your PR branch no longer rebases cleanly onto the latest target branch "
-                 "`{target}` (it moved on after another PR merged). Merge or rebase onto "
-                 "the latest `origin/{target}`, resolve the conflicts, re-run the checks "
-                 "and commit. Do not push.")
+                 "`{target}` (it moved on after another PR merged). MERGE the latest "
+                 "`origin/{target}` into your branch (do NOT rebase or rewrite history — "
+                 "the push is a plain fast-forward), resolve the conflicts, re-run the "
+                 "checks and commit. Do not push.")
 
-_pending: set[str] = set()
 _lock = threading.Lock()
+
+
+def _pending_file() -> Path:
+    return registry.home() / "rebase_pending.json"
+
+
+def _load_pending() -> set[str]:
+    try:
+        return set(json.loads(_pending_file().read_text()))
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def _save_pending(repos: set[str]) -> None:
+    try:
+        _pending_file().write_text(json.dumps(sorted(repos)))
+    except OSError:
+        pass
 
 
 def mark_merged(repo: str) -> None:
     """A merge was just detected in `repo`: queue a rebase sweep for it."""
     with _lock:
-        _pending.add(repo)
+        _save_pending(_load_pending() | {repo})
 
 
 def _git(cwd, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -93,6 +111,13 @@ def _blocked(running: int, concurrency: int) -> bool:
         or running >= concurrency
 
 
+def _reset(wt: Path, orig: str, env: dict) -> None:
+    """Undo a local rebase that was not pushed, so the local branch matches the remote PR
+    branch again (the next ship push stays a fast-forward)."""
+    subprocess.run(sandbox.wrap(["git", "reset", "--hard", orig]), cwd=str(wt),
+                   capture_output=True, text=True, env=env)
+
+
 def rebase_task(t: dict, slug: str, target: str, sha: str, who: tuple[str, str]) -> str:
     """One attempt for one task. Returns the outcome (also recorded as an event)."""
     tid = t["id"]
@@ -118,6 +143,9 @@ def rebase_task(t: dict, slug: str, target: str, sha: str, who: tuple[str, str])
 
     env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
            "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
+    orig = _out(repo_path, "rev-parse", "--verify", f"refs/heads/{branch}")
+    if not orig:
+        return rec("rebase-skipped", reason="no local branch")
     rb = subprocess.run(sandbox.wrap(["git", "rebase", base]), cwd=str(wt),
                         capture_output=True, text=True, env=env)
     if rb.returncode != 0:
@@ -135,12 +163,14 @@ def rebase_task(t: dict, slug: str, target: str, sha: str, who: tuple[str, str])
     entry = registry.load(t["repo"]) or {}
     g = gate.run_gate(wt, entry)
     if not g.get("passed"):
+        _reset(wt, orig, env)
         rec("rebase-failed", stage="gate", failing=g.get("failing"))
         store.set_state(tid, "needs_human", "gate-red")
         return "gate-red"
     ctx: dict = {}
     reason = ship._pii_gate(tid, t, repo_path, branch, wt, ctx)
     if reason:
+        _reset(wt, orig, env)
         rec("rebase-failed", stage="pii", reason=reason)
         store.set_state(tid, "needs_human", reason)
         return reason
@@ -150,6 +180,7 @@ def rebase_task(t: dict, slug: str, target: str, sha: str, who: tuple[str, str])
          "origin", f"{new_sha}:refs/heads/{branch}"],
         cwd=str(repo_path), capture_output=True, text=True)
     if push.returncode != 0:
+        _reset(wt, orig, env)
         return rec("rebase-failed", stage="push", err=(push.stderr or "")[-300:])
     return rec("rebased", sha=new_sha)
 
@@ -186,18 +217,25 @@ def rebase_repo(repo: str, running: int = 0, concurrency: int = 2) -> bool:
                       f"refs/heads/{branch}..origin/{target}")
         if not behind or behind == "0" or not _pr_open(t["pr_url"], slug):
             continue
+        # Claim before touching the worktree (like the supervisor's 'fixing') so a
+        # board /resume or the runner can't start a worker in it mid-rebase.
+        store.set_state(t["id"], "gating", "auto-rebase")
         try:
             rebase_task(cur, slug, target, sha, who)
         except Exception as e:  # noqa: BLE001 - one task must not stop the sweep
             store.append_event(t["id"], "rebase-failed",
                                {"target_sha": sha, "stage": "error", "err": str(e)[-300:]})
+        finally:
+            after = store.get_task(t["id"])
+            if after and after["state"] == "gating" and after["reason"] == "auto-rebase":
+                store.set_state(t["id"], "pr_ready", None)
     return True
 
 
 def process_pending(running: int = 0, concurrency: int = 2) -> None:
     with _lock:
-        repos = sorted(_pending)
+        repos = sorted(_load_pending())
     for repo in repos:
         if rebase_repo(repo, running, concurrency):
             with _lock:
-                _pending.discard(repo)
+                _save_pending(_load_pending() - {repo})
