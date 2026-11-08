@@ -190,7 +190,7 @@ def hunk(path: str, line: str) -> str:
 ship._pii_items = fake_items
 ship._git_text = lambda *a: "abc123\n"  # pinned sha for the stubbed integration
 ship.subprocess.run = fake_run
-ship._greenlight = lambda t, wt: ("", "")
+ship._greenlight = lambda t, wt: ("", "", [])
 ship._build_body = lambda t, wt, h="": "body"
 
 

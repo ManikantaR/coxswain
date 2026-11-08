@@ -57,7 +57,7 @@ def _conn() -> sqlite3.Connection:
                      ("review_verdict", "TEXT"), ("review_findings", "TEXT"),
                      ("test_output", "TEXT"), ("archived_at", "REAL"),
                      ("intent", "TEXT"), ("resume_at", "REAL"),
-                     ("greenlight_tier", "TEXT")):
+                     ("greenlight_tier", "TEXT"), ("greenlight_reasons", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     return c
@@ -108,16 +108,35 @@ def set_pr_url(task_id: str, url: str) -> None:
                   (url, time.time(), task_id))
 
 
-def set_greenlight_tier(task_id: str, tier: str | None) -> None:
+def set_greenlight_tier(task_id: str, tier: str | None,
+                        reasons: list[str] | None = None) -> None:
+    """Store the tier and its reasons (JSON) so landed.is_clean_merge can tell a
+    size-only AMBER apart from one with medium findings."""
     with _conn() as c:
-        c.execute("UPDATE tasks SET greenlight_tier=?, updated=? WHERE id=?",
-                  (tier, time.time(), task_id))
+        c.execute("UPDATE tasks SET greenlight_tier=?, greenlight_reasons=?, updated=? WHERE id=?",
+                  (tier, json.dumps(reasons or []), time.time(), task_id))
 
 
 def get_clean_streak(repo: str) -> int:
     with _conn() as c:
         r = c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?", (repo,)).fetchone()
     return int(r[0]) if r else 0
+
+
+def propose_auto_merge(repo: str) -> bool:
+    """If the repo's clean streak reached the threshold, move manual → proposed.
+    True only on that transition (one notification, never repeated)."""
+    if get_clean_streak(repo) < registry.AUTO_MERGE_STREAK:
+        return False
+    return registry.propose_auto_merge(repo)
+
+
+def approve_auto_merge(repo: str) -> bool:
+    """proposed → auto, only while the streak still justifies the proposal."""
+    if get_clean_streak(repo) < registry.AUTO_MERGE_STREAK:
+        registry.withdraw_proposal(repo)
+        return False
+    return registry.approve_auto_merge(repo)
 
 
 def record_merge(repo: str, clean: bool, task_id: str | None = None) -> int:

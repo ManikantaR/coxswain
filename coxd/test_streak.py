@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -50,7 +51,13 @@ check("only one streak event", sum(e["kind"] == "streak" for e in store.events("
 
 check("committer-only mismatch not clean",
       not landed.is_clean_merge("GREEN", True, [(BOT, "bob@example.invalid")], BOTS))
-check("AMBER not clean", not landed.is_clean_merge("AMBER", True, OWN, BOTS))
+check("AMBER without reasons not clean", not landed.is_clean_merge("AMBER", True, OWN, BOTS))
+SIZE = ["large diff (9 files, +300/-10)"]
+check("AMBER size-only is clean", landed.is_clean_merge("AMBER", True, OWN, BOTS, SIZE))
+check("AMBER with medium finding not clean",
+      not landed.is_clean_merge("AMBER", True, OWN, BOTS, ["1 medium finding(s)"] + SIZE))
+check("RED not clean", not landed.is_clean_merge("RED", True, OWN, BOTS, SIZE))
+check("GREEN still clean", landed.is_clean_merge("GREEN", True, OWN, BOTS, []))
 check("red CI not clean", not landed.is_clean_merge("GREEN", False, OWN, BOTS))
 check("no commits not clean", not landed.is_clean_merge("GREEN", True, [], BOTS))
 check("no identity not clean", not landed.is_clean_merge("GREEN", True, OWN, [""]))
@@ -65,5 +72,68 @@ check("commit by another email resets to 0", store.get_clean_streak(REPO) == 0)
 store.create_task("c4", REPO, "b", "/tmp/wt")
 store.record_merge(REPO, True, task_id="c4")
 check("streak restarts at 1", store.get_clean_streak(REPO) == 1)
+
+
+# --- tier reasons stored with the task
+store.create_task("r1", REPO, "b", "/tmp/wt")
+store.set_greenlight_tier("r1", "AMBER", SIZE)
+check("reasons stored", json.loads(store.get_task("r1")["greenlight_reasons"]) == SIZE)
+
+# --- merge levels: streak 10 -> proposed + exactly one notification
+import registry  # noqa: E402
+
+pings = []
+landed.notify.notify_async = lambda *a, **k: pings.append(a)
+R2 = "orbit-gadgets"
+registry.save(R2, {"test": "t"})
+check("default level manual", registry.merge_level(R2) == "manual")
+for i in range(9):
+    store.create_task(f"m{i}", R2, "b", "/tmp/wt")
+    store.record_merge(R2, True, task_id=f"m{i}")
+    landed._maybe_propose_auto(R2)
+check("streak 9 -> still manual, no ping", registry.merge_level(R2) == "manual" and not pings)
+for i in (9, 10, 11):
+    store.create_task(f"m{i}", R2, "b", "/tmp/wt")
+    store.record_merge(R2, True, task_id=f"m{i}")
+    landed._maybe_propose_auto(R2)
+check("streak 10 -> proposed", registry.merge_level(R2) == "proposed")
+check("exactly one notification (not repeated)", len(pings) == 1)
+
+# --- nothing but approve sets auto
+check("propose never sets auto", registry.propose_auto_merge(R2) is False
+      and registry.merge_level(R2) == "proposed")
+check("approve on unknown repo refused", registry.approve_auto_merge("no-such-repo") is False)
+registry.save("plain-repo", {"test": "t"})
+check("approve without proposal refused", not registry.approve_auto_merge("plain-repo")
+      and registry.merge_level("plain-repo") == "manual")
+for i in range(12):
+    store.create_task(f"p{i}", "plain-repo", "b", "/tmp/wt")
+    store.record_merge("plain-repo", True, task_id=f"p{i}")
+    landed._maybe_propose_auto("plain-repo")
+check("long streak alone yields proposed, not auto",
+      registry.merge_level("plain-repo") == "proposed")
+check("approve sets auto", registry.approve_auto_merge(R2) and registry.merge_level(R2) == "auto")
+store.create_task("m99", R2, "b", "/tmp/wt")
+store.record_merge(R2, False, task_id="m99")
+landed._maybe_propose_auto(R2)
+check("non-clean merge / re-propose leaves auto untouched", registry.merge_level(R2) == "auto")
+
+# --- a broken streak withdraws the proposal; approve then refuses
+R3 = "delta-sprockets"
+registry.save(R3, {"test": "t"})
+for i in range(10):
+    store.create_task(f"d{i}", R3, "b", "/tmp/wt")
+    store.record_merge(R3, True, task_id=f"d{i}")
+landed._maybe_propose_auto(R3)
+check("R3 proposed", registry.merge_level(R3) == "proposed")
+store.create_task("d99", R3, "b", "/tmp/wt")
+store.record_merge(R3, False, task_id="d99")
+check("approve refused after streak broke", store.approve_auto_merge(R3) is False
+      and registry.merge_level(R3) == "manual")
+store.create_task("d98", "eta-cogs", "b", "/tmp/wt")
+registry.save("eta-cogs", {"test": "t"})
+registry.propose_auto_merge("eta-cogs")
+landed._maybe_propose_auto("eta-cogs")
+check("stale proposal withdrawn on next merge", registry.merge_level("eta-cogs") == "manual")
 
 sys.exit(0 if all(res) else 1)
