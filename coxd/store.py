@@ -80,6 +80,22 @@ def set_state(task_id: str, state: str, reason: str | None = None) -> None:
     append_event(task_id, "state", {"state": state, "reason": reason})
 
 
+def cas_state(task_id: str, expect: str, state: str, reason: str | None = None,
+              expect_reason: str | None = ...) -> bool:
+    """Compare-and-set: change state only if it is still `expect` (and, when given,
+    the reason is still `expect_reason`). Returns whether it applied."""
+    sql = "UPDATE tasks SET state=?, reason=?, updated=? WHERE id=? AND state=?"
+    args = [state, reason, time.time(), task_id, expect]
+    if expect_reason is not ...:
+        sql += " AND reason IS ?"
+        args.append(expect_reason)
+    with _conn() as c:
+        ok = c.execute(sql, args).rowcount == 1
+    if ok:
+        append_event(task_id, "state", {"state": state, "reason": reason})
+    return ok
+
+
 def set_pr_url(task_id: str, url: str) -> None:
     with _conn() as c:
         c.execute("UPDATE tasks SET pr_url=?, updated=? WHERE id=?",

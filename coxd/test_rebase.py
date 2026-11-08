@@ -13,6 +13,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-rb-")
 os.environ.pop("COXD_WORKER_USER", None)
+os.environ["GH_TOKEN"] = "fake-gh"
+os.environ["COXD_TG_TOKEN"] = "fake-tg"
 os.environ["COXD_GIT_NAME"] = "coxd-bot"
 os.environ["COXD_GIT_EMAIL"] = "bot@example.invalid"
 tempfile.tempdir = tempfile.mkdtemp(prefix="coxd-tmp-")
@@ -102,7 +104,12 @@ pushes: list = []
 real_run = subprocess.run
 
 
+wt_calls: list = []
+
+
 def spy_run(cmd, *a, **k):
+    if str(k.get("cwd", "")).startswith(str(root / "wt")) and not k.get("check"):
+        wt_calls.append((cmd, k.get("env")))
     if isinstance(cmd, list) and cmd[:2] == ["git", "push"]:
         pushes.append(cmd)
     return real_run(cmd, *a, **k)
@@ -185,5 +192,21 @@ check("same target sha: nothing re-attempted",
       {t: len(store.events(t)) for t in before} == n_events and not pushes and not calls)
 
 print([(e["kind"], e["data"]) for e in store.events("clean")]) if fails else None
+check("worktree git calls ran (rebase+reset seen)",
+      any("rebase" in c for c, _ in wt_calls) and any("reset" in c for c, _ in wt_calls))
+check("worktree git env scrubbed of tokens + has identity",
+      all(e is not None and "GH_TOKEN" not in e and "COXD_TG_TOKEN" not in e
+          and e.get("GIT_AUTHOR_EMAIL") in (None, "bot@example.invalid") for _, e in wt_calls))
+check("branch lookup went through the sandbox path", any(
+    c[-3:] == ["symbolic-ref", "--short", "HEAD"] for c, _ in wt_calls))
+
+# CAS: a concurrent human resume is never overwritten
+store.set_state("clean", "pr_ready")
+check("cas applies when state matches", store.cas_state("clean", "pr_ready", "gating", "auto-rebase"))
+store.set_state("clean", "queued", "human-resume")
+check("cas restore refuses after a human resume",
+      not store.cas_state("clean", "gating", "pr_ready", None, expect_reason="auto-rebase")
+      and store.get_task("clean")["state"] == "queued")
+
 print("OK" if not fails else f"{fails} FAILED")
 raise SystemExit(1 if fails else 0)

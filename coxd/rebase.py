@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 
 import ci_triage
+import envscrub
 import factory
 import gate
 import quota
@@ -106,16 +107,24 @@ def _pr_open(pr_url: str, slug: str) -> bool:
         return False
 
 
-def _blocked(running: int, concurrency: int) -> bool:
+def _blocked(running, concurrency: int) -> bool:
+    """`running` is an int or a callable returning the live count (re-read per task)."""
+    n = running() if callable(running) else running
     return factory.is_paused() or quota.blocked_until() is not None \
-        or running >= concurrency
+        or n >= concurrency
+
+
+def _wt_git(wt: Path, args: list[str], ident: dict) -> subprocess.CompletedProcess:
+    """git inside the worker-owned worktree: as the worker user (sandbox.wrap), with a
+    scrubbed env (no GH_TOKEN/TG token) plus coxd's commit identity. Never as root."""
+    return subprocess.run(sandbox.wrap(["git", *args]), cwd=str(wt), capture_output=True,
+                          text=True, env=envscrub.scrubbed_env(ident))
 
 
 def _reset(wt: Path, orig: str, env: dict) -> None:
     """Undo a local rebase that was not pushed, so the local branch matches the remote PR
     branch again (the next ship push stays a fast-forward)."""
-    subprocess.run(sandbox.wrap(["git", "reset", "--hard", orig]), cwd=str(wt),
-                   capture_output=True, text=True, env=env)
+    _wt_git(wt, ["reset", "--hard", orig], env)
 
 
 def rebase_task(t: dict, slug: str, target: str, sha: str, who: tuple[str, str]) -> str:
@@ -138,19 +147,18 @@ def rebase_task(t: dict, slug: str, target: str, sha: str, who: tuple[str, str])
     old_sha = _out(repo_path, "rev-parse", "--verify", f"refs/remotes/origin/{branch}")
     if not old_sha:
         return rec("rebase-skipped", reason="no remote branch")
-    if (t.get("worktree") and _out(wt, "symbolic-ref", "--short", "HEAD")) != branch:
+    head = sandbox.run_in_worktree(["git", "symbolic-ref", "--short", "HEAD"], wt)
+    if head.returncode != 0 or head.stdout.strip() != branch:
         return rec("rebase-skipped", reason="worktree not on task branch")
 
-    env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
+    env = {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
            "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
     orig = _out(repo_path, "rev-parse", "--verify", f"refs/heads/{branch}")
     if not orig:
         return rec("rebase-skipped", reason="no local branch")
-    rb = subprocess.run(sandbox.wrap(["git", "rebase", base]), cwd=str(wt),
-                        capture_output=True, text=True, env=env)
+    rb = _wt_git(wt, ["rebase", base], env)
     if rb.returncode != 0:
-        subprocess.run(sandbox.wrap(["git", "rebase", "--abort"]), cwd=str(wt),
-                       capture_output=True, text=True, env=env)
+        _wt_git(wt, ["rebase", "--abort"], env)
         if not t.get("session_id"):
             return rec("rebase-skipped", reason="conflict, no session to resume")
         import board  # lazy: board pulls in the whole web stack
@@ -185,7 +193,7 @@ def rebase_task(t: dict, slug: str, target: str, sha: str, who: tuple[str, str])
     return rec("rebased", sha=new_sha)
 
 
-def rebase_repo(repo: str, running: int = 0, concurrency: int = 2) -> bool:
+def rebase_repo(repo: str, running=0, concurrency: int = 2) -> bool:
     """Sweep one repo's other pr_ready tasks, in order, one at a time.
     Returns False if deferred (paused / quota / concurrency) — retry on a later pass."""
     tasks = [t for t in store.list_tasks()
@@ -219,20 +227,20 @@ def rebase_repo(repo: str, running: int = 0, concurrency: int = 2) -> bool:
             continue
         # Claim before touching the worktree (like the supervisor's 'fixing') so a
         # board /resume or the runner can't start a worker in it mid-rebase.
-        store.set_state(t["id"], "gating", "auto-rebase")
+        if not store.cas_state(t["id"], "pr_ready", "gating", "auto-rebase"):
+            continue  # a human resume / other writer got there first
         try:
             rebase_task(cur, slug, target, sha, who)
         except Exception as e:  # noqa: BLE001 - one task must not stop the sweep
             store.append_event(t["id"], "rebase-failed",
                                {"target_sha": sha, "stage": "error", "err": str(e)[-300:]})
         finally:
-            after = store.get_task(t["id"])
-            if after and after["state"] == "gating" and after["reason"] == "auto-rebase":
-                store.set_state(t["id"], "pr_ready", None)
+            store.cas_state(t["id"], "gating", "pr_ready", None,
+                            expect_reason="auto-rebase")
     return True
 
 
-def process_pending(running: int = 0, concurrency: int = 2) -> None:
+def process_pending(running=0, concurrency: int = 2) -> None:
     with _lock:
         repos = sorted(_load_pending())
     for repo in repos:
