@@ -19,6 +19,19 @@ denied sh -c 'echo x >> /repo/MoneyPulse/.git/config'
 denied sh -c 'touch /repo/MoneyPulse/.git/hooks/pre-push'
 [ -e /var/run/docker.sock ] && bad "docker.sock is mounted" || ok "no docker.sock"
 [ -d /volume1/docker ] && bad "/volume1/docker is mounted" || ok "no /volume1/docker"
+# No NAS share, cloud-storage or document volume may be mounted in the container
+# (gate for setting intake: true on a repo with data_globs). Mountpoints are field 5,
+# fstype is the field after the "-" separator in /proc/self/mountinfo.
+if [ -r /proc/self/mountinfo ]; then
+  netfs=$(awk '{for(i=1;i<=NF;i++) if($i=="-"){print $(i+1), $5; break}}' /proc/self/mountinfo \
+    | grep -Ei '^(nfs|nfs4|cifs|smb3?|smbfs|afs|ceph|glusterfs|9p|davfs|fuse\.(rclone|sshfs|gdrive|davfs2?|s3fs|gcsfuse|onedrive|smbnetfs)[^ ]*) ' || true)
+  [ -z "$netfs" ] && ok "no network/cloud filesystem mounted" || bad "network/cloud filesystem mounted"
+  docs=$(awk '{print $5}' /proc/self/mountinfo \
+    | grep -Ei '^/(volume[0-9]+(/|$)|share|shares|nas|media|mnt|srv|documents|docs|dropbox|gdrive|onedrive|icloud)|/(Dropbox|Google Drive|OneDrive|iCloud|Documents|CloudStorage)(/|$)' || true)
+  [ -z "$docs" ] && ok "no document/data volume mounted" || bad "document/data volume mounted"
+else
+  bad "cannot read /proc/self/mountinfo to check data mounts"
+fi
 allowed sh -c 'touch /work/.probe && rm /work/.probe'
 allowed git -C /repo/MoneyPulse log -1 --format=%h
 allowed test -r "/home/$u/.claude"

@@ -40,3 +40,10 @@ your verdict).
 pip install -e ".[dev]"
 ruff check . && pytest -q
 ```
+
+## Onboarding a document repo
+
+A repo with `data_globs` gets `intake: true` only after `deploy/smoke-sandbox.sh`
+passes against the running coxd container (`ssh nas 'docker exec -i coxd sh -s' < deploy/smoke-sandbox.sh`).
+Its "no network/cloud filesystem mounted" and "no document/data volume mounted" lines
+must both say `ok`, proving no NAS share, cloud-storage or document volume is visible to workers.
