@@ -11,6 +11,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-guard-")
+os.environ.pop("COXD_OWNER_USER", None)
+os.environ.pop("COXD_PROXY_SECRET", None)
 
 import board  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402

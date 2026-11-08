@@ -175,8 +175,10 @@ All values below are invented examples.
 
 1. Close Traefik's open API (`api.insecure`) first; it exposes middleware header settings.
 2. `docker network create coxd-proxy`, and attach the Traefik container to it. Then deploy
-   with the override `docker-compose.owner-login.yml` (`COXD_OWNER_LOGIN=1 deploy/deploy-coxd.sh`,
-   or add `-f docker-compose.owner-login.yml` to your compose command; needs Compose >= 2.24).
+   with the override `docker-compose.owner-login.yml` (`deploy-coxd.sh` picks it automatically when the NAS `deploy/.env` has a non-empty
+   `COXD_AUTH_MIDDLEWARE` (step 4) and prints which mode it deployed; by hand, add
+   `-f docker-compose.owner-login.yml`; needs Compose >= 2.24). The override also carries
+   the router's middleware label, so the base file's labels stay unchanged.
    It moves coxd off `traefik-public` onto `coxd-proxy`, so other containers can't reach it
    directly. Without the override the base file is unchanged and needs no extra network
    (then the proxy secret is the only barrier against containers on `traefik-public`, and

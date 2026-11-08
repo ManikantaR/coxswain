@@ -69,8 +69,6 @@ services:
       - 'traefik.http.routers.coxd.entrypoints=websecure'
       - 'traefik.http.routers.coxd.tls=true'
       - 'traefik.http.services.coxd.loadbalancer.server.port=8791'
-      # Forward-auth middleware (e.g. authelia@docker); empty = no auth. Covers the whole host.
-      - 'traefik.http.routers.coxd.middlewares=${COXD_AUTH_MIDDLEWARE:-}'
       # Homepage dashboard auto-discovery
       - 'homepage.group=Applications'
       - 'homepage.name=coxd'
