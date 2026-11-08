@@ -93,7 +93,10 @@ class Deployer:
         return job
 
     def _prune(self) -> None:
-        """Keep at most MAX_JOBS jobs (oldest finished first); delete their logs. Caller holds lock."""
+        """Keep at most MAX_JOBS jobs (oldest finished first), deleting pruned logs.
+
+        Caller holds the lock.
+        """
         for jid in list(self.jobs):
             if len(self.jobs) <= MAX_JOBS:
                 break
@@ -202,7 +205,7 @@ def main() -> None:
     except (ValueError, OSError) as e:
         print(f"deployer: FATAL config error: {e}. See deploy/README.md (deployer setup).",
               flush=True)
-        raise SystemExit(78)
+        raise SystemExit(78) from e
     srv = ThreadingHTTPServer((os.environ.get("DEPLOYER_BIND", "0.0.0.0"),
                                int(os.environ.get("DEPLOYER_PORT", "8792"))), make_handler(d))
     srv.serve_forever()
