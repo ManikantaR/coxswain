@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-test-")
@@ -34,7 +35,6 @@ assert eligible == ["b1"], eligible
 # yesterday's spend doesn't count
 assert store.cost_today("alpha", now=store.time.time() + 2 * 86400) == 0
 # a no-cost update today (e.g. merge/archive) must not make old spend count as today's
-import time  # noqa: E402
 with store._conn() as c:
     c.execute("UPDATE cost_ledger SET ts=? WHERE task_id='a1'", (time.time() - 2 * 86400,))
 store.set_state("a1", "queued")  # bumps `updated`
