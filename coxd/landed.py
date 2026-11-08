@@ -9,6 +9,7 @@ and do the bookkeeping automatically instead of repeating it by hand every time.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import ci_triage
 import gitident
+import greenlight
 import notify
 import registry
 import store
@@ -111,12 +113,14 @@ def coxd_identity_email(repo_path: str | None) -> str:
 
 
 def is_clean_merge(tier: str | None, ci_green: bool, commits: list[tuple[str, str]],
-                   bot_emails: list[str]) -> bool:
-    """Clean = tier GREEN, CI green, and every commit's PRIMARY author AND committer
+                   bot_emails: list[str], reasons: list[str] | None = None) -> bool:
+    """Clean = tier GREEN (or AMBER whose only reason is size), CI green,
+    and every commit's PRIMARY author AND committer
     email is coxd's identity (or an allowlisted extra). Co-Authored-By trailers are not
     consulted. Unknown/empty commit list or identity is NOT clean (fail closed)."""
     bots = {b.strip().lower() for b in bot_emails if b and b.strip()}
-    if tier != "GREEN" or not ci_green or not commits or not bots:
+    tier_ok = tier == "GREEN" or greenlight.is_size_only(tier, reasons)
+    if not tier_ok or not ci_green or not commits or not bots:
         return False
     return all((a or "").lower() in bots and (c or "").lower() in bots for a, c in commits)
 
@@ -152,10 +156,27 @@ def _record_streak(t: dict, slug: str) -> None:
         ci_green, commits = _pr_facts(t["pr_url"], slug)
         bots = [coxd_identity_email(t.get("repo_path"))]
         bots += (registry.load(t["repo"]) or {}).get("bot_authors") or []
-        clean = is_clean_merge(t.get("greenlight_tier"), ci_green, commits, bots)
+        try:
+            reasons = json.loads(t.get("greenlight_reasons") or "[]")
+        except ValueError:
+            reasons = []
+        clean = is_clean_merge(t.get("greenlight_tier"), ci_green, commits, bots, reasons)
         store.record_merge(t["repo"], clean, task_id=t["id"])
+        _maybe_propose_auto(t["repo"])
     except Exception:  # noqa: BLE001 - bookkeeping must never block cleanup
         pass
+
+
+def _maybe_propose_auto(repo: str) -> None:
+    """Streak reached the threshold → propose `auto` (once) and ping the owner."""
+    if store.get_clean_streak(repo) < registry.AUTO_MERGE_STREAK:
+        registry.withdraw_proposal(repo)  # streak broke before approval → no longer earned
+        return
+    if store.propose_auto_merge(repo):
+        notify.notify_async(
+            "coxd: auto-merge proposed",
+            f"{repo}: {registry.AUTO_MERGE_STREAK} clean merges in a row — "
+            "open the board and tap 'Approve auto-merge' to enable.", "default")
 
 
 def _close_issue_if_open(brief: str, repo_slug: str, pr_url: str) -> None:
