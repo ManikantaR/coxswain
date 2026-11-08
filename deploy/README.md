@@ -129,6 +129,12 @@ See `coxd/sandbox.py` and `deploy/entrypoint.sh`.
 - `claude login` must now run as coxw (see the setup step above).
 - After every coxd deploy, prove the boundary:
   `ssh nas 'docker exec -i coxd sh -s' < deploy/smoke-sandbox.sh` must print `ALL OK`.
+  Its mount check is fail-closed: only the compose mountpoints (`/`, `/data/coxswain`, `/repo`,
+  `/work`, `/home/coxw/.claude`, `/etc/{hosts,hostname,resolv.conf}`, `/proc`, `/sys`, `/dev`) and
+  local filesystem types are allowed, and every disk/network-backed mount (btrfs, ext*, xfs, nfs*,
+  cifs, smb*, fuse*) must be a docker named volume (`@docker/volumes/<name>/_data`) or a container
+  `resolv.conf`/`hostname`/`hosts` file. A NAS share bound anywhere, even onto `/repo`, prints FAIL.
+  A repo with `data_globs` may get `intake: true` only after this passes.
 
 ## Deployer (optional, opt-in)
 
