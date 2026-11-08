@@ -84,7 +84,7 @@ deployed one and the merge commit touches migration files (`migrations/`, `alemb
 the merge commit is not strictly ahead of the last deployed one (no rollbacks from a
 late-detected older merge), when there is no deployed baseline yet (deploy once by hand; a
 successful deploy of any kind records it), when the comparison fails, when the merge commit
-cannot be resolved, or when another deploy for this repo is running. The manual board button deploys the current head of
+cannot be resolved, when the PR did not merge into `deploy.branch` (default `main`), or when another deploy for this repo is running. The manual board button deploys the current head of
 `deploy.branch` (default `main`). A 409 (deploy already running) ends the attempt as
 `deploy-start` then `deploy-skipped` and does not write the coalesce stamp; repeat deploys are
 only coalesced for the *same* commit within 3 minutes.

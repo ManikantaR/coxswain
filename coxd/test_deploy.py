@@ -110,6 +110,8 @@ landed.notify.notify_async = (  # type: ignore[assignment]
 os.environ["COXD_DEPLOYER_URL"] = "http://unused.invalid:1"
 merge_sha, hold = "c" * 40, None
 _real_hold = landed._migration_hold
+base_ref = "main"
+landed._pr_base = lambda url, slug: base_ref  # type: ignore[assignment]
 landed._pr_merge_sha = lambda url, slug: merge_sha  # type: ignore[assignment]
 landed._migration_hold = (  # type: ignore[assignment]
     lambda slug, repo, sha: hold)
@@ -135,6 +137,14 @@ hold = None
 merge_sha = None
 landed._maybe_deploy(mk("t4g"), "o/aura-tutor")
 check("post-merge, no merge sha → held", not deploy_ran and "deploy-held" in kinds("t4g"))
+base_ref = "develop"
+deploy_ran.clear()
+landed._maybe_deploy(mk("t4h"), "o/aura-tutor")
+check("PR merged into other branch → held",
+      not deploy_ran and "deploy-held" in kinds("t4h"))
+base_ref = None
+landed._maybe_deploy(mk("t4i"), "o/aura-tutor")
+check("unknown base branch → held", not deploy_ran and "deploy-held" in kinds("t4i"))
 os.environ.pop("COXD_DEPLOYER_URL")
 
 # real _migration_hold against a fake gh compare

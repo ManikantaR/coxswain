@@ -322,6 +322,18 @@ def _pr_merge_sha(pr_url: str, repo_slug: str) -> str | None:
     return sha if _SHA_RE.match(sha) else None
 
 
+def _pr_base(pr_url: str, repo_slug: str) -> str | None:
+    """Branch the PR merged into (None if unknown)."""
+    pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    r = _run(["gh", "pr", "view", pr_number, "-R", repo_slug, "--json", "baseRefName"])
+    if r.returncode != 0:
+        return None
+    try:
+        return ((json.loads(r.stdout) or {}).get("baseRefName") or None)
+    except (ValueError, AttributeError):
+        return None
+
+
 _MIGRATION_RE = re.compile(r"(^|/)(migrations?|alembic|prisma/migrations|db/migrate)(/|$)"
                            r"|\.sql$", re.I)
 
@@ -471,6 +483,10 @@ def _maybe_deploy(t: dict, slug: str) -> None:
         return
     if not os.environ.get("COXD_DEPLOYER_URL"):
         return _hold(t, slug, "deployer not configured")
+    branch = dep.get("branch", "main")
+    base = _pr_base(t["pr_url"], slug) if t.get("pr_url") else None
+    if base != branch:  # never ship a commit merged into some other branch
+        return _hold(t, slug, f"PR merged into {base or 'an unknown branch'}, not {branch}")
     sha = _pr_merge_sha(t["pr_url"], slug) if t.get("pr_url") else None
     if sha is None:
         return _hold(t, slug, "could not resolve the merge commit")
