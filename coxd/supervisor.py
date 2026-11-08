@@ -19,6 +19,7 @@ import intake
 import landed
 import loop
 import quota
+import rebase
 import store
 import triage
 import uvicorn
@@ -209,7 +210,7 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
         await asyncio.sleep(1)
 
 
-async def _cleanup_loop() -> None:
+async def _cleanup_loop(concurrency: int = 2) -> None:
     """Detect merged PRs and do the bookkeeping (worktree/branch/issue) that used
     to be a manual step after every single merge — explicitly confirmed as
     automatic/unattended (2026-07-21). A crashing pass must not take down the
@@ -217,6 +218,7 @@ async def _cleanup_loop() -> None:
     while True:
         try:
             await asyncio.to_thread(landed.check_and_cleanup_merged)
+            await asyncio.to_thread(rebase.process_pending, len(_running), concurrency)
         except Exception as e:  # noqa: BLE001 - log and keep polling, never die
             print(f"cleanup pass failed: {e}")
         await asyncio.sleep(_CLEANUP_INTERVAL_S)
@@ -239,6 +241,6 @@ async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
     print(f"coxd → http://{host}:{port}/  (concurrency {concurrency}, effort {effort})")
     await asyncio.gather(server.serve(),
                          _runner(concurrency, worker_model, review_model, effort),
-                         _cleanup_loop(),
+                         _cleanup_loop(concurrency),
                          watchdog.run(),
                          intake.run())
