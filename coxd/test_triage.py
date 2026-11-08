@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-test-")
@@ -39,8 +40,7 @@ def _scan(later=700):
         calls.append((tid, note))
 
     supervisor._run_one_resume = fake_resume
-    now = store.get_task  # placeholder to keep linters quiet
-    import time
+
     async def go():
         started = supervisor._auto_retry_scan("w", "r", "medium", now=time.time() + later)
         await asyncio.gather(*supervisor._running.values())

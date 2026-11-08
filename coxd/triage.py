@@ -14,32 +14,92 @@ AUTO_RETRY_NOTE = ("Automatic retry (once): the previous attempt hit a transient
                    "continue the task. Do not push.")
 RETRY_TEXT = "retrying once automatically in ~10 min"
 
-_GENERIC = {"retry": False,
-            "next_step": "Open the task on the board, read the latest events, then resume with a note or archive it."}
+_GENERIC = {
+    "retry": False,
+    "next_step": (
+        "Open the task on the board, read the latest events, "
+        "then resume with a note or archive it."
+    ),
+}
 
 TRIAGE: dict[str, dict] = {
-    "worker-error": {"retry": True,
-                     "next_step": "The model run errored; if the automatic retry fails, resume it with a note from the board."},
-    "review-error": {"retry": True,
-                     "next_step": "The reviewer call crashed; if the automatic retry fails, resume it from the board to re-run the review."},
-    "gate-red": {"retry": False,
-                 "next_step": "Read the failing gate step on the board, then resume with a note on how to fix it."},
-    "review-findings": {"retry": False,
-                        "next_step": "Read the review findings on the board, then resume with a note on which to fix."},
-    "push-rejected": {"retry": False,
-                      "next_step": "Check the branch and remote permissions, fix the push problem, then resume the task."},
-    "pr-error": {"retry": False,
-                 "next_step": "Check that gh is authenticated and the branch is pushed, then resume to open the PR."},
-    "pii-block": {"retry": False,
-                  "next_step": "Check the flagged rule and location on the board; fix the text or add an allow entry."},
-    "pii-scan-error": {"retry": False,
-                       "next_step": "The PII scan itself failed; check the scanner setup, then resume the task."},
-    "coxd-error": {"retry": False,
-                   "next_step": "coxd hit an internal error; check the task's error event, then resume or retry it."},
-    "orphaned-on-restart": {"retry": False,
-                            "next_step": "coxd restarted with a PR already open; check the PR, then merge it, close it, or resume."},
-    "stopped-by-user": {"retry": False,
-                        "next_step": "You stopped this task; resume with a note when you want it to continue."},
+    "worker-error": {
+        "retry": True,
+        "next_step": (
+            "The model run errored; if the automatic retry fails, resume it "
+            "with a note from the board."
+        ),
+    },
+    "review-error": {
+        "retry": True,
+        "next_step": (
+            "The reviewer call crashed; if the automatic retry fails, "
+            "resume it from the board to re-run the review."
+        ),
+    },
+    "gate-red": {
+        "retry": False,
+        "next_step": (
+            "Read the failing gate step on the board, then resume with a "
+            "note on how to fix it."
+        ),
+    },
+    "review-findings": {
+        "retry": False,
+        "next_step": (
+            "Read the review findings on the board, then resume with a note "
+            "on which to fix."
+        ),
+    },
+    "push-rejected": {
+        "retry": False,
+        "next_step": (
+            "Check the branch and remote permissions, fix the push problem, "
+            "then resume the task."
+        ),
+    },
+    "pr-error": {
+        "retry": False,
+        "next_step": (
+            "Check that gh is authenticated and the branch is pushed, then "
+            "resume to open the PR."
+        ),
+    },
+    "pii-block": {
+        "retry": False,
+        "next_step": (
+            "Check the flagged rule and location on the board; fix the text "
+            "or add an allow entry."
+        ),
+    },
+    "pii-scan-error": {
+        "retry": False,
+        "next_step": (
+            "The PII scan itself failed; check the scanner setup, then "
+            "resume the task."
+        ),
+    },
+    "coxd-error": {
+        "retry": False,
+        "next_step": (
+            "coxd hit an internal error; check the task's error event, then "
+            "resume or retry it."
+        ),
+    },
+    "orphaned-on-restart": {
+        "retry": False,
+        "next_step": (
+            "coxd restarted with a PR already open; check the PR, then "
+            "merge it, close it, or resume."
+        ),
+    },
+    "stopped-by-user": {
+        "retry": False,
+        "next_step": (
+            "You stopped this task; resume with a note when you want it to "
+            "continue."
+        ),
+    },
 }
 
 
