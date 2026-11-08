@@ -201,7 +201,8 @@ check("branch lookup went through the sandbox path", any(
 
 # CAS: a concurrent human resume is never overwritten
 store.set_state("clean", "pr_ready")
-check("cas applies when state matches", store.cas_state("clean", "pr_ready", "gating", "auto-rebase"))
+check("cas applies when state matches",
+      store.cas_state("clean", "pr_ready", "gating", "auto-rebase"))
 store.set_state("clean", "queued", "human-resume")
 check("cas restore refuses after a human resume",
       not store.cas_state("clean", "gating", "pr_ready", None, expect_reason="auto-rebase")
