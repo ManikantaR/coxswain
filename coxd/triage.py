@@ -125,4 +125,10 @@ def next_step_line(task: dict) -> str:
 
 
 def due(task: dict, now: float, events: list[dict] | None = None) -> bool:
-    return retry_pending(task, events) and now - (task.get("updated") or now) >= RETRY_DELAY_S
+    if not retry_pending(task, events):
+        return False
+    evs = store.events(task["id"]) if events is None else events
+    # measure from when it entered needs_human, not `updated` (other setters bump that)
+    entered = max((e["ts"] for e in evs if e["kind"] == "state"),
+                  default=task.get("updated") or now)
+    return now - entered >= RETRY_DELAY_S

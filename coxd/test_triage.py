@@ -57,6 +57,13 @@ def run():
     assert u["retry"] is False and u["next_step"]
     assert triage.triage(None)["retry"] is False
 
+    # concurrency cap: no retry starts while the runner is full
+    _mk("acme-cap", "worker-error")
+    supervisor._running["x1"] = supervisor._running["x2"] = None
+    assert supervisor._auto_retry_scan("w", "r", "m", now=time.time() + 700) == []
+    supervisor._running.clear()
+    store.set_state("acme-cap", "queued", None)
+
     # worker-error, no PR -> exactly one resume; second worker-error -> none
     _mk("acme-1", "worker-error")
     assert _scan(300)[0] == []                       # too early
