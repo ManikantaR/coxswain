@@ -64,7 +64,8 @@ def derive(task: dict, events: list, now: float) -> dict:
             if fin_i is not None and fin_i + 1 == landed_i:
                 buckets["human"] -= max(0.0, landed - finished)
     elif cur in _FINISH_STATES:
-        finished = next((ts for ts, st in reversed(states[(last_q or 0):]) if st in _FINISH_STATES), None)
+        attempt = states[(last_q or 0):]
+        finished = next((ts for ts, st in reversed(attempt) if st in _FINISH_STATES), None)
 
     in_progress = cur not in _IDLE_STATES
     wall = 0.0
@@ -95,7 +96,8 @@ def derive(task: dict, events: list, now: float) -> dict:
             buckets[b] += max(0.0, now - states[-1][0])
 
     return {
-        "started_at": started, "queued_at": queued_at, "finished_at": finished, "landed_at": landed,
+        "started_at": started, "queued_at": queued_at,
+        "finished_at": finished, "landed_at": landed,
         "in_progress": in_progress, "wall_s": wall,
         "active_s": sum(buckets[b] for b in _WORKING),
         "paused_quota_s": buckets["paused"], "human_wait_s": buckets["human"],
