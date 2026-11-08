@@ -20,6 +20,7 @@ import landed
 import loop
 import quota
 import rebase
+import registry
 import store
 import triage
 import uvicorn
@@ -185,6 +186,37 @@ def _auto_retry_scan(worker_model: str, review_model: str, effort: str,
     return started
 
 
+_last_started_repo: str | None = None
+
+
+def fair_order(tasks: list[dict], after_repo: str | None = None) -> list[dict]:
+    """Round-robin across repos (oldest-first within a repo) instead of globally
+    oldest-first, so one busy repo can't starve the others. Rotation starts at the
+    repo after `after_repo` (the one most recently started)."""
+    groups: dict[str | None, list[dict]] = {}
+    for t in tasks:
+        groups.setdefault(t.get("repo"), []).append(t)
+    repos = list(groups)
+    if after_repo in repos:
+        i = repos.index(after_repo) + 1
+        repos = repos[i:] + repos[:i]
+    out: list[dict] = []
+    while any(groups.values()):
+        for r in repos:
+            if groups[r]:
+                out.append(groups[r].pop(0))
+    return out
+
+
+def _over_cap(repo: str | None) -> bool:
+    """Soft cap: checked only when a task is about to start, so a task already
+    running may push the repo past it; the repo then waits until the next day."""
+    if not repo:
+        return False
+    cap = registry.daily_cost_cap(repo)
+    return cap is not None and store.cost_today(repo) >= cap
+
+
 async def _runner(concurrency: int, worker_model: str, review_model: str,
                   effort: str) -> None:
     while True:
@@ -197,12 +229,19 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
         # Factory OFF: start nothing new; whatever is already running finishes.
         if len(_running) < concurrency and not factory.is_paused() and not quota_blocked:
             busy = _busy_repos()
-            for t in store.queued_tasks():
+            global _last_started_repo
+            capped: dict[str | None, bool] = {}  # one cap check per repo per tick
+            for t in fair_order(store.queued_tasks(), _last_started_repo):
                 if len(_running) >= concurrency:
                     break
                 if t["id"] in _running or t.get("repo") in busy:
                     continue
+                if t.get("repo") not in capped:
+                    capped[t.get("repo")] = _over_cap(t.get("repo"))
+                if capped[t.get("repo")]:
+                    continue  # over its daily cost cap: waits for tomorrow, others run
                 busy.add(t.get("repo"))
+                _last_started_repo = t.get("repo")
                 # An orphan reclaimed for auto-resume (session preserved) continues
                 # its SDK session; everything else — fresh dispatches AND board /retry,
                 # which clears the reason — starts from the brief.

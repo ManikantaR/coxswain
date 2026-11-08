@@ -39,6 +39,15 @@ def save(repo_name: str, entry: dict) -> None:
     p.write_text(json.dumps(entry, indent=2), encoding="utf-8")
 
 
+def daily_cost_cap(repo_name: str) -> float | None:
+    """Optional per-repo USD/day cap from the registry; None (default) = no cap."""
+    entry = load(repo_name) or {}
+    cap = entry.get("daily_cost_cap")
+    if isinstance(cap, bool) or not isinstance(cap, (int, float)) or cap <= 0:
+        return None
+    return float(cap)
+
+
 DATA_GUARD_NOTE = ("\n\n---\nDATA GUARD: this is a document repo. Use synthetic fixtures only; "
                    "never open data folders or real documents. New files matching {globs} "
                    "may only be added under `{fixture}`.")

@@ -43,6 +43,9 @@ def _conn() -> sqlite3.Connection:
             created REAL, decided REAL);
         CREATE TABLE IF NOT EXISTS repo_streaks(
             repo TEXT PRIMARY KEY, clean_streak INTEGER NOT NULL DEFAULT 0, updated REAL);
+        CREATE TABLE IF NOT EXISTS cost_ledger(
+            task_id TEXT, ts REAL, delta REAL);
+        CREATE INDEX IF NOT EXISTS cost_ts ON cost_ledger(ts);
         CREATE INDEX IF NOT EXISTS ev_task ON events(task_id, seq);
         """
     )
@@ -170,8 +173,11 @@ def add_cost(task_id: str, delta: float | None) -> None:
     if not delta:
         return
     with _conn() as c:
+        now = time.time()
         c.execute("UPDATE tasks SET cost=cost+?, updated=? WHERE id=?",
-                  (delta, time.time(), task_id))
+                  (delta, now, task_id))
+        c.execute("INSERT INTO cost_ledger(task_id,ts,delta) VALUES(?,?,?)",
+                  (task_id, now, delta))
 
 
 def set_summary(task_id: str, summary: str | None) -> None:
@@ -237,6 +243,19 @@ def queued_tasks() -> list[dict]:
     with _conn() as c:
         return [dict(r) for r in
                 c.execute("SELECT * FROM tasks WHERE state='queued' ORDER BY created")]
+
+
+def cost_today(repo: str, now: float | None = None) -> float:
+    """USD spent today (local midnight onward) on a repo's tasks, summed from the
+    timestamped per-spend ledger — unrelated task updates (merge, archive) don't count."""
+    import datetime as _dt
+    n = _dt.datetime.fromtimestamp(now if now is not None else time.time())
+    midnight = n.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    with _conn() as c:
+        r = c.execute("SELECT COALESCE(SUM(l.delta),0) FROM cost_ledger l "
+                      "JOIN tasks t ON t.id=l.task_id WHERE t.repo=? AND l.ts>=?",
+                      (repo, midnight)).fetchone()
+    return float(r[0] or 0)
 
 
 def events(task_id: str, after_seq: int = 0) -> list[dict]:
