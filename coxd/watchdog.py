@@ -17,6 +17,7 @@ import board
 import notify
 import registry
 import store
+import triage
 
 STALL_MINUTES = int(os.environ.get("COXD_STALL_MINUTES", "45"))
 CHECK_INTERVAL_S = 300
@@ -64,7 +65,8 @@ def summary_text(now: float | None = None) -> str:
         out += [line(t, t.get("pr_url") or "") for t in ready]
     if stuck:
         out.append(f"Needs you ({len(stuck)}):")
-        out += [line(t, t.get("reason") or "") for t in stuck]
+        out += [line(t, f"{t.get('reason') or ''}. {triage.next_step_line(t)}"
+                     if t.get("reason") else triage.next_step_line(t)) for t in stuck]
     if running:
         out.append(f"Running: {', '.join(t['id'] for t in running)}")
     if waiting:
