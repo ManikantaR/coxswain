@@ -53,7 +53,8 @@ def setup(deny="present", age=None, cands=None):
 
 check("ok", setup(age=12, cands=0)["level"] == "ok")
 s = setup(age=12, cands=0)
-check("age 12 / no candidates", s["age_days"] == 12 and s["new_candidates"] == 0 and s["exists"] and not s["empty"])
+check("age 12 / no candidates",
+      s["age_days"] == 12 and s["new_candidates"] == 0 and s["exists"] and not s["empty"])
 check("due by age", setup(age=34, cands=0)["level"] == "due")
 check("due by candidates", setup(age=5, cands=2)["level"] == "due")
 check("overdue", setup(age=46, cands=0)["level"] == "overdue")
@@ -65,7 +66,8 @@ check("empty -> blocked", s["level"] == "blocked" and s["empty"] and s["exists"]
 # counts only
 setup(age=34, cands=5)
 line = pii_health.summary_line(pii_health.status(NOW))
-check("digest line text", line == "PII denylist: reviewed 34 days ago, 5 new candidates — run the review")
+check("digest line text",
+      line == "PII denylist: reviewed 34 days ago, 5 new candidates — run the review")
 sent = []
 pii_health.maybe_ping(datetime(2026, 11, 1, 9), lambda t, m: sent.append(t + m))
 blob = "\n".join([line, watchdog.summary_text(NOW), repr(pii_health.pill()),
@@ -114,7 +116,8 @@ check("blocked: reason recorded once", buf.getvalue().count("PII denylist missin
 setup(age=1, cands=0)
 with contextlib.redirect_stdout(io.StringIO()):
     r = intake.poll_once()
-check("ok: intake proceeds", r == 1 and processed == ["widgets"] and "blocked" not in intake.status())
+check("ok: intake proceeds",
+      r == 1 and processed == ["widgets"] and "blocked" not in intake.status())
 
 # ship gate: drive _pii_gate; entry lookup happens after title/body, so stub those
 ship._pr_title = lambda t: "t"  # type: ignore
