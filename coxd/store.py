@@ -230,6 +230,18 @@ def queued_tasks() -> list[dict]:
                 c.execute("SELECT * FROM tasks WHERE state='queued' ORDER BY created")]
 
 
+def cost_today(repo: str, now: float | None = None) -> float:
+    """USD spent today (local midnight onward) on a repo's tasks. Approximated by the
+    cost of tasks last touched today (cost is a per-task running total)."""
+    import datetime as _dt
+    n = _dt.datetime.fromtimestamp(now if now is not None else time.time())
+    midnight = n.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    with _conn() as c:
+        r = c.execute("SELECT COALESCE(SUM(cost),0) FROM tasks WHERE repo=? AND updated>=?",
+                      (repo, midnight)).fetchone()
+    return float(r[0] or 0)
+
+
 def events(task_id: str, after_seq: int = 0) -> list[dict]:
     with _conn() as c:
         rows = c.execute(
