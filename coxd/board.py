@@ -118,6 +118,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "archived": bool(t.get("archived_at")),
             "resumable": bool(t.get("session_id")),
             # Deploy button shows on a landed task whose repo has a deploy command.
+            "approve_auto": registry.merge_level(t["repo"]) == "proposed",
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
             "timing": timeline.derive(t, evs, now),
@@ -222,6 +223,16 @@ async def api_task_deploy(req: Request) -> JSONResponse:
     import landed
     res = landed.deploy_task_async(req.path_params["tid"])
     return JSONResponse(res, status_code=400 if res.get("error") else 200)
+
+
+async def api_repo_approve_auto(req: Request) -> JSONResponse:
+    """The ONLY path to merge_level=auto: the owner taps 'Approve auto-merge' on a
+    repo whose streak earned a proposal."""
+    repo = req.path_params["repo"]
+    if not registry.approve_auto_merge(repo):
+        return JSONResponse({"error": "no pending auto-merge proposal for this repo"},
+                            status_code=400)
+    return JSONResponse({"ok": True, "merge_level": "auto"})
 
 
 async def api_task_archive(req: Request) -> JSONResponse:
@@ -483,6 +494,7 @@ app = Starlette(middleware=[Middleware(_GuardMiddleware)], routes=[
     Route("/api/task/{tid}/stop", api_task_stop, methods=["POST"]),
     Route("/api/task/{tid}/resume", api_task_resume, methods=["POST"]),
     Route("/api/task/{tid}/deploy", api_task_deploy, methods=["POST"]),
+    Route("/api/repo/{repo}/approve-auto-merge", api_repo_approve_auto, methods=["POST"]),
     Route("/api/task/{tid}/archive", api_task_archive, methods=["POST"]),
     Route("/api/task/{tid}/unarchive", api_task_unarchive, methods=["POST"]),
     Route("/api/restart", api_restart, methods=["POST"]),
@@ -622,12 +634,14 @@ h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+
  t.state==='pr_ready'&&t.resumable?'<div class=retryrow>'+
  '<button class=rsb title="Review found something? Sends your note to the same session; the fix is gated, re-reviewed and pushed to this same PR.">Send fixes w/ note</button>'+
  '<input class=rsnote hidden placeholder="what needs fixing?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':'')+
+(t.approve_auto?'<div class=retryrow><button class=aab data-repo="'+esc(t.repo)+'" title="This repo earned a clean-merge streak. Approving lets coxd merge its PRs without you — only this button enables it.">Approve auto-merge</button><span class=aamsg></span></div>':'')+
 (t.deployable?'<div class=retryrow><button class=depb data-repo="'+esc(t.repo)+'" title="Build + recreate this repo\\'s containers on the NAS at current main, then run migrations. Human-gated — coxd does the work; watch Events for progress.">Deploy ▸</button><span class=depmsg></span></div>':'')+
 (t.archived?'<button class=arb data-mode=unarchive title="Bring this task back into the normal board view.">Unarchive</button>':t.archivable?'<button class=arb data-mode=archive title="Hide this completed task from the board now — same as it aging out on its own, just immediate.">Archive</button>':'')+
 '<button class=fb>'+(open.has(t.id)?'Hide':'Events')+'</button><div class="feed'+(open.has(t.id)?' open':'')+'"></div></div>'}
 b.innerHTML=h;for(const c of b.querySelectorAll('.card')){const id=c.dataset.id,f=c.querySelector('.feed');if(open.has(id))loadFeed(id,f);
 c.querySelector('.fb').onclick=()=>{if(open.has(id)){open.delete(id);f.classList.remove('open')}else{open.add(id);f.classList.add('open');loadFeed(id,f)}c.querySelector('.fb').textContent=open.has(id)?'Hide':'Events'};
 const arb=c.querySelector('.arb');if(arb)arb.onclick=async()=>{arb.disabled=true;try{const r=await(await fetch('/api/task/'+id+'/'+arb.dataset.mode,{method:'POST'})).json();if(r.error){alert(r.error);arb.disabled=false}else{sig=null}}catch(e){alert(e);arb.disabled=false}};
+const aab=c.querySelector('.aab');if(aab)aab.onclick=async()=>{if(!confirm('Approve auto-merge for '+aab.dataset.repo+'?'))return;aab.disabled=true;try{const r=await(await fetch('/api/repo/'+encodeURIComponent(aab.dataset.repo)+'/approve-auto-merge',{method:'POST'})).json();if(r.error){alert(r.error);aab.disabled=false}else{sig=null}}catch(e){alert(e);aab.disabled=false}};
 const depb=c.querySelector('.depb'),depmsg=c.querySelector('.depmsg');
 if(depb)depb.onclick=async()=>{if(!confirm('Deploy '+depb.dataset.repo+' at current main to the NAS?\\n\\nThis builds images, recreates containers, and runs migrations — coxd runs the repo\\'s deploy script on the NAS.'))return;depb.disabled=true;depb.textContent='deploying…';depmsg.textContent='';try{const r=await(await fetch('/api/task/'+id+'/deploy',{method:'POST'})).json();if(r.error){depmsg.textContent='✗ '+r.error;depb.disabled=false;depb.textContent='Deploy ▸'}else{depmsg.textContent='building on the NAS — watch Events; you\\'ll get a ping when done';open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}}catch(e){depmsg.textContent='✗ '+e;depb.disabled=false;depb.textContent='Deploy ▸'}};
 c.querySelectorAll('.step').forEach(stepEl=>{stepEl.onclick=()=>{const s=parseInt(stepEl.dataset.stage,10);

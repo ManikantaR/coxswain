@@ -86,7 +86,7 @@ import store  # noqa: E402
 g("branch", "clean", "origin/main")
 store.create_task("tdg", "dgrepo", "brief", "/wt", repo_path=str(tmp))
 ship._pr_title = lambda t: "t"
-ship._greenlight = lambda t, wt: ("", "")
+ship._greenlight = lambda t, wt: ("", "", [])
 ship._build_body = lambda t, wt, h="": "b"
 ship._pii_items = lambda *a, **k: {}
 for bad in ("*.pdf", 5, ["ok", 3], {"a": 1}):

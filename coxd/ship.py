@@ -100,7 +100,7 @@ def _diff_stat(wt: Path, base: str = "origin/main") -> tuple[list[str], int, int
     return files, added, deleted
 
 
-def _greenlight(t: dict, wt: Path) -> tuple[str, str]:
+def _greenlight(t: dict, wt: Path) -> tuple[str, str, list[str]]:
     """(tier, header) for this PR from coxd's own signal (gate green by construction,
     review verdict/findings, diff size, per-repo sacred_globs). Advisory — a failure
     here never blocks the ship."""
@@ -110,9 +110,9 @@ def _greenlight(t: dict, wt: Path) -> tuple[str, str]:
         findings = json.loads(t.get("review_findings") or "[]")
         tier, reasons = greenlight.tier(findings, t.get("review_verdict"),
                                         files, added, deleted, entry.get("sacred_globs") or [])
-        return tier, greenlight.header(tier, reasons, findings)
+        return tier, greenlight.header(tier, reasons, findings), list(reasons)
     except Exception:  # noqa: BLE001 — greenlight is advisory, never fail a ship over it
-        return "", ""
+        return "", "", []
 
 
 def _build_body(t: dict, wt: Path, gl_header: str = "") -> str:
@@ -280,13 +280,13 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
     Fails closed on ANY error, including building the title/body."""
     try:
         title = _pr_title(t)
-        _tier, gl_header = _greenlight(t, wt)
+        _tier, gl_header, _reasons = _greenlight(t, wt)
         body = _build_body(t, wt, gl_header)
         # Pin the exact commit: scan this sha and push this sha (no check-then-use gap).
         sha = _git_text(repo_path, "rev-parse", "--verify",
                         f"refs/heads/{branch}^{{commit}}").strip()
         if ctx is not None:
-            ctx.update(sha=sha, title=title, body=body, tier=_tier)
+            ctx.update(sha=sha, title=title, body=body, tier=_tier, reasons=_reasons)
         entry = registry.load(t["repo"]) or {}
         base = _resolve_base(repo_path, entry.get("target_branch"))
         deny, missing = pii.load_denylist()
@@ -350,9 +350,10 @@ def ship(task_id: str) -> tuple[str, str | None]:
 
     if ctx:  # reuse exactly what was scanned
         title, body, tier = ctx["title"], ctx["body"], ctx["tier"]
+        tier_reasons = ctx.get("reasons") or []
     else:
         title = _pr_title(t)
-        tier, gl_header = _greenlight(t, wt)
+        tier, gl_header, tier_reasons = _greenlight(t, wt)
         body = _build_body(t, wt, gl_header)
     pr = subprocess.run(
         ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
@@ -364,7 +365,7 @@ def ship(task_id: str) -> tuple[str, str | None]:
     if url:
         store.set_pr_url(task_id, url)
         if tier:
-            store.set_greenlight_tier(task_id, tier)
+            store.set_greenlight_tier(task_id, tier, tier_reasons)
             store.append_event(task_id, "greenlight", {"tier": tier})
         if tier == "GREEN":  # pre-label low-risk PRs for one-click merge (best-effort)
             subprocess.run(["gh", "label", "create", "coxd-greenlight", "--color", "0E8A16",

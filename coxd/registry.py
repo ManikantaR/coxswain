@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 
@@ -37,6 +38,42 @@ def save(repo_name: str, entry: dict) -> None:
     p = _path(repo_name)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(entry, indent=2), encoding="utf-8")
+
+
+# Earned auto-merge (DECISIONS D29). `manual` (default) → `proposed` (streak hit the
+# threshold, owner notified) → `auto` (ONLY via approve_auto_merge, the board button).
+MERGE_LEVELS = ("manual", "proposed", "auto")
+AUTO_MERGE_STREAK = 10
+_level_lock = threading.Lock()
+
+
+def merge_level(repo_name: str) -> str:
+    lvl = (load(repo_name) or {}).get("merge_level")
+    return lvl if lvl in MERGE_LEVELS else "manual"
+
+
+def propose_auto_merge(repo_name: str) -> bool:
+    """manual → proposed. True only on the transition (so the owner is pinged once).
+    Never touches `proposed`/`auto`, and never sets `auto`."""
+    with _level_lock:
+        entry = load(repo_name)
+        if entry is None or merge_level(repo_name) != "manual":
+            return False
+        entry["merge_level"] = "proposed"
+        save(repo_name, entry)
+        return True
+
+
+def approve_auto_merge(repo_name: str) -> bool:
+    """proposed → auto. The ONLY function that sets `auto` (called by the board's
+    'Approve auto-merge' action). False if the repo has no pending proposal."""
+    with _level_lock:
+        entry = load(repo_name)
+        if entry is None or merge_level(repo_name) != "proposed":
+            return False
+        entry["merge_level"] = "auto"
+        save(repo_name, entry)
+        return True
 
 
 def daily_cost_cap(repo_name: str) -> float | None:
@@ -70,6 +107,7 @@ def scout(repo_path: Path) -> dict:
     """
     entry: dict = {"test": None, "lint": None, "build": None,
                    "target_branch": "main", "source": None, "runner": None,
+                   "merge_level": "manual",  # manual | proposed | auto (earned; see D29)
                    "intake": False,  # opt-in: poll for `coxd-ready` issues (intake.py)
                    "gate_env": {},  # env the gate injects to match CI (e.g. NODE_OPTIONS heap)
                    # Opt-in auto-deploy after a merge lands (landed.py). Disabled by

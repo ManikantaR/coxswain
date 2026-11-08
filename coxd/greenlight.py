@@ -25,6 +25,16 @@ def _sev(f: dict) -> str:
     return str(f.get("severity", "")).lower()
 
 
+SIZE_REASON_PREFIX = "large diff"
+
+
+def is_size_only(tier_: str | None, reasons: list[str] | None) -> bool:
+    """AMBER whose ONLY reason is diff size (no medium/high finding, not sacred/rejected).
+    Fails closed: unknown/empty reasons are not size-only."""
+    return (tier_ == "AMBER" and bool(reasons)
+            and all(str(r).startswith(SIZE_REASON_PREFIX) for r in reasons))
+
+
 def tier(findings: list[dict], verdict: str | None, changed_files: list[str],
          added: int, deleted: int, sacred_globs: list[str] | None) -> tuple[str, list[str]]:
     """Classify a pr_ready PR. Returns (GREEN|AMBER|RED, reasons)."""
@@ -48,7 +58,7 @@ def tier(findings: list[dict], verdict: str | None, changed_files: list[str],
         if meds:
             reasons.append(f"{len(meds)} medium finding(s)")
         if big:
-            reasons.append(f"large diff ({len(changed_files)} files, +{added}/-{deleted})")
+            reasons.append(f"{SIZE_REASON_PREFIX} ({len(changed_files)} files, +{added}/-{deleted})")
         return "AMBER", reasons
     reasons.append(f"clean: gate green, no high/med findings, small diff "
                    f"({len(changed_files)} files, +{added}/-{deleted})")
