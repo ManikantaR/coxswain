@@ -80,25 +80,46 @@ def _deployer_req(method: str, path: str, timeout: float = 30.0):
 
 def _deployer_status(jid: str) -> dict:
     with _deployer_req("GET", f"/deploys/{jid}/status") as r:
-        return json.loads(r.read())
+        try:
+            return json.loads(r.read())
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # The job exists; only this poll failed. Callers retry until their deadline.
+            raise DeployerError(f"deployer status unreadable: {e}") from e
 
 
-def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _stream_deploy(tid: str, repo: str, timeout_s: float, sha: str,
+                   on_start=None) -> tuple[int, str]:
     """Trigger a deploy through the deployer container and relay its log.
 
     coxd has no docker.sock; the deployer runs the allowlisted command for `repo`. Every
     log line is echoed to coxd's stdout, a `deploy-progress` event carries the latest line
     every ~20s, and we give up after `timeout_s`. Returns (exit_code, tail-of-output);
-    rc=124 on timeout, 127 if the deployer could not be reached or refused."""
+    rc=124 on timeout, 127 if the deployer could not be reached or refused. `sha` is the
+    commit the deployer must end up building (it verifies HEAD; mismatch -> stale-source).
+    `on_start` runs once the deployer has accepted the job (not on 409/refusal)."""
+    if not _SHA_RE.match(sha or ""):
+        return 127, f"could not start deploy: bad commit sha {sha!r}"
+    path = (f"/deploy/{urllib.parse.quote(repo, safe='')}/{sha}"
+            f"?timeout_s={int(timeout_s)}")  # same timeout on both sides: they can't disagree
     try:
-        with _deployer_req("POST", f"/deploy/{urllib.parse.quote(repo, safe='')}") as r:
-            jid = json.loads(r.read())["id"]
+        with _deployer_req("POST", path) as r:
+            try:
+                jid = json.loads(r.read())["id"]
+            except (OSError, http.client.HTTPException) as e:
+                # Accepted (202 headers arrived) but the body was lost: the job may be running.
+                return 127, ("deploy may have started: could not read the deployer's response "
+                             f"({e}) - check the deployer before retrying")
     except DeployerError as e:
         if e.code == 409:  # a deploy is already in flight — not a failure of this one
             return 409, f"{e}"
         return 127, f"could not start deploy: {e}"
     except (ValueError, KeyError) as e:
         return 127, f"could not start deploy: bad deployer response ({e})"
+    if on_start:
+        on_start()
     deadline = time.monotonic() + timeout_s
     tail: deque[str] = deque(maxlen=40)
     stop = threading.Event()  # set on return: a stale relay must emit nothing afterwards
@@ -136,7 +157,11 @@ def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
             if st.get("status") != "running":
                 th.join(5)  # let the relay drain the last lines
                 code = st.get("exit_code")
-                return (code if isinstance(code, int) else -1), "\n".join(tail)
+                code = code if isinstance(code, int) else -1
+                if st.get("status") != "succeeded" and code == 0:
+                    code = -1  # a failed job must never read as success
+                prefix = f"{st['reason']}\n" if st.get("reason") else ""
+                return code, prefix + "\n".join(tail)
             if time.monotonic() >= deadline:
                 msg = f"timed out after {int(timeout_s)}s (deployer job left running)"
                 return 124, msg + "\n" + "\n".join(tail)
@@ -264,25 +289,127 @@ def _deploy_stamp(repo_name: str) -> Path:
     return registry.home() / f"last_deploy_{repo_name.replace('/', '_')}.txt"
 
 
-def _recently_deployed(repo_name: str, window_s: int = 180) -> bool:
-    """Coalesce a burst of merges (a whole backlog landing) into ONE deploy: skip if
-    this repo deployed within the window. Deploys are idempotent (they push latest
-    main), so one covers the batch — avoids N deploys for an N-issue batch."""
+def _recently_deployed(repo_name: str, sha: str, window_s: int = 180) -> bool:
+    """Skip a duplicate deploy of the SAME commit within the window (e.g. a retried hook).
+    A different commit always deploys: the deployer builds exactly the sha it is given, so a
+    recent deploy of an older commit does not cover a newer merge."""
     p = _deploy_stamp(repo_name)
     try:
-        return p.exists() and (time.time() - float(p.read_text())) < window_s
+        ts, _, prev = p.read_text().partition(" ")
+        return prev.strip() == sha and (time.time() - float(ts)) < window_s
     except (ValueError, OSError):
         return False
 
 
-def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
+def _branch_head(slug: str, branch: str) -> str | None:
+    """Current head commit of `branch` on GitHub (what a manual 'deploy current main' means)."""
+    r = _run(["gh", "api", f"repos/{slug}/commits/{urllib.parse.quote(branch, safe='')}",
+              "--jq", ".sha"])
+    sha = (r.stdout or "").strip().lower() if r.returncode == 0 else ""
+    return sha if _SHA_RE.match(sha) else None
+
+
+def _pr_merge_sha(pr_url: str, repo_slug: str) -> str | None:
+    pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    r = _run(["gh", "pr", "view", pr_number, "-R", repo_slug, "--json", "mergeCommit"])
+    if r.returncode != 0:
+        return None
+    try:
+        sha = ((json.loads(r.stdout) or {}).get("mergeCommit") or {}).get("oid") or ""
+    except (ValueError, AttributeError):
+        return None
+    sha = sha.lower()
+    return sha if _SHA_RE.match(sha) else None
+
+
+def _pr_base(pr_url: str, repo_slug: str) -> str | None:
+    """Branch the PR merged into (None if unknown)."""
+    pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    r = _run(["gh", "pr", "view", pr_number, "-R", repo_slug, "--json", "baseRefName"])
+    if r.returncode != 0:
+        return None
+    try:
+        return ((json.loads(r.stdout) or {}).get("baseRefName") or None)
+    except (ValueError, AttributeError):
+        return None
+
+
+_DEFAULT_MIGRATION_DIRS = ["migrations", "alembic"]
+
+
+def _in_migration_dir(path: str, dirs: list[str]) -> bool:
+    """Is `path` under one of `dirs`? Entries may be multi-segment (e.g. `db/migrations`)
+    and match at any depth."""
+    parent = "/" + "/".join(path.strip().split("/")[:-1]) + "/"
+    return any(f"/{d.strip('/')}/" in parent for d in dirs if d and d.strip("/"))
+
+
+def _deployed_sha_file(repo_name: str) -> Path:
+    return registry.home() / f"deployed_sha_{repo_name.replace('/', '_')}.txt"
+
+
+def _last_deployed_sha(repo_name: str) -> str | None:
+    try:
+        sha = _deployed_sha_file(repo_name).read_text().strip().lower()
+    except OSError:
+        return None
+    return sha if _SHA_RE.match(sha) else None
+
+
+def _record_deployed(repo_name: str, sha: str) -> None:
+    try:
+        _deployed_sha_file(repo_name).write_text(sha)
+    except OSError:
+        pass
+
+
+def _compare(slug: str, base: str, head: str) -> tuple[str, list[str], bool] | None:
+    """GitHub compare base...head -> (status, changed files, truncated). None on any error."""
+    r = _run(["gh", "api", f"repos/{slug}/compare/{base}...{head}", "--jq",
+              "{status: .status, n: (.files | length),"
+              " files: [.files[] | .filename, (.previous_filename // empty)]}"])
+    if r.returncode != 0:
+        return None
+    try:
+        d = json.loads(r.stdout)
+        return str(d["status"]), [str(f) for f in d["files"]], int(d["n"]) >= 300
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _migration_hold(slug: str, repo_name: str, sha: str,
+                    dirs: list[str] | None = None) -> str | None:
+    """Why an unattended deploy of `sha` must be held (#53), or None if it may proceed.
+
+    A deploy ships the whole tree at `sha`, so the check covers everything between the last
+    successfully deployed commit and `sha` (not just the triggering PR): a migration held
+    earlier stays held until a human deploys it. Also holds if `sha` is not strictly ahead of
+    the last deployed commit (an older, late-detected merge must not roll production back)."""
+    base = _last_deployed_sha(repo_name)
+    if base is None:
+        return "no deployed-commit baseline yet (deploy once by hand)"
+    cmp = _compare(slug, base, sha)
+    if cmp is None:
+        return "could not compare against the last deployed commit"
+    status, files, truncated = cmp
+    if status != "ahead":
+        return f"merge commit is not ahead of the last deployed commit ({status})"
+    if truncated:
+        return "too many changed files to check for migrations"
+    if any(_in_migration_dir(f, dirs or _DEFAULT_MIGRATION_DIRS) for f in files):
+        return "changes since the last deploy include migrations"
+    return None
+
+
+def run_deploy(t: dict, slug: str, *, manual: bool = False, sha: str | None = None) -> dict:
     """Run the repo's configured deploy command (the ./deploy-to-nas.sh that used to
     follow every merge by hand). Callers:
-      - auto (manual=False): currently UNUSED in production — `_maybe_deploy` is held
-        (#76/#53) and never calls this. Kept for when unattended deploys are re-enabled.
+      - auto (manual=False): `_maybe_deploy`, post-merge, with the merged commit as `sha`.
       - manual (manual=True): the board's Deploy button. A human tapped it, so it
         ignores `enabled` and the coalesce window — but still respects the CI gate
         (never ship on a red target branch).
+    `sha` is the commit to deploy; default = the current head of the deploy branch. The
+    deployer verifies its source is at exactly this commit (else `stale-source`).
     Returns a result dict for the board; also emits store events + an AFK ping."""
     dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
     if not dep.get("command"):
@@ -293,39 +420,48 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
     if not manual:
         if not dep.get("enabled"):
             return {"skipped": "auto-deploy disabled for this repo"}
-        if _recently_deployed(t["repo"]):
-            store.append_event(t["id"], "deploy-coalesced",
-                               {"note": "another deploy for this repo ran just now"})
-            return {"ok": True, "skipped": "coalesced with a recent deploy"}
     branch = dep.get("branch", "main")
+    sha = (sha or _branch_head(slug, branch) or "").lower()
+    if not _SHA_RE.match(sha):
+        store.append_event(t["id"], "deploy-skipped",
+                           {"reason": f"could not resolve the commit to deploy ({branch})"})
+        notify.notify_async("coxd: deploy skipped",
+                            f"{slug}: could not resolve the commit to deploy", "high")
+        return {"error": "could not resolve the commit to deploy"}
+    if not manual and _recently_deployed(t["repo"], sha):
+        store.append_event(t["id"], "deploy-coalesced",
+                           {"note": "this commit was deployed just now", "sha": sha})
+        return {"ok": True, "skipped": "coalesced with a recent deploy of the same commit"}
     if dep.get("gate_on_ci", True) and _latest_ci_failing(slug, branch):
         store.append_event(t["id"], "deploy-skipped", {"reason": f"{branch} CI is red"})
         notify.notify_async("coxd: deploy skipped",
                             f"{slug}: {branch} CI is red — not deploying", "high")
         return {"error": f"{branch} CI is red — not deploying"}
-    # Source freshness is UNVERIFIED (#76): coxd's clone is not what gets built, and the
-    # deployer has no git/egress, so it builds whatever is on disk there.
-    store.append_event(t["id"], "deploy-start", {"command": dep["command"], "manual": manual})
-    try:
-        _deploy_stamp(t["repo"]).write_text(str(time.time()))  # claim before running → coalesce
-    except OSError:
-        pass
+    store.append_event(t["id"], "deploy-start",
+                       {"command": dep["command"], "manual": manual, "sha": sha})
+
+    def _claim() -> None:  # only once the deployer accepted the job (never on a 409)
+        try:
+            _deploy_stamp(t["repo"]).write_text(f"{time.time()} {sha}")
+        except OSError:
+            pass
+
     timeout_s = float(dep.get("timeout_s") or DEFAULT_DEPLOY_TIMEOUT_S)
     try:
-        rc, out = _stream_deploy(t["id"], t["repo"], timeout_s)
+        rc, out = _stream_deploy(t["id"], t["repo"], timeout_s, sha, on_start=_claim)
     except Exception as e:  # still a loud, terminal event
         rc, out = 127, f"could not start deploy: {e}"
-    if rc == 409:
+    if rc == 409:  # end state of this attempt: deploy-start -> deploy-skipped (no stamp written)
         store.append_event(t["id"], "deploy-skipped", {"reason": out[-200:]})
         notify.notify_async("coxd: deploy NOT started",
                             f"{slug}: a deploy is already running on the deployer — "
                             "check it (a hung job blocks later deploys)", "high")
         return {"error": "a deploy for this repo is already running on the deployer"}
     if rc == 0:
-        store.append_event(t["id"], "deployed", {"command": dep["command"]})
+        _record_deployed(t["repo"], sha)  # baseline for the migration hold range check
+        store.append_event(t["id"], "deployed", {"command": dep["command"], "sha": sha})
         notify.notify_async("coxd: deployed",
-                            f"{slug}: deploy finished (source freshness unverified, #76)",
-                            "default")
+                            f"{slug}: deployed {sha[:7]} (source verified)", "default")
         return {"ok": True}
     err = out[-400:]
     store.append_event(t["id"], "deploy-failed", {"rc": rc, "err": err})
@@ -334,39 +470,41 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
     return {"error": f"deploy failed (rc={rc})", "detail": err}
 
 
-def _touches_migration(pr_url: str, slug: str, dirs: list[str]) -> bool:
-    """Did the merged PR add/change/rename a file under a migration dir? Fails CLOSED
-    (True) when the file list can't be read, so an unknown diff is never auto-deployed."""
-    n = pr_url.rstrip("/").rsplit("/", 1)[-1]
-    r = _run(["gh", "api", "--paginate", f"repos/{slug}/pulls/{n}/files",
-              "--jq", ".[] | .filename, (.previous_filename // empty)"])
-    if r.returncode != 0:
-        return True
-    names = {d.strip("/") for d in dirs if d and d.strip("/")}
-    for path in r.stdout.splitlines():
-        if names & set(path.strip().split("/")[:-1]):
-            return True
-    return False
+def _hold(t: dict, slug: str, reason: str, prio: str = "default") -> None:
+    store.append_event(t["id"], "deploy-held", {"reason": reason})
+    notify.notify_async("coxd: deploy held",
+                        f"{slug}: merged, auto-deploy held ({reason}) — deploy by hand",
+                        prio)
 
 
 def _maybe_deploy(t: dict, slug: str) -> None:
-    """Post-merge deploy hook. HELD: no unattended deploy may reach the deployer until
-    its source freshness (#76) and migration holds (#53) land. A repo that opted in
-    (`deploy.enabled`) gets a `deploy-held` event and a ping; nothing is deployed."""
+    """Post-merge deploy hook for repos that opted in (`deploy.enabled`). Deploys exactly
+    the merged commit; the deployer verifies its source matches. HELD (event + ping, nothing
+    deployed) per `_migration_hold` (#53): when anything in the whole range since the last
+    successful deploy touches migrations (not just this PR), when the merge commit is not
+    ahead of it, when there is no baseline or the compare fails, when the merge commit cannot
+    be resolved, or when another deploy for the repo is running."""
     dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
     if not (dep.get("command") and dep.get("enabled")):
         return
-    dirs = dep.get("migration_dirs") or ["migrations", "alembic"]
-    if t.get("pr_url") and _touches_migration(t["pr_url"], slug, dirs):
-        store.append_event(t["id"], "deploy-held", {"reason": "migration"})
-        notify.notify_async("coxd: deploy held — migration",
-                            f"{slug}: merge contains a migration — never deployed "
-                            "unattended; tap Deploy on the board when ready", "high")
-        return
-    store.append_event(t["id"], "deploy-held", {"reason": "deployer not verified"})
-    notify.notify_async("coxd: deploy held",
-                        f"{slug}: merged, auto-deploy held (deployer not verified) — "
-                        "deploy by hand", "default")
+    if not os.environ.get("COXD_DEPLOYER_URL"):
+        return _hold(t, slug, "deployer not configured")
+    branch = dep.get("branch", "main")
+    base = _pr_base(t["pr_url"], slug) if t.get("pr_url") else None
+    if base != branch:  # never ship a commit merged into some other branch
+        return _hold(t, slug, f"PR merged into {base or 'an unknown branch'}, not {branch}")
+    sha = _pr_merge_sha(t["pr_url"], slug) if t.get("pr_url") else None
+    if sha is None:
+        return _hold(t, slug, "could not resolve the merge commit")
+    if _last_deployed_sha(t["repo"]) == sha:
+        return  # already deployed: silent no-op
+    why = _migration_hold(slug, t["repo"], sha,
+                          dep.get("migration_dirs") or _DEFAULT_MIGRATION_DIRS)
+    if why:
+        return _hold(t, slug, why, "high" if "migrations" in why else "default")
+    started = _deploy_bg(t, slug, manual=False, sha=sha)
+    if not started:
+        _hold(t, slug, "another deploy for this repo is running")
 
 
 def deploy_task_async(tid: str) -> dict:
@@ -386,14 +524,22 @@ def deploy_task_async(tid: str) -> dict:
     if not os.environ.get("COXD_DEPLOYER_URL"):  # sync, so the board gets a real error
         return {"error": "deployer not configured (COXD_DEPLOYER_URL is unset) — "
                          "cannot deploy from the board"}
+    if not _deploy_bg(t, slug, manual=True):
+        return {"error": f"{t['repo']} is already deploying"}
+    return {"ok": True, "started": True}
+
+
+def _deploy_bg(t: dict, slug: str, *, manual: bool, sha: str | None = None) -> bool:
+    """Run run_deploy in a thread, one per repo. False if this repo is already deploying."""
+    tid = t["id"]
     with _deploy_lock:
         if t["repo"] in _deploy_inflight:
-            return {"error": f"{t['repo']} is already deploying"}
+            return False
         _deploy_inflight.add(t["repo"])
 
     def _bg() -> None:
         try:
-            run_deploy(t, slug, manual=True)
+            run_deploy(t, slug, manual=manual, sha=sha)
         except Exception as e:  # never let the thread die without a terminal event
             print(f"[deploy {tid}] crashed: {e!r}", flush=True)
             try:
@@ -408,7 +554,7 @@ def deploy_task_async(tid: str) -> dict:
                 _deploy_inflight.discard(t["repo"])
 
     threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "started": True}
+    return True
 
 
 def check_and_cleanup_merged() -> None:

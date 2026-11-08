@@ -54,29 +54,51 @@ Pro) — coxd's SDK honors it. Try the Pro login first.
 ## The board's Deploy button (via the deployer)
 coxd does **not** run deploys itself: it has no `docker.sock` and no `/volume1/docker`.
 After the CI gate, `run_deploy` calls the
-[deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>`, then streams the job log).
+[deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>/<sha>`, then streams the job log).
 The deployer runs the allowlisted argv for that repo name; the registry's `deploy.command`
-only marks the repo as deployable, coxd never executes it. Only the board button reaches
-the deployer; auto-deploy after merge is held (see below).
+only marks the repo as deployable, coxd never executes it. The board button and the
+post-merge hook (subject to the holds below) are the only callers of the deployer.
 
 Setup: run the deployer (below) and set `COXD_DEPLOYER_TOKEN` (same value as the
 deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; set `COXD_DEPLOYER_URL=http://deployer:8792`
 to enable it. With the URL unset the board's Deploy returns an error and calls nothing.
 
-**Not usable for real deploys yet.** The deployer container has no git and no network
-egress today, so nothing refreshes the source it builds (issue #76), and migration holds are
-not in place (#53). Until both land, the post-merge path is held: a merged repo with
-`deploy.enabled` only gets a `deploy-held` event and a ping, and never calls the deployer.
-Only the manual board button can reach it.
+**Source freshness is verified.** coxd calls `POST /deploy/<repo>/<sha>` with the merged
+commit (40 hex characters, else 400; the body is never read). The deployer exports
+`EXPECTED_SHA=<sha>` to the allowlisted command, which must fetch and check out that commit.
+After the command exits 0 the deployer runs `git -C <cwd> rev-parse HEAD`; if it differs (or
+cannot be read) the job is `failed` and coxd records `deploy-failed` and pings. The reason is
+`stale-source` when HEAD is a different commit, and `head-unreadable` when git could not read HEAD
+at all (the check runs with `safe.directory` scoped to that one cwd, so a checkout owned by
+another uid is fine). The deployer image includes `git`.
+
+Networks: the deployer sits on `deployer-internal` (`internal: true`, the only network coxd
+shares with it) and also on `deployer-egress`, a normal network, so its command can reach
+GitHub to fetch. It publishes no ports and is not on `traefik-public`; nothing outside
+`deployer-internal` can reach it.
+
+Post-merge deploys: a merged repo with `deploy.enabled` deploys its merge commit. It is **held**
+(`deploy-held` event + ping, nothing deployed) when any commit between the last successfully
+deployed one and the merge commit touches migration files (`deploy.migration_dirs`, default `migrations`, `alembic`;
+multi-segment values like `db/migrations` match; #53) - so a held migration stays held until a human deploys it - when
+the merge commit is not strictly ahead of the last deployed one (no rollbacks from a
+late-detected older merge), when there is no deployed baseline yet (deploy once by hand; a
+successful deploy of any kind records it), when the comparison fails, when the merge commit
+cannot be resolved, when the PR did not merge into `deploy.branch` (default `main`), or when another deploy for this repo is running. The manual board button deploys the current head of
+`deploy.branch` (default `main`). A 409 (deploy already running) ends the attempt as
+`deploy-start` then `deploy-skipped` and does not write the coalesce stamp; repeat deploys are
+only coalesced for the *same* commit within 3 minutes.
 
 Rules for a repo's deploy command (the allowlist entry):
-- **Source freshness is unsolved** (#76): coxd's clone in `/repo` is not visible to the deployer,
-  and the deployer cannot `git pull`, so it builds whatever is already on disk.
+- **Sync to `$EXPECTED_SHA` yourself.** coxd's clone in `/repo` is not visible to the deployer,
+  so the command must `git fetch` and `git checkout --detach "$EXPECTED_SHA"` in its cwd
+  before building (the deployer only verifies HEAD afterwards).
 - **Container-native — no `ssh nas`.** Use a script like MoneyPulse's `deploy/coxd-deploy.sh`.
 - Non-interactive (stdin is `/dev/null`). coxd stops waiting after `deploy.timeout_s`
   (default 2700 s = 45 min) and records `deploy-failed` rc=124. The deployer also kills a job
   after `DEPLOYER_JOB_TIMEOUT_S` (default 2700), so a hung build cannot block later deploys;
-  a repo's `deploy.timeout_s` must not exceed `DEPLOYER_JOB_TIMEOUT_S`.
+  coxd passes its `deploy.timeout_s` as `?timeout_s=` and the deployer uses
+  `min(that, DEPLOYER_JOB_TIMEOUT_S)`, so the two cannot disagree beyond that cap.
 
 Watching a deploy: the deployer log is relayed live to `docker logs -f coxd` (lines prefixed
 `[deploy <task-id>]`), and a `deploy-progress` event with the latest line lands in the
@@ -152,17 +174,20 @@ internal `deployer-internal` network. It is behind a compose profile, so plain
    ```json
    {
      "example-app": {
-       "cmd": ["docker", "compose", "up", "-d", "--build"],
+       "cmd": ["sh", "-c", "git fetch origin && git checkout --detach \"$EXPECTED_SHA\" && docker compose up -d --build"],
        "cwd": "/volume1/docker/example-app"
      }
    }
    ```
+   The command must sync to `$EXPECTED_SHA` before building; the deployer only verifies HEAD
+   afterwards (a stale tree fails the job). If the checkout is owned by another uid, add
+   `-c safe.directory=<cwd>` to the git calls in the command as well.
 3. Start it: `docker compose -f docker-compose.coxd.yml --profile deployer up -d --build deployer`.
 
 If the allowlist is missing, a directory, or has a cwd outside the root, the deployer logs a
 `FATAL config error` line and exits (retried at most 3 times).
 
-API: `POST /deploy/<repo>`, `GET /deploys/<id>/status`, `GET /deploys/<id>/log`, bearer token.
+API: `POST /deploy/<repo>/<sha>[?timeout_s=N]`, `GET /deploys/<id>/status`, `GET /deploys/<id>/log`, bearer token.
 Only the last 50 deploys are kept (older logs are deleted); history is in memory and is lost on
 restart.
 
