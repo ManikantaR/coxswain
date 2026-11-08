@@ -245,6 +245,7 @@ async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
                 review_model: str = "claude-opus-5-5",
                 effort: str = "medium") -> None:
     _reclaim_orphans()
+    factory.set_concurrency(concurrency)
     # Loopback by default (the laptop crew); the NAS container sets COXD_BIND=0.0.0.0
     # so Traefik can reach it over the docker network.
     host = host or os.environ.get("COXD_BIND", "127.0.0.1")

@@ -9,11 +9,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import time
 
 import dispatch as dispatch_mod
 import store
 import supervisor
+
+
+def _env_concurrency() -> int:
+    """Default cap: COXD_CONCURRENCY (>=1), else 1. A bad value fails loudly."""
+    raw = os.environ.get("COXD_CONCURRENCY", "").strip()
+    if not raw:
+        return 1
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise SystemExit(f"COXD_CONCURRENCY must be an integer >= 1, got {raw!r}")
+    return n
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,7 +41,8 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("serve", help="run the supervisor: board + task runner")
     s.add_argument("--port", type=int, default=8791)
-    s.add_argument("--concurrency", type=int, default=2)
+    s.add_argument("--concurrency", type=int, default=None,
+                   help="global cap on running tasks (default: $COXD_CONCURRENCY, else 1)")
 
     t = sub.add_parser("tail", help="follow a task's event log to a terminal state")
     t.add_argument("task_id")
@@ -47,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         print("queued:", dispatch_mod.dispatch(a.repo, a.brief))
         return 0
     if a.cmd == "serve":
-        asyncio.run(supervisor.serve(port=a.port, concurrency=a.concurrency))
+        asyncio.run(supervisor.serve(port=a.port, concurrency=(
+            a.concurrency if a.concurrency is not None else _env_concurrency())))
         return 0
     if a.cmd == "list":
         for row in store.list_tasks():

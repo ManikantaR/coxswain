@@ -101,8 +101,8 @@ ENV COXD_HOME=/data/coxswain COXD_REPO_ROOT=/repo
 # errors and streamed deploy output (it was empty: block-buffered, never flushed).
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8791
-# Concurrency 1: one Claude subscription — parallel workers drain the 5-hour window
+# Concurrency: COXD_CONCURRENCY (default 1): one Claude subscription — parallel workers drain the 5-hour window
 # ~N× faster and collide in shared files (factory Phase 0).
 # cli.py uses flat imports → its own dir is on sys.path[0]; run it by path.
 ENTRYPOINT ["tini", "--", "/usr/local/bin/coxd-entrypoint"]
-CMD ["python", "/app/coxd/cli.py", "serve", "--port", "8791", "--concurrency", "1"]
+CMD ["python", "/app/coxd/cli.py", "serve", "--port", "8791"]

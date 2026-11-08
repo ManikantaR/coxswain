@@ -22,6 +22,7 @@ services:
       # Board header chip + (later) notification prefix; the Mac backup sets "mac".
       COXD_HOST_LABEL: nas
       COXD_ROLE: primary
+      COXD_CONCURRENCY: ${COXD_CONCURRENCY:-1}   # global cap; one Claude subscription
       # Declares this isolated, LAN-only container as a sandbox so the claude CLI will
       # run headless as the container's root user. Without it, worker dispatch fails at
       # startup with "Fatal error in message reader". Safe here: the container is isolated.
