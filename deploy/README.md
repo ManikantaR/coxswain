@@ -60,17 +60,23 @@ only marks the repo as deployable, coxd never executes it. Auto-deploy after mer
 board button share this path.
 
 Setup: run the deployer (below) and set `COXD_DEPLOYER_TOKEN` (same value as the
-deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; `COXD_DEPLOYER_URL` defaults to
-`http://deployer:8792`. Without them a deploy records `deploy-failed` rc=127.
+deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; set `COXD_DEPLOYER_URL=http://deployer:8792`
+to enable it. With the URL unset the board's Deploy returns an error and calls nothing.
+
+**Not usable for real deploys yet.** The deployer container has no git and no network
+egress today, so nothing refreshes the source it builds (issue #76), and migration holds are
+not in place (#53). Until both land, the post-merge path is held: a merged repo with
+`deploy.enabled` only gets a `deploy-held` event and a ping, and never calls the deployer.
+Only the manual board button can reach it.
 
 Rules for a repo's deploy command (the allowlist entry):
-- **It must fetch/fast-forward the source it builds itself.** coxd's clone in `/repo` is not
-  visible to the deployer, so coxd cannot guarantee the deployer builds current `main`.
-  Verifying the deployed commit SHA is a follow-up (tracked in a separate issue).
+- **Source freshness is unsolved** (#76): coxd's clone in `/repo` is not visible to the deployer,
+  and the deployer cannot `git pull`, so it builds whatever is already on disk.
 - **Container-native — no `ssh nas`.** Use a script like MoneyPulse's `deploy/coxd-deploy.sh`.
 - Non-interactive (stdin is `/dev/null`). coxd stops waiting after `deploy.timeout_s`
   (default 2700 s = 45 min) and records `deploy-failed` rc=124. The deployer also kills a job
-  after `DEPLOYER_JOB_TIMEOUT_S` (default 2700), so a hung build cannot block later deploys.
+  after `DEPLOYER_JOB_TIMEOUT_S` (default 2700), so a hung build cannot block later deploys;
+  a repo's `deploy.timeout_s` must not exceed `DEPLOYER_JOB_TIMEOUT_S`.
 
 Watching a deploy: the deployer log is relayed live to `docker logs -f coxd` (lines prefixed
 `[deploy <task-id>]`), and a `deploy-progress` event with the latest line lands in the
@@ -140,7 +146,7 @@ internal `deployer-internal` network. It is behind a compose profile, so plain
    ```json
    {
      "example-app": {
-       "cmd": ["sh", "-c", "git pull --ff-only origin main && docker compose up -d --build"],
+       "cmd": ["docker", "compose", "up", "-d", "--build"],
        "cwd": "/volume1/docker/example-app"
      }
    }

@@ -287,6 +287,9 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
     dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
     if not dep.get("command"):
         return {"skipped": "no deploy command configured for this repo"}
+    if manual and not os.environ.get("COXD_DEPLOYER_URL"):
+        return {"error": "deployer not configured (COXD_DEPLOYER_URL is unset) — "
+                         "cannot deploy from the board"}
     if not manual:
         if not dep.get("enabled"):
             return {"skipped": "auto-deploy disabled for this repo"}
@@ -332,8 +335,16 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
 
 
 def _maybe_deploy(t: dict, slug: str) -> None:
-    """Auto post-merge deploy (opt-in per repo). Thin wrapper over run_deploy."""
-    run_deploy(t, slug, manual=False)
+    """Post-merge deploy hook. HELD: no unattended deploy may reach the deployer until
+    its source freshness (#76) and migration holds (#53) land. A repo that opted in
+    (`deploy.enabled`) gets a `deploy-held` event and a ping; nothing is deployed."""
+    dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
+    if not (dep.get("command") and dep.get("enabled")):
+        return
+    store.append_event(t["id"], "deploy-held", {"reason": "deployer not verified"})
+    notify.notify_async("coxd: deploy held",
+                        f"{slug}: merged, auto-deploy held (deployer not verified) — "
+                        "deploy by hand", "default")
 
 
 def deploy_task_async(tid: str) -> dict:

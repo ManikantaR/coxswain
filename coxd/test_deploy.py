@@ -69,27 +69,45 @@ def check(name, cond):
 # 1. disabled → no deploy
 set_deploy({"enabled": False, "command": "./deploy-to-nas.sh"})
 deploy_ran.clear()
-landed._maybe_deploy(mk("t1"), "o/aura-tutor")
+landed.run_deploy(mk("t1"), "o/aura-tutor")
 check("disabled → no deploy", not deploy_ran and "deploy-start" not in kinds("t1"))
 
 # 2. enabled + CI red → skip
 ci = {"status": "completed", "conclusion": "failure"}
 set_deploy({"enabled": True, "command": "./deploy-to-nas.sh", "gate_on_ci": True, "branch": "main"})
 deploy_ran.clear()
-landed._maybe_deploy(mk("t2"), "o/aura-tutor")
+landed.run_deploy(mk("t2"), "o/aura-tutor")
 check("CI red → skipped", not deploy_ran and "deploy-skipped" in kinds("t2"))
 
 # 3. enabled + CI ok → deploy
 ci = {"status": "completed", "conclusion": "success"}
 landed._deploy_stamp("aura-tutor").unlink(missing_ok=True)
 deploy_ran.clear()
-landed._maybe_deploy(mk("t3"), "o/aura-tutor")
+landed.run_deploy(mk("t3"), "o/aura-tutor")
 check("CI ok → deployed", bool(deploy_ran) and "deployed" in kinds("t3"))
 
 # 4. recently deployed (t3 just stamped) → coalesce
 deploy_ran.clear()
-landed._maybe_deploy(mk("t4"), "o/aura-tutor")
+landed.run_deploy(mk("t4"), "o/aura-tutor")
 check("recent deploy → coalesced", not deploy_ran and "deploy-coalesced" in kinds("t4"))
+
+# 4b. post-merge hook never deploys: held event + ping, deployer untouched
+pings0: list = []
+landed.notify.notify_async = (  # type: ignore[assignment]
+    lambda title, body, prio="default": pings0.append(title))
+deploy_ran.clear()
+landed._deploy_stamp("aura-tutor").unlink(missing_ok=True)
+landed._maybe_deploy(mk("t4b"), "o/aura-tutor")
+check("post-merge → held, not deployed",
+      not deploy_ran and "deploy-held" in kinds("t4b") and "deploy-start" not in kinds("t4b")
+      and pings0 == ["coxd: deploy held"])
+
+# 4c. manual deploy without COXD_DEPLOYER_URL → clear error, nothing runs
+os.environ.pop("COXD_DEPLOYER_URL", None)
+deploy_ran.clear()
+r = landed.run_deploy(mk("t4c"), "o/aura-tutor", manual=True)
+check("manual w/o deployer URL → error",
+      "not configured" in r.get("error", "") and not deploy_ran)
 
 # 5/6. real client against a fake deployer (the real deployer server, harmless commands)
 import threading  # noqa: E402

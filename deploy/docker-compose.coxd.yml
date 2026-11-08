@@ -44,8 +44,8 @@ services:
       COXD_TG_TOKEN: ${COXD_TG_TOKEN:-}
       COXD_TG_CHAT: ${COXD_TG_CHAT:-}
       COXD_BOARD_URL: ${COXD_BOARD_URL:-}
-      # deployer API (see "Deployer" in deploy/README.md); token must equal DEPLOYER_TOKEN
-      COXD_DEPLOYER_URL: ${COXD_DEPLOYER_URL:-http://deployer:8792}
+      # deployer API, e.g. http://deployer:8792; unset = board Deploy disabled (see "Deployer" in deploy/README.md); token must equal DEPLOYER_TOKEN
+      COXD_DEPLOYER_URL: ${COXD_DEPLOYER_URL:-}
       COXD_DEPLOYER_TOKEN: ${COXD_DEPLOYER_TOKEN:-}
     volumes:
       - coxd-data:/data/coxswain     # sqlite store + per-repo registry (persistent)
