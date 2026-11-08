@@ -64,6 +64,22 @@ def run():
     supervisor._running.clear()
     store.set_state("acme-cap", "queued", None)
 
+    # one task per repo: a running task in the same repo blocks the auto-retry
+    _mk("acme-busy", "worker-error")
+    store.create_task("acme-run", "acme-widgets", "b", "/wt")
+    store.set_state("acme-run", "working")
+
+    async def _hold():
+        await asyncio.sleep(0)
+    async def go_busy():
+        supervisor._running["acme-run"] = asyncio.create_task(_hold())
+        r = supervisor._auto_retry_scan("w", "r", "m", now=time.time() + 700)
+        supervisor._running.clear()
+        return r
+    assert asyncio.run(go_busy()) == []
+    store.set_state("acme-busy", "queued", None)
+    store.set_state("acme-run", "merged")
+
     # worker-error, no PR -> exactly one resume; second worker-error -> none
     _mk("acme-1", "worker-error")
     assert _scan(300)[0] == []                       # too early
