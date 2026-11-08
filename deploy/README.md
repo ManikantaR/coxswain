@@ -165,3 +165,40 @@ If the allowlist is missing, a directory, or has a cwd outside the root, the dep
 API: `POST /deploy/<repo>`, `GET /deploys/<id>/status`, `GET /deploys/<id>/log`, bearer token.
 Only the last 50 deploys are kept (older logs are deleted); history is in memory and is lost on
 restart.
+
+## Owner login (board writes)
+
+Without this the board has no login: anything on the LAN can press Approve auto-merge,
+Deploy, Resume, etc. With `COXD_OWNER_USER` set, every state-changing request (POST) must
+come through the forward-auth proxy as the owner, or carry the local admin token.
+All values below are invented examples.
+
+1. Close Traefik's open API (`api.insecure`) first; it exposes middleware header settings.
+2. `docker network create coxd-proxy`, and attach the Traefik container to it. coxd's
+   board router uses only this network, so other `traefik-public` containers can't reach it.
+3. Define the forward-auth middleware in Traefik (Authelia), adding the shared secret:
+   ```yaml
+   http:
+     middlewares:
+       authelia:
+         forwardAuth:
+           address: http://authelia:9091/api/authz/forward-auth
+           authResponseHeaders: [Remote-User]
+       coxd-secret:
+         headers:
+           customRequestHeaders:
+             X-Coxd-Proxy-Secret: "s3cret-example-0000"
+       coxd-chain:
+         chain:
+           middlewares: [authelia, coxd-secret]
+   ```
+   Authelia must also strip any client-sent `Remote-User` (it overwrites it on success).
+4. In `deploy/.env`: `COXD_AUTH_MIDDLEWARE=coxd-chain@file`, `COXD_OWNER_USER=alice`,
+   `COXD_PROXY_SECRET=s3cret-example-0000` (same value as step 3). The middleware covers
+   the whole board host, GET pages included. Writes need the right `Remote-User` AND the
+   secret; either alone gets 403. Leave `COXD_OWNER_USER` unset to turn enforcement off.
+5. Local operator calls (no loopback exemption — workers share localhost): coxd creates
+   `$COXD_HOME/admin.token` (mode 600, root) on first start. Send it as a header:
+   `docker exec coxd sh -c 'curl -s -X POST -H "X-Coxd-Admin-Token: $(cat /data/coxswain/admin.token)" localhost:8791/api/factory -d "{\"paused\":true}"'`
+
+`COXD_PROXY_SECRET` is in `envscrub.SECRET_VARS`, so workers never inherit it.

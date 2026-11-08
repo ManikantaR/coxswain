@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import hmac
 import re
+import secrets
 import socket
 import time
 
@@ -449,6 +451,61 @@ def _hostname(value: str) -> str:
     return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
 
 
+ADMIN_HEADER = "x-coxd-admin-token"      # local operator calls (root-only token file)
+PROXY_HEADER = "x-coxd-proxy-secret"     # added by the Traefik middleware
+USER_HEADER = "remote-user"              # set by the forward-auth service (Authelia)
+
+
+def admin_token_path() -> str:
+    return os.path.join(str(registry.home()), "admin.token")
+
+
+def ensure_admin_token() -> str:
+    """Return COXD_HOME/admin.token, creating it (mode 600) on first use. Workers run as
+    another uid and a scratch COXD_HOME, so they cannot read it."""
+    path = admin_token_path()
+    try:
+        with open(path) as f:
+            tok = f.read().strip()
+        if tok:
+            return tok
+    except FileNotFoundError:
+        pass
+    tok = secrets.token_urlsafe(32)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(tok + "\n")
+    try:
+        os.link(tmp, path)  # atomic create-if-absent; loser reads the winner's token
+    except FileExistsError:
+        pass
+    finally:
+        os.unlink(tmp)
+    with open(path) as f:
+        return f.read().strip()
+
+
+def _eq(a: str, b: str) -> bool:
+    return bool(a) and bool(b) and hmac.compare_digest(a.encode(), b.encode())
+
+
+def _owner_ok(headers: dict) -> bool:
+    """COXD_OWNER_USER unset → True (unchanged). Otherwise a write needs either the
+    local admin token, or the proxy secret AND the owner's Remote-User. No loopback
+    exemption: workers share this container's network namespace."""
+    owner = os.environ.get("COXD_OWNER_USER", "")
+    if not owner:
+        return True
+    if _eq(headers.get(ADMIN_HEADER, ""), ensure_admin_token()):
+        return True
+    secret = os.environ.get("COXD_PROXY_SECRET", "")
+    if not _eq(headers.get(PROXY_HEADER, ""), secret):
+        return False  # fail closed, incl. secret unset
+    return _eq(headers.get(USER_HEADER, ""), owner)
+
+
 class _GuardMiddleware:
     """Refuse requests that a malicious web page could forge.
 
@@ -476,6 +533,8 @@ class _GuardMiddleware:
             origin = headers.get("origin")
             if origin is not None and _hostname(origin) not in allowed:
                 reason = "cross-origin write"
+            if reason is None and not _owner_ok(headers):
+                reason = "owner login required"
         if reason:
             resp = JSONResponse({"error": f"forbidden: {reason}"}, status_code=403)
             return await resp(scope, receive, send)
@@ -689,4 +748,6 @@ startWatch();
 
 
 if __name__ == "__main__":
+    if os.environ.get("COXD_OWNER_USER"):
+        ensure_admin_token()
     uvicorn.run(app, host="0.0.0.0", port=8791, log_level="warning")  # noqa: S104

@@ -11,7 +11,7 @@ import os
 import tempfile
 
 SECRET_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "COXD_TG_TOKEN",
-               "COXD_DEPLOYER_TOKEN")
+               "COXD_DEPLOYER_TOKEN", "COXD_PROXY_SECRET")
 
 
 def scratch_home() -> str:

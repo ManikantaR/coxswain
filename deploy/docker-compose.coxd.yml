@@ -47,6 +47,9 @@ services:
       # deployer API, e.g. http://deployer:8792; unset = board Deploy disabled (see "Deployer" in deploy/README.md); token must equal DEPLOYER_TOKEN
       COXD_DEPLOYER_URL: ${COXD_DEPLOYER_URL:-}
       COXD_DEPLOYER_TOKEN: ${COXD_DEPLOYER_TOKEN:-}
+      # Owner login for board writes (see "Owner login" in deploy/README.md); unset = off
+      COXD_OWNER_USER: ${COXD_OWNER_USER:-}
+      COXD_PROXY_SECRET: ${COXD_PROXY_SECRET:-}
     volumes:
       - coxd-data:/data/coxswain     # sqlite store + per-repo registry (persistent)
       - claude-creds:/home/coxw/.claude   # `claude login` (as coxw) writes the Pro-subscription creds here
@@ -57,6 +60,7 @@ services:
       # deployer is running and COXD_DEPLOYER_TOKEN matches its DEPLOYER_TOKEN.
     networks:
       - traefik-public               # so Traefik (10.140.1.3) can reach the board
+      - coxd-proxy                   # private net shared only with Traefik
       - deployer-internal            # coxd -> http://deployer:8792
     labels:
       # LAN-only board behind Traefik. v1 = NO auth (home network); wildcard cert
@@ -66,6 +70,10 @@ services:
       - 'traefik.http.routers.coxd.entrypoints=websecure'
       - 'traefik.http.routers.coxd.tls=true'
       - 'traefik.http.services.coxd.loadbalancer.server.port=8791'
+      # Traefik reaches coxd on this private net, not traefik-public
+      - 'traefik.docker.network=coxd-proxy'
+      # Forward-auth middleware (e.g. authelia@docker); empty = no auth. Covers the whole host.
+      - 'traefik.http.routers.coxd.middlewares=${COXD_AUTH_MIDDLEWARE:-}'
       # Homepage dashboard auto-discovery
       - 'homepage.group=Applications'
       - 'homepage.name=coxd'
@@ -108,5 +116,7 @@ volumes:
 networks:
   traefik-public:
     external: true
+  coxd-proxy:
+    external: true                   # `docker network create coxd-proxy`; attach Traefik too
   deployer-internal:
     internal: true                   # no egress, no host publish
