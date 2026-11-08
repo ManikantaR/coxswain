@@ -18,6 +18,10 @@ contents here.
   `README.md` / `ORCHESTRATOR.md` / `SHAKEDOWN.md` describe the **RETIRED `cox` CLI** — those verbs
   (`cox dispatch/gate/review/ship/merge/watch`) do not exist. The contract is **`docs/DESIGN-V35.md`**;
   the locked decisions are **`docs/DECISIONS.md` D19–D26**.
-- **`§4` freezes new coxd surface until `§3` is recorded met.** Do not add features (auto-greenlight
-  review routing, auto-deploy, always-on NAS daemon, settings page, PWA, extra lanes) before the
-  hands-off ≤1-unstick loop **plus the crash-resume test** passes on a real backlog.
+- **The `§4` freeze is LIFTED** (`docs/DECISIONS.md` D27, 2026-08-09: §3 met on a fresh backlog
+  plus the crash-resume test). New coxd surface is allowed when the owner has approved it. The
+  approved factory roadmap (owner, 2026-11-07/08) is the open coxswain issues: intake, triage,
+  auto-rebase, per-repo concurrency, the deployer, earned auto-merge, lead-session STATUS/digest,
+  and HA/DocuPulse onboarding. Reviewers: do not flag these as freeze violations. Still out of
+  bounds without an explicit owner go: anything that merges without a person (until a repo has
+  earned `auto`), deploys a migration unattended, or weakens the PII gate, envscrub or sandbox.
