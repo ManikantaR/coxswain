@@ -334,12 +334,34 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
     return {"error": f"deploy failed (rc={rc})", "detail": err}
 
 
+def _touches_migration(pr_url: str, slug: str, dirs: list[str]) -> bool:
+    """Did the merged PR add/change/rename a file under a migration dir? Fails CLOSED
+    (True) when the file list can't be read, so an unknown diff is never auto-deployed."""
+    n = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    r = _run(["gh", "api", "--paginate", f"repos/{slug}/pulls/{n}/files",
+              "--jq", ".[] | .filename, (.previous_filename // empty)"])
+    if r.returncode != 0:
+        return True
+    names = {d.strip("/") for d in dirs if d and d.strip("/")}
+    for path in r.stdout.splitlines():
+        if names & set(path.strip().split("/")[:-1]):
+            return True
+    return False
+
+
 def _maybe_deploy(t: dict, slug: str) -> None:
     """Post-merge deploy hook. HELD: no unattended deploy may reach the deployer until
     its source freshness (#76) and migration holds (#53) land. A repo that opted in
     (`deploy.enabled`) gets a `deploy-held` event and a ping; nothing is deployed."""
     dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
     if not (dep.get("command") and dep.get("enabled")):
+        return
+    dirs = dep.get("migration_dirs") or ["migrations", "alembic"]
+    if t.get("pr_url") and _touches_migration(t["pr_url"], slug, dirs):
+        store.append_event(t["id"], "deploy-held", {"reason": "migration"})
+        notify.notify_async("coxd: deploy held — migration",
+                            f"{slug}: merge contains a migration — never deployed "
+                            "unattended; tap Deploy on the board when ready", "high")
         return
     store.append_event(t["id"], "deploy-held", {"reason": "deployer not verified"})
     notify.notify_async("coxd: deploy held",

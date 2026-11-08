@@ -102,6 +102,36 @@ check("post-merge → held, not deployed",
       not deploy_ran and "deploy-held" in kinds("t4b") and "deploy-start" not in kinds("t4b")
       and pings0 == ["coxd: deploy held"])
 
+# 4b2. migration in the merged diff → held for a person (reason: migration)
+files_out = "migrations/0007_add_widget.sql\napp/x.py\n"
+_orig_run = landed._run
+def run_files(args, cwd=None):
+    if args[:2] == ["gh", "api"]:
+        return FakeProc(0, files_out)
+    return _orig_run(args, cwd)
+landed._run = run_files  # type: ignore[assignment]
+pings0.clear(); deploy_ran.clear()
+landed._maybe_deploy(mk("t4m"), "o/aura-tutor")
+ev = [e for e in store.events("t4m") if e["kind"] == "deploy-held"]
+check("migration merge → held (migration), no deployer call",
+      not deploy_ran and len(ev) == 1 and "migration" in json.dumps(ev[0])
+      and "deploy-start" not in kinds("t4m") and len(pings0) == 1)
+# no migration → ordinary path (still never reaches the deployer here)
+files_out = "app/x.py\ndocs/migrations-notes.md\n"
+pings0.clear(); deploy_ran.clear()
+landed._maybe_deploy(mk("t4n"), "o/aura-tutor")
+ev = [e for e in store.events("t4n") if e["kind"] == "deploy-held"]
+check("no migration → normal path, not migration hold",
+      not deploy_ran and len(ev) == 1 and "migration" not in json.dumps(ev[0]))
+# unreadable file list fails closed
+def run_fail(args, cwd=None):
+    return FakeProc(1) if args[:2] == ["gh", "api"] else _orig_run(args, cwd)
+landed._run = run_fail  # type: ignore[assignment]
+landed._maybe_deploy(mk("t4o"), "o/aura-tutor")
+check("unreadable diff → held as migration",
+      "migration" in json.dumps([e for e in store.events("t4o") if e["kind"] == "deploy-held"]))
+landed._run = _orig_run  # type: ignore[assignment]
+
 # 4c. manual deploy without COXD_DEPLOYER_URL → clear error, nothing runs
 os.environ.pop("COXD_DEPLOYER_URL", None)
 deploy_ran.clear()
