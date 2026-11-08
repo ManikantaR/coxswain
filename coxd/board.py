@@ -10,9 +10,9 @@ Run from coxd/:  .venv/bin/python board.py   (COXD_HOME selects the store)
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
-import hmac
 import re
 import secrets
 import socket
