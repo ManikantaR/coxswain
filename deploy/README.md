@@ -66,6 +66,7 @@ deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; `COXD_DEPLOYER_URL` defaults to
 Rules for a repo's deploy command (the allowlist entry):
 - **It must fetch/fast-forward the source it builds itself.** coxd's clone in `/repo` is not
   visible to the deployer, so coxd cannot guarantee the deployer builds current `main`.
+  Verifying the deployed commit SHA is a follow-up (tracked in a separate issue).
 - **Container-native — no `ssh nas`.** Use a script like MoneyPulse's `deploy/coxd-deploy.sh`.
 - Non-interactive (stdin is `/dev/null`). coxd stops waiting after `deploy.timeout_s`
   (default 2700 s = 45 min) and records `deploy-failed` rc=124.

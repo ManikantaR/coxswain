@@ -274,9 +274,9 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
         notify.notify_async("coxd: deploy skipped",
                             f"{slug}: {branch} CI is red — not deploying", "high")
         return {"error": f"{branch} CI is red — not deploying"}
-    cwd = dep.get("cwd") or t["repo_path"]
     # Source freshness is the deployer command's job: coxd's clone is not what gets built
     # (the deployer cannot see it), so the allowlisted command must pull/sync its own tree.
+    # SHA verification of what gets deployed is a follow-up (separate issue).
     store.append_event(t["id"], "deploy-start", {"command": dep["command"], "manual": manual})
     try:
         _deploy_stamp(t["repo"]).write_text(str(time.time()))  # claim before running → coalesce
