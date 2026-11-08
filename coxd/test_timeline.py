@@ -41,7 +41,13 @@ assert r["paused_quota_s"] == 100 and r["active_s"] == 100, r
 t = {"state": "landed", "created": 0}
 r = timeline.derive(t, [st(0, "working"), st(10, "pr_ready"), st(70, "queued"),
                         st(71, "working"), st(100, "landed")], 500)
-assert r["human_wait_s"] == 60 and r["attempts"] == 1 and r["finished_at"] == 10, r
+assert r["human_wait_s"] == 60 and r["attempts"] == 1, r
+# finish is bounded to the latest attempt: never before started
+assert r["started_at"] == 71 and r["finished_at"] == 100 and r["wall_s"] == 29, r
+
+# legacy non-queued task with no events falls back to created
+r = timeline.derive({"state": "working", "created": 5}, [], 15)
+assert r["started_at"] == 5 and r["wall_s"] == 10, r
 
 # re-review round + gate fix
 t = {"state": "pr_ready", "created": 0}
@@ -57,5 +63,29 @@ assert r["ci_s"] == 60 and r["active_s"] == 10, r
 
 # no events
 r = timeline.derive({"state": "queued", "created": 5}, [], 15)
-assert r["started_at"] == 5 and r["wall_s"] == 10, r
+assert r["started_at"] is None and r["queued_at"] == 5 and r["wall_s"] == 0, r
+
+# queued task: idle, queued_at set, no running duration
+r = timeline.derive({"state": "queued", "created": 50.0}, [st(100.0, "queued")], 700.0)
+assert r["in_progress"] is False and r["started_at"] is None, r
+assert r["queued_at"] == 100.0 and r["wall_s"] == 0.0, r
+
+# re-queued after a retry: old start not reused
+evs = [st(100.0, "queued"), st(110.0, "working"), st(200.0, "needs_human"), st(300.0, "queued")]
+r = timeline.derive({"state": "queued", "created": 50.0}, evs, 400.0)
+assert r["started_at"] is None and r["queued_at"] == 300.0, r
+evs.append(st(310.0, "working"))
+r = timeline.derive({"state": "working", "created": 50.0}, evs, 400.0)
+assert r["started_at"] == 310.0 and r["queued_at"] is None, r
+
+# quota pause + auto-resume continues the same run (no new attempt window)
+def stq(ts, reason):
+    return {"kind": "state", "ts": ts, "data": {"state": "queued", "reason": reason}}
+
+
+evs = [st(0, "queued"), st(10, "working"), st(3610, "waiting_quota"),
+       stq(21610, "auto-resume-after-usage-limit"), st(21620, "working"), st(22200, "pr_ready")]
+r = timeline.derive({"state": "pr_ready", "created": 0}, evs, 23000)
+assert r["started_at"] == 10 and r["finished_at"] == 22200, r
+assert r["wall_s"] == 22190 and r["paused_quota_s"] == 18000, r
 print("ok test_timeline")
