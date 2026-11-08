@@ -40,7 +40,9 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5-5",
 
     # --- implement ---------------------------------------------------------
     store.set_state(task_id, "working")
-    wr = await lane.run_worker(wt, brief, worker_model, emit, effort=effort)
+    reg = registry.load(repo) or {}
+    wr = await lane.run_worker(wt, registry.data_guard_brief(reg, brief), worker_model, emit,
+                               effort=effort)
     store.set_session(task_id, wr.session_id)
     store.add_cost(task_id, wr.cost)
     store.set_summary(task_id, wr.summary)

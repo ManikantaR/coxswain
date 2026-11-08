@@ -259,6 +259,16 @@ def _pii_items(repo_path: Path, base: str, ref: str, title: str, body: str,
     return items
 
 
+def _added_paths(repo_path: Path, base: str, ref: str) -> list[str]:
+    """Sorted paths ADDED anywhere in base..ref (any commit, even if later removed) or
+    in the net diff."""
+    names = (_git_text(repo_path, "log", "--name-only", "--diff-filter=A", "-z", "--format=",
+                       "--diff-merges=first-parent", f"{base}..{ref}")
+             + "\0" + _git_text(repo_path, "diff", "--name-only", "--diff-filter=A", "-z",
+                                f"{base}...{ref}"))
+    return sorted({x for x in names.split("\0") if x})
+
+
 def _pii_block(task_id: str, reason: str, data: dict) -> str:
     store.append_event(task_id, "pii-block", {"reason": reason, **data})
     return reason
@@ -284,6 +294,9 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
             store.append_event(task_id, "pii-denylist-missing", {})
         hits = pii.scan(_pii_items(repo_path, base, sha, title, body, deny),
                         deny)
+        if entry.get("data_globs"):  # document repo: new data files only under fixture_dir
+            hits += pii.data_file_hits(_added_paths(repo_path, base, sha),
+                                       entry.get("data_globs"), entry.get("fixture_dir"))
         allow = pii.load_allow()
         kept = []
         for h in hits:  # `secret` is never overridable (load_allow drops it too)
