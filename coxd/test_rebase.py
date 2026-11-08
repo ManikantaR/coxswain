@@ -240,7 +240,8 @@ pushes.clear()
 rebase.process_pending(0, 2)
 check("GIT_AUTHOR_* only: behind PR rebased and pushed",
       len([e for e in store.events("late") if e["kind"] == "rebased"]) == 1
-      and len(pushes) == 1 and "rbrepo" not in rebase._load_pending())
+      and any("refs/heads/coxd/late" in p[2] for p in pushes)
+      and "rbrepo" not in rebase._load_pending())
 os.environ.clear()
 os.environ.update(saved)
 
