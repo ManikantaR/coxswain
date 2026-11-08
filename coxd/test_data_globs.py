@@ -92,6 +92,8 @@ for bad in ("*.pdf", 5, ["ok", 3], {"a": 1}):
     registry.save("dgrepo", {"data_globs": bad, "fixture_dir": FX, "target_branch": "main"})
     out = ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp)
     check(f"bad data_globs {bad!r} -> pii-scan-error", out == "pii-scan-error")
+registry.save("dgrepo", {"data_globs": G, "fixture_dir": FX, "target_branch": "main"})
+check("valid config passes gate", ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp) is None)
 registry.save("dgrepo", {"data_globs": G, "fixture_dir": 7, "target_branch": "main"})
 check("bad fixture_dir -> pii-scan-error",
       ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp) == "pii-scan-error")
