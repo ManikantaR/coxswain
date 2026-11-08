@@ -58,21 +58,17 @@ assert r["ci_s"] == 60 and r["active_s"] == 10, r
 # no events
 r = timeline.derive({"state": "queued", "created": 5}, [], 15)
 assert r["started_at"] is None and r["queued_at"] == 5 and r["wall_s"] == 0, r
+
+# queued task: idle, queued_at set, no running duration
+r = timeline.derive({"state": "queued", "created": 50.0}, [st(100.0, "queued")], 700.0)
+assert r["in_progress"] is False and r["started_at"] is None, r
+assert r["queued_at"] == 100.0 and r["wall_s"] == 0.0, r
+
+# re-queued after a retry: old start not reused
+evs = [st(100.0, "queued"), st(110.0, "working"), st(200.0, "needs_human"), st(300.0, "queued")]
+r = timeline.derive({"state": "queued", "created": 50.0}, evs, 400.0)
+assert r["started_at"] is None and r["queued_at"] == 300.0, r
+evs.append(st(310.0, "working"))
+r = timeline.derive({"state": "working", "created": 50.0}, evs, 400.0)
+assert r["started_at"] == 310.0 and r["queued_at"] is None, r
 print("ok test_timeline")
-
-
-def test_queued_task_is_idle_with_queued_at():
-    t = timeline.derive({"state": "queued", "created": 50.0}, [st(100.0, "queued")], 700.0)
-    assert t["in_progress"] is False
-    assert t["started_at"] is None and t["queued_at"] == 100.0
-    assert t["wall_s"] == 0.0
-
-
-def test_requeued_task_does_not_reuse_old_start():
-    evs = [st(100.0, "queued"), st(110.0, "working"), st(200.0, "needs_human"),
-           st(300.0, "queued")]
-    t = timeline.derive({"state": "queued", "created": 50.0}, evs, 400.0)
-    assert t["started_at"] is None and t["queued_at"] == 300.0
-    evs.append(st(310.0, "working"))
-    t = timeline.derive({"state": "working", "created": 50.0}, evs, 400.0)
-    assert t["started_at"] == 310.0 and t["queued_at"] is None
