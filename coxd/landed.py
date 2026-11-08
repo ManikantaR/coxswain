@@ -54,6 +54,10 @@ DEFAULT_DEPLOYER_URL = "http://deployer:8792"
 class DeployerError(Exception):
     """The deployer refused or could not be reached; message is user-facing."""
 
+    def __init__(self, msg: str, code: int | None = None) -> None:
+        super().__init__(msg)
+        self.code = code
+
 
 def _deployer_req(method: str, path: str, timeout: float = 30.0):
     token = os.environ.get("COXD_DEPLOYER_TOKEN", "")
@@ -68,7 +72,7 @@ def _deployer_req(method: str, path: str, timeout: float = 30.0):
     except urllib.error.HTTPError as e:
         detail = {401: "bad deployer token", 404: "repo is not in the deployer allowlist",
                   409: "a deploy for this repo is already running"}.get(e.code, f"HTTP {e.code}")
-        raise DeployerError(f"deployer refused: {detail}") from e
+        raise DeployerError(f"deployer refused: {detail}", e.code) from e
     except (urllib.error.URLError, OSError) as e:
         raise DeployerError(f"deployer unreachable: {e}") from e
 
@@ -88,8 +92,12 @@ def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
     try:
         with _deployer_req("POST", f"/deploy/{urllib.parse.quote(repo, safe='')}") as r:
             jid = json.loads(r.read())["id"]
-    except (DeployerError, ValueError, KeyError) as e:
+    except DeployerError as e:
+        if e.code == 409:  # a deploy is already in flight — not a failure of this one
+            return 409, f"{e}"
         return 127, f"could not start deploy: {e}"
+    except (ValueError, KeyError) as e:
+        return 127, f"could not start deploy: bad deployer response ({e})"
     deadline = time.monotonic() + timeout_s
     tail: deque[str] = deque(maxlen=40)
 
@@ -114,6 +122,8 @@ def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
         try:
             st = _deployer_status(jid)
         except (DeployerError, ValueError) as e:
+            if isinstance(e, DeployerError) and e.code == 404:  # deployer restarted: job gone
+                return 127, "deployer no longer knows this job (restarted?)\n" + "\n".join(tail)
             if time.monotonic() >= deadline:
                 return 124, f"timed out after {int(timeout_s)}s ({e})\n" + "\n".join(tail)
             time.sleep(2)
@@ -265,15 +275,8 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
                             f"{slug}: {branch} CI is red — not deploying", "high")
         return {"error": f"{branch} CI is red — not deploying"}
     cwd = dep.get("cwd") or t["repo_path"]
-    # Never ship stale code: fast-forward the deploy checkout to the target branch
-    # first. ff-only so a diverged/dirty clone fails loud instead of silently merging.
-    pr = _run(["git", "-C", cwd, "pull", "--ff-only", "origin", branch])
-    if pr.returncode != 0:
-        store.append_event(t["id"], "deploy-pull-failed",
-                           {"branch": branch, "err": (pr.stderr or pr.stdout or "")[-300:]})
-        return {"error": f"git pull --ff-only origin {branch} failed — "
-                         "refusing to deploy stale code",
-                "detail": (pr.stderr or pr.stdout or "")[-300:]}
+    # Source freshness is the deployer command's job: coxd's clone is not what gets built
+    # (the deployer cannot see it), so the allowlisted command must pull/sync its own tree.
     store.append_event(t["id"], "deploy-start", {"command": dep["command"], "manual": manual})
     try:
         _deploy_stamp(t["repo"]).write_text(str(time.time()))  # claim before running → coalesce
@@ -284,6 +287,9 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
         rc, out = _stream_deploy(t["id"], t["repo"], timeout_s)
     except Exception as e:  # still a loud, terminal event
         rc, out = 127, f"could not start deploy: {e}"
+    if rc == 409:
+        store.append_event(t["id"], "deploy-skipped", {"reason": out[-200:]})
+        return {"error": "a deploy for this repo is already running on the deployer"}
     if rc == 0:
         store.append_event(t["id"], "deployed", {"command": dep["command"]})
         notify.notify_async("coxd: deployed",

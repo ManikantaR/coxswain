@@ -53,7 +53,7 @@ Pro) — coxd's SDK honors it. Try the Pro login first.
 
 ## The board's Deploy button (via the deployer)
 coxd does **not** run deploys itself: it has no `docker.sock` and no `/volume1/docker`.
-After `git pull --ff-only origin <branch>` and the CI gate, `run_deploy` calls the
+After the CI gate, `run_deploy` calls the
 [deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>`, then streams the job log).
 The deployer runs the allowlisted argv for that repo name; the registry's `deploy.command`
 only marks the repo as deployable, coxd never executes it. Auto-deploy after merge and the
@@ -64,6 +64,8 @@ deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; `COXD_DEPLOYER_URL` defaults to
 `http://deployer:8792`. Without them a deploy records `deploy-failed` rc=127.
 
 Rules for a repo's deploy command (the allowlist entry):
+- **It must fetch/fast-forward the source it builds itself.** coxd's clone in `/repo` is not
+  visible to the deployer, so coxd cannot guarantee the deployer builds current `main`.
 - **Container-native — no `ssh nas`.** Use a script like MoneyPulse's `deploy/coxd-deploy.sh`.
 - Non-interactive (stdin is `/dev/null`). coxd stops waiting after `deploy.timeout_s`
   (default 2700 s = 45 min) and records `deploy-failed` rc=124.
