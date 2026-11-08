@@ -1,7 +1,6 @@
 """Round-robin across repos + per-repo daily cost cap. Run: python test_fair_share.py"""
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
