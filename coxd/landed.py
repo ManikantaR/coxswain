@@ -326,13 +326,61 @@ _MIGRATION_RE = re.compile(r"(^|/)(migrations?|alembic|prisma/migrations|db/migr
                            r"|\.sql$", re.I)
 
 
-def _touches_migrations(pr_url: str, repo_slug: str) -> bool | None:
-    """Did the PR change migration files (#53 hold)? None = could not tell (callers hold)."""
-    pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-    r = _run(["gh", "pr", "diff", pr_number, "-R", repo_slug, "--name-only"])
+def _deployed_sha_file(repo_name: str) -> Path:
+    return registry.home() / f"deployed_sha_{repo_name.replace('/', '_')}.txt"
+
+
+def _last_deployed_sha(repo_name: str) -> str | None:
+    try:
+        sha = _deployed_sha_file(repo_name).read_text().strip().lower()
+    except OSError:
+        return None
+    return sha if _SHA_RE.match(sha) else None
+
+
+def _record_deployed(repo_name: str, sha: str) -> None:
+    try:
+        _deployed_sha_file(repo_name).write_text(sha)
+    except OSError:
+        pass
+
+
+def _compare(slug: str, base: str, head: str) -> tuple[str, list[str], bool] | None:
+    """GitHub compare base...head -> (status, changed files, truncated). None on any error."""
+    r = _run(["gh", "api", f"repos/{slug}/compare/{base}...{head}", "--jq",
+              "{status: .status, files: [.files[].filename], n: (.files | length)}"])
     if r.returncode != 0:
         return None
-    return any(_MIGRATION_RE.search(f.strip()) for f in (r.stdout or "").splitlines())
+    try:
+        d = json.loads(r.stdout)
+        return str(d["status"]), [str(f) for f in d["files"]], int(d["n"]) >= 300
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _migration_hold(slug: str, repo_name: str, sha: str) -> str | None:
+    """Why an unattended deploy of `sha` must be held (#53), or None if it may proceed.
+
+    A deploy ships the whole tree at `sha`, so the check covers everything between the last
+    successfully deployed commit and `sha` (not just the triggering PR): a migration held
+    earlier stays held until a human deploys it. Also holds if `sha` is not strictly ahead of
+    the last deployed commit (an older, late-detected merge must not roll production back)."""
+    base = _last_deployed_sha(repo_name)
+    if base is None:
+        return "no deployed-commit baseline yet (deploy once by hand)"
+    if base == sha:
+        return "this commit is already deployed"
+    cmp = _compare(slug, base, sha)
+    if cmp is None:
+        return "could not compare against the last deployed commit"
+    status, files, truncated = cmp
+    if status != "ahead":
+        return f"merge commit is not ahead of the last deployed commit ({status})"
+    if truncated:
+        return "too many changed files to check for migrations"
+    if any(_MIGRATION_RE.search(f) for f in files):
+        return "changes since the last deploy include migrations"
+    return None
 
 
 def run_deploy(t: dict, slug: str, *, manual: bool = False, sha: str | None = None) -> dict:
@@ -392,6 +440,7 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False, sha: str | None = No
                             "check it (a hung job blocks later deploys)", "high")
         return {"error": "a deploy for this repo is already running on the deployer"}
     if rc == 0:
+        _record_deployed(t["repo"], sha)  # baseline for the migration hold range check
         store.append_event(t["id"], "deployed", {"command": dep["command"], "sha": sha})
         notify.notify_async("coxd: deployed",
                             f"{slug}: deployed {sha[:7]} (source verified)", "default")
@@ -420,14 +469,12 @@ def _maybe_deploy(t: dict, slug: str) -> None:
         return
     if not os.environ.get("COXD_DEPLOYER_URL"):
         return _hold(t, slug, "deployer not configured")
-    mig = _touches_migrations(t["pr_url"], slug) if t.get("pr_url") else None
-    if mig is None:
-        return _hold(t, slug, "could not check the PR for migrations")
-    if mig:
-        return _hold(t, slug, "PR changes migrations")
-    sha = _pr_merge_sha(t["pr_url"], slug)
+    sha = _pr_merge_sha(t["pr_url"], slug) if t.get("pr_url") else None
     if sha is None:
         return _hold(t, slug, "could not resolve the merge commit")
+    why = _migration_hold(slug, t["repo"], sha)
+    if why:
+        return _hold(t, slug, why)
     started = _deploy_bg(t, slug, manual=False, sha=sha)
     if not started:
         _hold(t, slug, "another deploy for this repo is running")

@@ -108,9 +108,11 @@ pings0: list = []
 landed.notify.notify_async = (  # type: ignore[assignment]
     lambda title, body, prio="default": pings0.append(title))
 os.environ["COXD_DEPLOYER_URL"] = "http://unused.invalid:1"
-merge_sha, touches = "c" * 40, False
+merge_sha, hold = "c" * 40, None
+_real_hold = landed._migration_hold
 landed._pr_merge_sha = lambda url, slug: merge_sha  # type: ignore[assignment]
-landed._touches_migrations = lambda url, slug: touches  # type: ignore[assignment]
+landed._migration_hold = (  # type: ignore[assignment]
+    lambda slug, repo, sha: hold)
 _real_bg = landed._deploy_bg
 landed._deploy_bg = lambda t, slug, manual, sha=None: (  # type: ignore[assignment]
     landed.run_deploy(t, slug, manual=manual, sha=sha) or True)
@@ -120,20 +122,39 @@ landed._maybe_deploy(mk("t4b"), "o/aura-tutor")
 check("post-merge → deploys the merge commit",
       deploy_ran == ["aura-tutor"] and streamed[-1][1] == merge_sha
       and "deployed" in kinds("t4b") and "deploy-held" not in kinds("t4b"))
-touches = True
+hold = 'changes since the last deploy include migrations'
 deploy_ran.clear()
 landed._maybe_deploy(mk("t4e"), "o/aura-tutor")
 check("post-merge with migrations → held, not deployed",
       not deploy_ran and "deploy-held" in kinds("t4e") and "deploy-start" not in kinds("t4e")
       and "coxd: deploy held" in pings0)
-touches = None
+hold = 'could not compare'
 landed._maybe_deploy(mk("t4f"), "o/aura-tutor")
 check("post-merge, migrations unknown → held", not deploy_ran and "deploy-held" in kinds("t4f"))
-touches = False
+hold = None
 merge_sha = None
 landed._maybe_deploy(mk("t4g"), "o/aura-tutor")
 check("post-merge, no merge sha → held", not deploy_ran and "deploy-held" in kinds("t4g"))
 os.environ.pop("COXD_DEPLOYER_URL")
+
+# real _migration_hold against a fake gh compare
+landed._migration_hold = _real_hold  # type: ignore[assignment]
+cmp_out: dict = {}
+landed._run = lambda args, cwd=None: (  # type: ignore[assignment]
+    FakeProc(0, json.dumps(cmp_out)) if cmp_out else FakeProc(1))
+landed._deployed_sha_file("hr").unlink(missing_ok=True)
+check("no baseline → held", "baseline" in (landed._migration_hold("o/hr", "hr", "c" * 40) or ""))
+landed._record_deployed("hr", "a" * 40)
+cmp_out.update(status="ahead", files=["src/x.py"], n=1)
+check("ahead, no migrations → proceeds", landed._migration_hold("o/hr", "hr", "c" * 40) is None)
+cmp_out.update(files=["src/x.py", "db/migrations/001.sql"], n=2)
+check("migration earlier in range → held",
+      "migrations" in (landed._migration_hold("o/hr", "hr", "c" * 40) or ""))
+cmp_out.update(status="behind", files=[], n=0)
+check("older sha → held", "not ahead" in (landed._migration_hold("o/hr", "hr", "c" * 40) or ""))
+cmp_out.clear()
+check("compare error → held", landed._migration_hold("o/hr", "hr", "c" * 40) is not None)
+landed._run = fake_run  # type: ignore[assignment]
 landed._deploy_bg = _real_bg  # type: ignore[assignment]
 
 # 4c. manual deploy without COXD_DEPLOYER_URL → clear error, nothing runs

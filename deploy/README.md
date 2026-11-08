@@ -54,7 +54,7 @@ Pro) — coxd's SDK honors it. Try the Pro login first.
 ## The board's Deploy button (via the deployer)
 coxd does **not** run deploys itself: it has no `docker.sock` and no `/volume1/docker`.
 After the CI gate, `run_deploy` calls the
-[deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>`, then streams the job log).
+[deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>/<sha>`, then streams the job log).
 The deployer runs the allowlisted argv for that repo name; the registry's `deploy.command`
 only marks the repo as deployable, coxd never executes it. Only the board button reaches
 the deployer; auto-deploy after merge is held (see below).
@@ -76,9 +76,13 @@ GitHub to fetch. It publishes no ports and is not on `traefik-public`; nothing o
 `deployer-internal` can reach it.
 
 Post-merge deploys: a merged repo with `deploy.enabled` deploys its merge commit. It is **held**
-(`deploy-held` event + ping, nothing deployed) when the PR touches migration files
-(`migrations/`, `alembic/`, `db/migrate/`, `*.sql`; #53), when that cannot be determined, or
-when the merge commit cannot be resolved. The manual board button deploys the current head of
+(`deploy-held` event + ping, nothing deployed) when any commit between the last successfully
+deployed one and the merge commit touches migration files (`migrations/`, `alembic/`,
+`db/migrate/`, `*.sql`; #53) - so a held migration stays held until a human deploys it - when
+the merge commit is not strictly ahead of the last deployed one (no rollbacks from a
+late-detected older merge), when there is no deployed baseline yet (deploy once by hand; a
+successful deploy of any kind records it), when the comparison fails, or when the merge commit
+cannot be resolved. The manual board button deploys the current head of
 `deploy.branch` (default `main`). A 409 (deploy already running) ends the attempt as
 `deploy-start` then `deploy-skipped` and does not write the coalesce stamp; repeat deploys are
 only coalesced for the *same* commit within 3 minutes.
@@ -178,7 +182,7 @@ internal `deployer-internal` network. It is behind a compose profile, so plain
 If the allowlist is missing, a directory, or has a cwd outside the root, the deployer logs a
 `FATAL config error` line and exits (retried at most 3 times).
 
-API: `POST /deploy/<repo>`, `GET /deploys/<id>/status`, `GET /deploys/<id>/log`, bearer token.
+API: `POST /deploy/<repo>/<sha>[?timeout_s=N]`, `GET /deploys/<id>/status`, `GET /deploys/<id>/log`, bearer token.
 Only the last 50 deploys are kept (older logs are deleted); history is in memory and is lost on
 restart.
 
