@@ -56,8 +56,8 @@ coxd does **not** run deploys itself: it has no `docker.sock` and no `/volume1/d
 After the CI gate, `run_deploy` calls the
 [deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>`, then streams the job log).
 The deployer runs the allowlisted argv for that repo name; the registry's `deploy.command`
-only marks the repo as deployable, coxd never executes it. Auto-deploy after merge and the
-board button share this path.
+only marks the repo as deployable, coxd never executes it. Only the board button reaches
+the deployer; auto-deploy after merge is held (see below).
 
 Setup: run the deployer (below) and set `COXD_DEPLOYER_TOKEN` (same value as the
 deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; set `COXD_DEPLOYER_URL=http://deployer:8792`

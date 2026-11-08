@@ -109,6 +109,11 @@ r = landed.run_deploy(mk("t4c"), "o/aura-tutor", manual=True)
 check("manual w/o deployer URL → error",
       "not configured" in r.get("error", "") and not deploy_ran)
 
+# 4d. board path: sync error when the URL is unset (no silent background no-op)
+landed.ci_triage.repo_slug = lambda path: "o/aura-tutor"  # type: ignore[assignment]
+r = landed.deploy_task_async(mk("t4d")["id"])
+check("deploy_task_async w/o URL → sync error", "not configured" in r.get("error", ""))
+
 # 5/6. real client against a fake deployer (the real deployer server, harmless commands)
 import threading  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402

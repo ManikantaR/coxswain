@@ -53,8 +53,7 @@ services:
       - coxd-repos:/repo             # target repos, cloned in during setup (persistent)
       - coxd-work:/work              # per-task git worktrees (+ node_modules), disposable
       # No docker.sock and no /volume1/docker: both are root-equivalent on the NAS and
-      # every app's .env lives under /volume1/docker. The board's Deploy button (and
-      # auto-deploy) calls the separate deployer container below; it works once the
+      # every app's .env lives under /volume1/docker. The board's Deploy button calls the separate deployer container below; it works once the
       # deployer is running and COXD_DEPLOYER_TOKEN matches its DEPLOYER_TOKEN.
     networks:
       - traefik-public               # so Traefik (10.140.1.3) can reach the board
