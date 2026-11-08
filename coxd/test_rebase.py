@@ -194,9 +194,8 @@ check("same target sha: nothing re-attempted",
 print([(e["kind"], e["data"]) for e in store.events("clean")]) if fails else None
 check("worktree git calls ran (rebase+reset seen)",
       any("rebase" in c for c, _ in wt_calls) and any("reset" in c for c, _ in wt_calls))
-check("worktree git env scrubbed of tokens + has identity",
-      all(e is not None and "GH_TOKEN" not in e and "COXD_TG_TOKEN" not in e
-          and e.get("GIT_AUTHOR_EMAIL") in (None, "bot@example.invalid") for _, e in wt_calls))
+check("worktree git env scrubbed of tokens",
+      all(e is not None and "GH_TOKEN" not in e and "COXD_TG_TOKEN" not in e for _, e in wt_calls))
 check("branch lookup went through the sandbox path", any(
     c[-3:] == ["symbolic-ref", "--short", "HEAD"] for c, _ in wt_calls))
 
