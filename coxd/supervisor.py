@@ -139,6 +139,16 @@ async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
         store.append_event(task_id, "error", {"error": str(e)})
 
 
+def _busy_repos() -> set[str]:
+    """Repos that already have a running task (one task per repo at a time)."""
+    repos = set()
+    for tid in _running:
+        t = store.get_task(tid)
+        if t and t.get("repo"):
+            repos.add(t["repo"])
+    return repos
+
+
 def _auto_retry_scan(worker_model: str, review_model: str, effort: str,
                      now: float | None = None, concurrency: int = 2) -> list[str]:
     """Schedule the ONE automatic retry for transient needs_human reasons (see
@@ -148,15 +158,19 @@ def _auto_retry_scan(worker_model: str, review_model: str, effort: str,
         return []
     now = now or time.time()
     started = []
+    busy = _busy_repos()
     for t in store.list_tasks():
         tid = t["id"]
         if len(_running) >= concurrency:
             break  # respect the concurrency cap; retry on a later pass
         if t["state"] != "needs_human" or tid in _running or store.is_archived(t):
             continue
+        if t.get("repo") in busy:
+            continue  # same repo already has a running task; retry on a later pass
         if not triage.due(t, now):
             continue
         # record first: the event is the at-most-once guard, even across a crash
+        busy.add(t.get("repo"))
         store.append_event(tid, triage.AUTO_RETRY_EVENT,
                            {"reason": t.get("reason"), "note": triage.AUTO_RETRY_NOTE})
         if t.get("session_id"):
@@ -181,11 +195,13 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
         quota_blocked = quota.blocked_until() is not None
         # Factory OFF: start nothing new; whatever is already running finishes.
         if len(_running) < concurrency and not factory.is_paused() and not quota_blocked:
+            busy = _busy_repos()
             for t in store.queued_tasks():
                 if len(_running) >= concurrency:
                     break
-                if t["id"] in _running:
+                if t["id"] in _running or t.get("repo") in busy:
                     continue
+                busy.add(t.get("repo"))
                 # An orphan reclaimed for auto-resume (session preserved) continues
                 # its SDK session; everything else — fresh dispatches AND board /retry,
                 # which clears the reason — starts from the brief.
