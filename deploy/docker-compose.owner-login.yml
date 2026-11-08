@@ -1,0 +1,16 @@
+# Opt-in override for owner login (see "Owner login" in deploy/README.md).
+# Moves the board off traefik-public onto a private network shared only with Traefik.
+# Requires Docker Compose >= 2.24 (!override) and `docker network create coxd-proxy`
+# with the Traefik container attached to it. Use:
+#   docker compose -f docker-compose.coxd.yml -f docker-compose.owner-login.yml --env-file .env up -d
+services:
+  coxd:
+    networks: !override
+      - coxd-proxy
+      - deployer-internal
+    labels:
+      - 'traefik.docker.network=coxd-proxy'
+
+networks:
+  coxd-proxy:
+    external: true

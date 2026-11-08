@@ -60,7 +60,6 @@ services:
       # deployer is running and COXD_DEPLOYER_TOKEN matches its DEPLOYER_TOKEN.
     networks:
       - traefik-public               # so Traefik (10.140.1.3) can reach the board
-      - coxd-proxy                   # private net shared only with Traefik
       - deployer-internal            # coxd -> http://deployer:8792
     labels:
       # LAN-only board behind Traefik. v1 = NO auth (home network); wildcard cert
@@ -70,8 +69,6 @@ services:
       - 'traefik.http.routers.coxd.entrypoints=websecure'
       - 'traefik.http.routers.coxd.tls=true'
       - 'traefik.http.services.coxd.loadbalancer.server.port=8791'
-      # Traefik reaches coxd on this private net, not traefik-public
-      - 'traefik.docker.network=coxd-proxy'
       # Forward-auth middleware (e.g. authelia@docker); empty = no auth. Covers the whole host.
       - 'traefik.http.routers.coxd.middlewares=${COXD_AUTH_MIDDLEWARE:-}'
       # Homepage dashboard auto-discovery
@@ -116,7 +113,5 @@ volumes:
 networks:
   traefik-public:
     external: true
-  coxd-proxy:
-    external: true                   # `docker network create coxd-proxy`; attach Traefik too
   deployer-internal:
     internal: true                   # no egress, no host publish

@@ -292,6 +292,8 @@ async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
     # reviewer to Sonnet when the weekly Opus cap is hit).
     worker_model = os.environ.get("COXD_WORKER_MODEL") or worker_model
     review_model = os.environ.get("COXD_REVIEW_MODEL") or review_model
+    if os.environ.get("COXD_OWNER_USER"):
+        board.ensure_admin_token()  # create admin.token at first start
     config = uvicorn.Config(board.app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
     print(f"coxd → http://{host}:{port}/  (concurrency {concurrency}, effort {effort})")

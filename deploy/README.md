@@ -174,8 +174,13 @@ come through the forward-auth proxy as the owner, or carry the local admin token
 All values below are invented examples.
 
 1. Close Traefik's open API (`api.insecure`) first; it exposes middleware header settings.
-2. `docker network create coxd-proxy`, and attach the Traefik container to it. coxd's
-   board router uses only this network, so other `traefik-public` containers can't reach it.
+2. `docker network create coxd-proxy`, and attach the Traefik container to it. Then deploy
+   with the override `docker-compose.owner-login.yml` (`COXD_OWNER_LOGIN=1 deploy/deploy-coxd.sh`,
+   or add `-f docker-compose.owner-login.yml` to your compose command; needs Compose >= 2.24).
+   It moves coxd off `traefik-public` onto `coxd-proxy`, so other containers can't reach it
+   directly. Without the override the base file is unchanged and needs no extra network
+   (then the proxy secret is the only barrier against containers on `traefik-public`, and
+   they can still read GET pages).
 3. Define the forward-auth middleware in Traefik (Authelia), adding the shared secret:
    ```yaml
    http:
@@ -198,7 +203,7 @@ All values below are invented examples.
    the whole board host, GET pages included. Writes need the right `Remote-User` AND the
    secret; either alone gets 403. Leave `COXD_OWNER_USER` unset to turn enforcement off.
 5. Local operator calls (no loopback exemption — workers share localhost): coxd creates
-   `$COXD_HOME/admin.token` (mode 600, root) on first start. Send it as a header:
+   `$COXD_HOME/admin.token` (when `COXD_OWNER_USER` is set) (mode 600, root) on first start. Send it as a header:
    `docker exec coxd sh -c 'curl -s -X POST -H "X-Coxd-Admin-Token: $(cat /data/coxswain/admin.token)" localhost:8791/api/factory -d "{\"paused\":true}"'`
 
 `COXD_PROXY_SECRET` is in `envscrub.SECRET_VARS`, so workers never inherit it.

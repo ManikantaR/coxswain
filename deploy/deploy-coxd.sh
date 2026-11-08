@@ -23,7 +23,10 @@ ssh "${NAS_HOST}" "test -f ${REMOTE_DIR}/deploy/.env" \
   || { echo "[coxd-deploy] ${REMOTE_DIR}/deploy/.env missing on the NAS — create it (see deploy/README.md)" >&2; exit 3; }
 
 echo "[coxd-deploy] build + up on the NAS"
-ssh "${NAS_HOST}" "cd ${REMOTE_DIR}/deploy && docker compose -f docker-compose.coxd.yml --env-file .env up -d --build"
+# COXD_OWNER_LOGIN=1 (local env) adds the private-network override; see "Owner login" in deploy/README.md.
+COMPOSE_FILES="-f docker-compose.coxd.yml"
+[ "${COXD_OWNER_LOGIN:-}" = "1" ] && COMPOSE_FILES="${COMPOSE_FILES} -f docker-compose.owner-login.yml"
+ssh "${NAS_HOST}" "cd ${REMOTE_DIR}/deploy && docker compose ${COMPOSE_FILES} --env-file .env up -d --build"
 
 echo "[coxd-deploy] done → board https://coxd.home.manikantar.com/"
 echo "[coxd-deploy] first time? run the auth + clone steps in deploy/README.md (claude login is yours)."
