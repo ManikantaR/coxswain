@@ -11,7 +11,6 @@ attempt per task per target-branch commit (recorded in the event's `target_sha`)
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import threading
 from pathlib import Path
