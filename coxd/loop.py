@@ -195,6 +195,8 @@ def _terminal(task_id: str, state: str, reason: str | None) -> str:
         if state == "pr_ready":
             notify.notify_async("coxd · ready to merge", f"{task_id} ({t['repo']})")
         else:
+            import triage
             notify.notify_async(f"coxd · needs you ({reason})",
-                                f"{task_id} ({t['repo']})", priority="high")
+                                f"{task_id} ({t['repo']})\n{triage.next_step_line(t)}",
+                                priority="high")
     return state

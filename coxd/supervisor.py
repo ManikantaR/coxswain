@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import board
 import factory
@@ -19,6 +20,7 @@ import landed
 import loop
 import quota
 import store
+import triage
 import uvicorn
 import watchdog
 
@@ -137,6 +139,35 @@ async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
         store.append_event(task_id, "error", {"error": str(e)})
 
 
+def _auto_retry_scan(worker_model: str, review_model: str, effort: str,
+                     now: float | None = None) -> list[str]:
+    """Schedule the ONE automatic retry for transient needs_human reasons (see
+    triage.py). Stateless: the delay is measured from the task's last update, so a
+    paused factory / quota wait just defers it (it fires once conditions clear)."""
+    if factory.is_paused() or quota.blocked_until() is not None:
+        return []
+    now = now or time.time()
+    started = []
+    for t in store.list_tasks():
+        tid = t["id"]
+        if t["state"] != "needs_human" or tid in _running or store.is_archived(t):
+            continue
+        if not triage.due(t, now):
+            continue
+        # record first: the event is the at-most-once guard, even across a crash
+        store.append_event(tid, triage.AUTO_RETRY_EVENT,
+                           {"reason": t.get("reason"), "note": triage.AUTO_RETRY_NOTE})
+        if t.get("session_id"):
+            store.set_state(tid, "fixing")  # claim before the next scan
+            _running[tid] = asyncio.create_task(
+                _run_one_resume(tid, worker_model, review_model, effort,
+                                note=triage.AUTO_RETRY_NOTE))
+        else:  # nothing to resume and no PR: a clean re-run is safe
+            store.set_state(tid, "queued", None)
+        started.append(tid)
+    return started
+
+
 async def _runner(concurrency: int, worker_model: str, review_model: str,
                   effort: str) -> None:
     while True:
@@ -172,6 +203,7 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
                     store.set_state(t["id"], "working")  # claim before the next scan
                     _running[t["id"]] = asyncio.create_task(
                         _run_one(t["id"], worker_model, review_model, effort))
+        _auto_retry_scan(worker_model, review_model, effort)
         await asyncio.sleep(1)
 
 
