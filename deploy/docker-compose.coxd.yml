@@ -44,14 +44,17 @@ services:
       COXD_TG_TOKEN: ${COXD_TG_TOKEN:-}
       COXD_TG_CHAT: ${COXD_TG_CHAT:-}
       COXD_BOARD_URL: ${COXD_BOARD_URL:-}
+      # deployer API, e.g. http://deployer:8792; unset = board Deploy disabled (see "Deployer" in deploy/README.md); token must equal DEPLOYER_TOKEN
+      COXD_DEPLOYER_URL: ${COXD_DEPLOYER_URL:-}
+      COXD_DEPLOYER_TOKEN: ${COXD_DEPLOYER_TOKEN:-}
     volumes:
       - coxd-data:/data/coxswain     # sqlite store + per-repo registry (persistent)
       - claude-creds:/home/coxw/.claude   # `claude login` (as coxw) writes the Pro-subscription creds here
       - coxd-repos:/repo             # target repos, cloned in during setup (persistent)
       - coxd-work:/work              # per-task git worktrees (+ node_modules), disposable
       # No docker.sock and no /volume1/docker: both are root-equivalent on the NAS and
-      # every app's .env lives under /volume1/docker. The board's Deploy button is off
-      # until it moves to a separate deployer container (factory Phase 3).
+      # every app's .env lives under /volume1/docker. The board's Deploy button calls the separate deployer container below; it works once the
+      # deployer is running and COXD_DEPLOYER_TOKEN matches its DEPLOYER_TOKEN.
     networks:
       - traefik-public               # so Traefik (10.140.1.3) can reach the board
       - deployer-internal            # coxd -> http://deployer:8792
