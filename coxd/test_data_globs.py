@@ -83,6 +83,7 @@ check("rename into inbox/ flagged", bool(pii.data_file_hits(paths, G, FX)))
 # malformed data_globs fails closed through the gate (no per-character globs)
 import store  # noqa: E402
 
+g("branch", "clean", "origin/main")
 store.create_task("tdg", "dgrepo", "brief", "/wt", repo_path=str(tmp))
 ship._pr_title = lambda t: "t"
 ship._greenlight = lambda t, wt: ("", "")
@@ -93,7 +94,10 @@ for bad in ("*.pdf", 5, ["ok", 3], {"a": 1}):
     out = ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp)
     check(f"bad data_globs {bad!r} -> pii-scan-error", out == "pii-scan-error")
 registry.save("dgrepo", {"data_globs": G, "fixture_dir": FX, "target_branch": "main"})
-check("valid config passes gate", ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp) is None)
+check("valid config, clean branch passes gate",
+      ship._pii_gate("tdg", store.get_task("tdg"), tmp, "clean", tmp) is None)
+check("valid config, data file added -> pii-block",
+      ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp) == "pii-block")
 registry.save("dgrepo", {"data_globs": G, "fixture_dir": 7, "target_branch": "main"})
 check("bad fixture_dir -> pii-scan-error",
       ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp) == "pii-scan-error")
