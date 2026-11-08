@@ -47,6 +47,9 @@ services:
       # deployer API, e.g. http://deployer:8792; unset = board Deploy disabled (see "Deployer" in deploy/README.md); token must equal DEPLOYER_TOKEN
       COXD_DEPLOYER_URL: ${COXD_DEPLOYER_URL:-}
       COXD_DEPLOYER_TOKEN: ${COXD_DEPLOYER_TOKEN:-}
+      # Owner login for board writes (see "Owner login" in deploy/README.md); unset = off
+      COXD_OWNER_USER: ${COXD_OWNER_USER:-}
+      COXD_PROXY_SECRET: ${COXD_PROXY_SECRET:-}
     volumes:
       - coxd-data:/data/coxswain     # sqlite store + per-repo registry (persistent)
       - claude-creds:/home/coxw/.claude   # `claude login` (as coxw) writes the Pro-subscription creds here

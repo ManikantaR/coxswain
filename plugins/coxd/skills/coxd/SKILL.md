@@ -58,6 +58,8 @@ gh pr merge <pr_number> --squash        # landed.py auto-cleans worktree/branch/
 ```
 Board equivalents (coxd/board.py): `POST /api/dispatch {repo, issue, brief}`,
 `POST /api/task/<id>/{retry|resume|stop}` (resume needs `{note}`), `POST /api/restart`.
+If the board has owner login on (`COXD_OWNER_USER` set), local POSTs get 403 unless they send
+`-H "X-Coxd-Admin-Token: $(cat $COXD_HOME/admin.token)"` (root-only file; see "Owner login" in deploy/README.md).
 
 ## Rules
 - **Report outcomes, not mechanics:** "PR ready: <url> — gate green, 1 finding, $0.84".

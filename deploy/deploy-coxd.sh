@@ -23,7 +23,18 @@ ssh "${NAS_HOST}" "test -f ${REMOTE_DIR}/deploy/.env" \
   || { echo "[coxd-deploy] ${REMOTE_DIR}/deploy/.env missing on the NAS — create it (see deploy/README.md)" >&2; exit 3; }
 
 echo "[coxd-deploy] build + up on the NAS"
-ssh "${NAS_HOST}" "cd ${REMOTE_DIR}/deploy && docker compose -f docker-compose.coxd.yml --env-file .env up -d --build"
+# Owner login is decided on the NAS, not by a local env var: a non-empty COXD_AUTH_MIDDLEWARE
+# in the NAS deploy/.env selects the override (middleware label + private network).
+# Quiet grep: the file holds live secrets and is never printed.
+if ssh "${NAS_HOST}" "grep -Eq '^COXD_AUTH_MIDDLEWARE=[^[:space:]]' ${REMOTE_DIR}/deploy/.env"; then
+  COMPOSE_FILES="-f docker-compose.coxd.yml -f docker-compose.owner-login.yml"
+  MODE="owner-login (forward-auth middleware + private coxd-proxy network)"
+else
+  COMPOSE_FILES="-f docker-compose.coxd.yml"
+  MODE="plain (no owner login)"
+fi
+echo "[coxd-deploy] mode: ${MODE}"
+ssh "${NAS_HOST}" "cd ${REMOTE_DIR}/deploy && docker compose ${COMPOSE_FILES} --env-file .env up -d --build"
 
 echo "[coxd-deploy] done → board https://coxd.home.manikantar.com/"
 echo "[coxd-deploy] first time? run the auth + clone steps in deploy/README.md (claude login is yours)."
