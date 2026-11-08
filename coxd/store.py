@@ -101,17 +101,31 @@ def get_clean_streak(repo: str) -> int:
     return int(r[0]) if r else 0
 
 
-def record_merge(repo: str, clean: bool) -> int:
+def record_merge(repo: str, clean: bool, task_id: str | None = None) -> int:
     """A clean merge bumps the repo's streak; any non-clean merge resets it to 0.
-    Atomic upsert. Returns the new streak."""
+    With task_id it is idempotent: the dedupe check, the counter update and the
+    'streak' event share one transaction, so a re-run (or a crash after the update)
+    never double-counts. Returns the current streak."""
     with _conn() as c:
+        if task_id is not None and c.execute(
+                "SELECT 1 FROM events WHERE task_id=? AND kind='streak'",
+                (task_id,)).fetchone():
+            r = c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?",
+                          (repo,)).fetchone()
+            return int(r[0]) if r else 0
+        flag = 1 if clean else 0
         c.execute(
             "INSERT INTO repo_streaks(repo,clean_streak,updated) VALUES(?,?,?) "
             "ON CONFLICT(repo) DO UPDATE SET "
             "clean_streak=CASE WHEN ?=1 THEN clean_streak+1 ELSE 0 END, updated=excluded.updated",
-            (repo, 1 if clean else 0, time.time(), 1 if clean else 0))
-        return int(c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?",
-                             (repo,)).fetchone()[0])
+            (repo, flag, time.time(), flag))
+        n = int(c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?",
+                          (repo,)).fetchone()[0])
+        if task_id is not None:
+            c.execute("INSERT INTO events(task_id,ts,kind,data) VALUES(?,?,?,?)",
+                      (task_id, time.time(), "streak",
+                       json.dumps({"clean": clean, "streak": n})))
+        return n
 
 
 def set_resume_at(task_id: str, ts: float | None) -> None:
