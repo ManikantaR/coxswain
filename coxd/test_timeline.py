@@ -77,4 +77,15 @@ assert r["started_at"] is None and r["queued_at"] == 300.0, r
 evs.append(st(310.0, "working"))
 r = timeline.derive({"state": "working", "created": 50.0}, evs, 400.0)
 assert r["started_at"] == 310.0 and r["queued_at"] is None, r
+
+# quota pause + auto-resume continues the same run (no new attempt window)
+def stq(ts, reason):
+    return {"kind": "state", "ts": ts, "data": {"state": "queued", "reason": reason}}
+
+
+evs = [st(0, "queued"), st(10, "working"), st(3610, "waiting_quota"),
+       stq(21610, "auto-resume-after-usage-limit"), st(21620, "working"), st(22200, "pr_ready")]
+r = timeline.derive({"state": "pr_ready", "created": 0}, evs, 23000)
+assert r["started_at"] == 10 and r["finished_at"] == 22200, r
+assert r["wall_s"] == 22190 and r["paused_quota_s"] == 18000, r
 print("ok test_timeline")

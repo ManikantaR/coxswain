@@ -19,10 +19,22 @@ def _state_of(ev: dict) -> str | None:
     return d.get("state") if isinstance(d, dict) else None
 
 
+# `queued` re-entries that continue the same run (quota pause, crash resume):
+# they must not start a new attempt window.
+_CONTINUE_REASONS = {"auto-resume-after-usage-limit", "auto-resume-on-restart"}
+
+
+def _reason_of(ev: dict) -> str | None:
+    d = ev.get("data")
+    return d.get("reason") if isinstance(d, dict) else None
+
+
 def derive(task: dict, events: list, now: float) -> dict:
-    states = [(float(e["ts"]), _state_of(e)) for e in events
-              if e.get("kind") == "state" and _state_of(e) and e.get("ts") is not None]
-    states.sort(key=lambda x: x[0])
+    trip = [(float(e["ts"]), _state_of(e), _reason_of(e)) for e in events
+            if e.get("kind") == "state" and _state_of(e) and e.get("ts") is not None]
+    trip.sort(key=lambda x: x[0])
+    states = [(ts, st) for ts, st, _ in trip]
+    reasons = [r for _, _, r in trip]
     created = task.get("created")
     cur = task.get("state")
 
@@ -37,12 +49,17 @@ def derive(task: dict, events: list, now: float) -> dict:
     # never at `created` or an earlier attempt.
     last_q = next((i for i in range(len(states) - 1, -1, -1)
                    if states[i][1] == "queued"), None)
+    # A fresh retry / human re-queue opens a new attempt; a continuation does not.
+    attempt_q = next((i for i in range(len(states) - 1, -1, -1)
+                      if states[i][1] == "queued"
+                      and reasons[i] not in _CONTINUE_REASONS), None)
+    a0 = attempt_q or 0
     queued_at = states[last_q][0] if cur == "queued" and last_q is not None else None
     if cur == "queued" and last_q is None:
         queued_at = created  # no queued event recorded yet
-    started = next((ts for ts, st in states[(last_q or 0):] if st in _START_STATES), None)
+    started = next((ts for ts, st in states[a0:] if st in _START_STATES), None)
     if started is None and states and cur != "queued":
-        started = states[last_q or 0][0]
+        started = states[a0][0]
     if started is None and cur != "queued":
         started = created  # legacy task with no recorded state events
 
@@ -56,7 +73,7 @@ def derive(task: dict, events: list, now: float) -> dict:
             landed = states[landed_i][0]
             # Factory work ends at the last hand-off to a human before the merge;
             # fall back to the landed timestamp when there was none.
-            fin_i = next((i for i in range(landed_i, (last_q or 0) - 1, -1)
+            fin_i = next((i for i in range(landed_i, a0 - 1, -1)
                           if states[i][1] in ("pr_ready", "needs_human")), None)
             finished = states[fin_i][0] if fin_i is not None else landed
             merge_wait = max(0.0, landed - finished)
@@ -64,7 +81,7 @@ def derive(task: dict, events: list, now: float) -> dict:
             if fin_i is not None and fin_i + 1 == landed_i:
                 buckets["human"] -= max(0.0, landed - finished)
     elif cur in _FINISH_STATES:
-        attempt = states[(last_q or 0):]
+        attempt = states[a0:]
         finished = next((ts for ts, st in reversed(attempt) if st in _FINISH_STATES), None)
 
     in_progress = cur not in _IDLE_STATES
