@@ -262,10 +262,10 @@ def _pii_items(repo_path: Path, base: str, ref: str, title: str, body: str,
 def _added_paths(repo_path: Path, base: str, ref: str) -> list[str]:
     """Sorted paths ADDED anywhere in base..ref (any commit, even if later removed) or
     in the net diff."""
-    names = (_git_text(repo_path, "log", "--name-only", "--diff-filter=A", "-z", "--format=",
+    flt = ("--name-only", "--no-renames", "--diff-filter=AC", "-z")  # rename/copy => add
+    names = (_git_text(repo_path, "log", *flt, "--format=",
                        "--diff-merges=first-parent", f"{base}..{ref}")
-             + "\0" + _git_text(repo_path, "diff", "--name-only", "--diff-filter=A", "-z",
-                                f"{base}...{ref}"))
+             + "\0" + _git_text(repo_path, "diff", *flt, f"{base}...{ref}"))
     return sorted({x for x in names.split("\0") if x})
 
 
@@ -294,7 +294,11 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
             store.append_event(task_id, "pii-denylist-missing", {})
         hits = pii.scan(_pii_items(repo_path, base, sha, title, body, deny),
                         deny)
-        if entry.get("data_globs"):  # document repo: new data files only under fixture_dir
+        dg, fxd = entry.get("data_globs"), entry.get("fixture_dir")
+        if dg is not None and (not isinstance(dg, list) or not all(isinstance(x, str) for x in dg)
+                               or not (fxd is None or isinstance(fxd, str))):
+            return _pii_block(task_id, "pii-scan-error", {"error": "invalid-data-globs"})
+        if dg:  # document repo: new data files only under fixture_dir
             hits += pii.data_file_hits(_added_paths(repo_path, base, sha),
                                        entry.get("data_globs"), entry.get("fixture_dir"))
         allow = pii.load_allow()

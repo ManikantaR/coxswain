@@ -72,6 +72,30 @@ paths = ship._added_paths(tmp, "origin/main", "refs/heads/b1")
 check("pdf outside fixture blocked via git (even if removed later)",
       bool(pii.data_file_hits(paths, G, FX)))
 
+# a tracked file renamed into inbox/ is an add of a data path
+g("checkout", "-q", "-b", "b2", "origin/main")
+(tmp / "inbox").mkdir()
+g("mv", "a.txt", "inbox/a.txt")
+g("commit", "-qm", "rename into inbox")
+paths = ship._added_paths(tmp, "origin/main", "refs/heads/b2")
+check("rename into inbox/ flagged", bool(pii.data_file_hits(paths, G, FX)))
+
+# malformed data_globs fails closed through the gate (no per-character globs)
+import store  # noqa: E402
+
+store.create_task("tdg", "dgrepo", "brief", "/wt", repo_path=str(tmp))
+ship._pr_title = lambda t: "t"
+ship._greenlight = lambda t, wt: ("", "")
+ship._build_body = lambda t, wt, h="": "b"
+ship._pii_items = lambda *a, **k: {}
+for bad in ("*.pdf", 5, ["ok", 3], {"a": 1}):
+    registry.save("dgrepo", {"data_globs": bad, "fixture_dir": FX, "target_branch": "main"})
+    out = ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp)
+    check(f"bad data_globs {bad!r} -> pii-scan-error", out == "pii-scan-error")
+registry.save("dgrepo", {"data_globs": G, "fixture_dir": 7, "target_branch": "main"})
+check("bad fixture_dir -> pii-scan-error",
+      ship._pii_gate("tdg", store.get_task("tdg"), tmp, "b1", tmp) == "pii-scan-error")
+
 # brief
 guarded = registry.data_guard_brief({"data_globs": G, "fixture_dir": FX}, "do x")
 check("brief carries guard when set", "synthetic fixtures only" in guarded.lower())
