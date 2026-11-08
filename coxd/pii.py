@@ -119,6 +119,55 @@ def load_allow() -> set[tuple[str, str, str]]:
     return out
 
 
+def _glob_re(glob: str) -> re.Pattern[str]:
+    """gitignore-ish glob: `**` crosses `/`, `*`/`?` do not; `**/` also matches nothing;
+    a pattern with no `/` matches at any depth; a trailing `/**` or `/` matches the tree.
+    Case-insensitive (so `.PDF` can't slip past `*.pdf`)."""
+    g = glob.strip().lstrip("/")
+    if g.endswith("/"):
+        g += "**"
+    if "/" not in g:
+        g = "**/" + g
+    out, i = "", 0
+    while i < len(g):
+        if g.startswith("**/", i):
+            out += "(?:.*/)?"
+            i += 3
+        elif g.startswith("**", i):
+            out += ".*"
+            i += 2
+        elif g[i] == "*":
+            out += "[^/]*"
+            i += 1
+        elif g[i] == "?":
+            out += "[^/]"
+            i += 1
+        else:
+            out += re.escape(g[i])
+            i += 1
+    return re.compile(out + r"\Z", re.IGNORECASE | re.DOTALL)
+
+
+def data_file_hits(added_paths: list[str], data_globs: list[str] | None,
+                   fixture_dir: str | None) -> list[Hit]:
+    """Document-repo guard: a newly ADDED file matching a data glob that is not under
+    `fixture_dir` is a hit. Location is the index only — the path is never named.
+    With data_globs set but no fixture_dir, nothing is exempt (fail closed)."""
+    pats = [_glob_re(g) for g in (data_globs or []) if isinstance(g, str) and g.strip()]
+    if not pats:
+        return []
+    fx = (fixture_dir or "").strip().replace("\\", "/").strip("/") if isinstance(
+        fixture_dir, str) else ""
+    hits: list[Hit] = []
+    for i, p in enumerate(added_paths):
+        norm = p.replace("\\", "/")
+        parts = norm.split("/")
+        in_fixture = bool(fx) and ".." not in parts and norm.lower().startswith(fx.lower() + "/")
+        if not in_fixture and any(r.match(norm) for r in pats):
+            hits.append(Hit("data-file", f"data:{i}"))
+    return hits
+
+
 def scan(items: dict[str, str], denylist: list[str]) -> list[Hit]:
     deny = [re.compile(r"(?<!\w)" + re.escape(t) + r"(?!\w)", re.IGNORECASE)
             for t in denylist if t and t.strip()]
