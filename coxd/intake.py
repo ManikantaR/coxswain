@@ -286,6 +286,11 @@ def poll_once() -> int | None:
     if st["level"] == "blocked":  # fail closed: PII denylist missing/empty
         why = "missing" if not st["exists"] else "empty"
         print(f"intake: paused — PII denylist {why}")
+        for r in enabled_repos():  # housekeeping continues; nothing new is taken
+            try:
+                _reconcile_stuck(r["name"], r["path"])
+            except Exception as e:  # noqa: BLE001
+                print(f"intake: {r['name']} reconcile failed: {type(e).__name__}")
         _status.update(at=time.time(), taken=0, blocked=f"pii-denylist-{why}")
         return 0
     _status.pop("blocked", None)

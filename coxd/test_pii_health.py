@@ -37,7 +37,8 @@ def check(name, cond):
 
 def setup(deny="present", age=None, cands=None):
     for p in (pii.denylist_path(), HOME / "pii" / "last-reviewed",
-              HOME / "pii" / "new-candidates.count", HOME / "pii-ping-last"):
+              HOME / "pii" / "new-candidates.count", HOME / "pii-ping-last",
+              HOME / "pii" / "harvest-failed.count"):
         p.unlink(missing_ok=True)
     (HOME / "pii").mkdir(exist_ok=True)
     if deny == "present":
@@ -90,6 +91,9 @@ check("day 3: no", not pii_health.maybe_ping(D(3), send))
 check("day 4: yes (3 days)", pii_health.maybe_ping(D(4), send))
 check("day 5: no", not pii_health.maybe_ping(D(5), send))
 check("day 7: yes", pii_health.maybe_ping(D(7), send))
+# pings wait for the digest hour (default 07:20)
+check("before digest time: no ping", not pii_health.maybe_ping(D(10, 3), send))
+check("after digest time: ping", pii_health.maybe_ping(D(10, 8), send))
 # review lands: ok -> stops
 (HOME / "pii" / "last-reviewed").write_text(str(int(D(8).timestamp())))
 (HOME / "pii" / "new-candidates.count").write_text("0")
@@ -99,18 +103,32 @@ check("after review: no ping day 13", not pii_health.maybe_ping(D(13), send))
 check("monthly 1st still pings when ok",
       pii_health.maybe_ping(datetime(2027, 1, 1, 9), send))
 
+# harvest failures
+s = setup(age=3, cands=0)
+(HOME / "pii" / "harvest-failed.count").write_text("2")
+s = pii_health.status(NOW)
+check("harvest failures -> due", s["level"] == "due" and s["harvest_failed"] == 2)
+check("line has failed count only",
+      pii_health.summary_line(s) == "PII denylist: reviewed 3 days ago, 0 new candidates"
+      ", 2 sources failed — run the review")
+setup(age=50, cands=0)
+(HOME / "pii" / "harvest-failed.count").write_text("1")
+check("overdue stays overdue", pii_health.status(NOW)["level"] == "overdue")
+
 # fail closed
 registry_entries = {}
 registry.load = lambda n: registry_entries.get(n)  # type: ignore
 intake.enabled_repos = lambda: [{"name": "widgets", "path": "/nonexistent"}]  # type: ignore
 processed = []
 intake._process_repo = lambda n, p: processed.append(n) or 1  # type: ignore
-intake._reconcile_stuck = lambda n, p: None  # type: ignore
+reconciled = []
+intake._reconcile_stuck = lambda n, p: reconciled.append(n)  # type: ignore
 setup(deny="missing", age=1, cands=0)
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     r = intake.poll_once()
 check("blocked: intake takes nothing", r == 0 and not processed)
+check("blocked: reconcile still runs", reconciled == ["widgets"])
 check("blocked: reason recorded once", buf.getvalue().count("PII denylist missing") == 1
       and intake.status().get("blocked") == "pii-denylist-missing")
 setup(age=1, cands=0)

@@ -217,9 +217,11 @@ freshness. The owner's review tool writes two metadata files into `$COXD_HOME/pi
 
 - `last-reviewed` — epoch seconds of the last review
 - `new-candidates.count` — integer count of unreviewed candidate terms
+- `harvest-failed.count` — integer count of sources the review tool failed to read (>0 → at least `due`)
 
-Coxd reads only those two plus the denylist's file size (`coxd/pii_health.py`); it never reads,
-prints or logs denylist contents in this feature.
+Coxd reads those metadata files and parses the denylist in-process only to count effective terms
+(`coxd/pii_health.py`), so a missing, empty or comment-only file is `blocked`. It returns only
+booleans and counts and never prints or logs terms.
 
 | level | condition | effect |
 |---|---|---|
@@ -228,7 +230,7 @@ prints or logs denylist contents in this feature.
 | `overdue` | >45 days (or never reviewed) | nags only; does not block work |
 | `blocked` | denylist missing or empty | fail closed (below) |
 
-Reminders (counts only): one line in the morning digest when not `ok`; a Telegram/ntfy ping on the
+Reminders (counts only): one line in the morning digest when not `ok`; a Telegram/ntfy ping (sent only at or after `COXD_DIGEST_AT`) on the
 1st of each month, then every 3 days while `due`/`overdue`, stopping once a review lands; a
 `denylist 12d` pill in the board header (warning colours when due/overdue/blocked).
 
