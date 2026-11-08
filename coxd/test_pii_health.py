@@ -141,6 +141,11 @@ setup(age=1, cands=0)
 registry_entries["r"] = {"intake": True}
 check("present: intake repo passes", gate() is None)
 setup(deny="present", age=60, cands=0)
+pii.denylist_path().write_text("# terms\n  \n")
+check("comment-only denylist -> blocked", pii_health.status(NOW)["level"] == "blocked")
+(HOME / "pii" / "last-reviewed").write_text("nan")
+check("nan metadata tolerated", pii_health.status(NOW)["age_days"] is None)
+setup(deny="present", age=60, cands=0)
 check("overdue does not block", gate() is None)
 
 print("FAILS:", fails)

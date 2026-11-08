@@ -6,6 +6,7 @@ size (stat only).
 """
 from __future__ import annotations
 
+import math
 import time
 
 import registry
@@ -17,20 +18,23 @@ PING_EVERY_DAYS = 3
 
 def _read_num(name: str) -> float | None:
     try:
-        return float((registry.home() / "pii" / name).read_text().strip())
+        v = float((registry.home() / "pii" / name).read_text().strip())
     except (OSError, ValueError):
         return None
+    return v if math.isfinite(v) else None
 
 
 def status(now: float | None = None) -> dict:
-    from pii import denylist_path  # late: pii imports registry only
+    import pii  # late import
     now = time.time() if now is None else now
+    # Count effective terms in-process only (same parser as the scanner, so a
+    # comment-only or blank file is "empty"); contents are never returned or logged.
     try:
-        size = denylist_path().stat().st_size
-        exists = True
+        terms, missing = pii.load_denylist()
     except OSError:
-        size, exists = 0, False
-    empty = exists and size == 0
+        terms, missing = [], True
+    exists = not missing
+    empty = exists and not terms
     ts = _read_num("last-reviewed")
     age = None if ts is None else max(0, int((now - ts) // 86400))
     n = _read_num("new-candidates.count")

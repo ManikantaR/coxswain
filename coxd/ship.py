@@ -293,7 +293,8 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
         deny, missing = pii.load_denylist()
         if pii_health.status()["level"] == "blocked" and (
                 entry.get("intake") is True or entry.get("data_globs")):
-            return _pii_block(task_id, "pii-scan-error", {"error": "denylist-missing"})
+            why = "denylist-missing" if missing else "denylist-empty"
+            return _pii_block(task_id, "pii-scan-error", {"error": why})
         if missing:
             store.append_event(task_id, "pii-denylist-missing", {})
         hits = pii.scan(_pii_items(repo_path, base, sha, title, body, deny),
