@@ -110,7 +110,8 @@ for i in range(12):
     store.create_task(f"p{i}", "plain-repo", "b", "/tmp/wt")
     store.record_merge("plain-repo", True, task_id=f"p{i}")
     landed._maybe_propose_auto("plain-repo")
-check("long streak alone yields proposed, not auto", registry.merge_level("plain-repo") == "proposed")
+check("long streak alone yields proposed, not auto",
+      registry.merge_level("plain-repo") == "proposed")
 check("approve sets auto", registry.approve_auto_merge(R2) and registry.merge_level(R2) == "auto")
 store.create_task("m99", R2, "b", "/tmp/wt")
 store.record_merge(R2, False, task_id="m99")

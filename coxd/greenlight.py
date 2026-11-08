@@ -58,7 +58,8 @@ def tier(findings: list[dict], verdict: str | None, changed_files: list[str],
         if meds:
             reasons.append(f"{len(meds)} medium finding(s)")
         if big:
-            reasons.append(f"{SIZE_REASON_PREFIX} ({len(changed_files)} files, +{added}/-{deleted})")
+            reasons.append(f"{SIZE_REASON_PREFIX} ({len(changed_files)} files, "
+                           f"+{added}/-{deleted})")
         return "AMBER", reasons
     reasons.append(f"clean: gate green, no high/med findings, small diff "
                    f"({len(changed_files)} files, +{added}/-{deleted})")

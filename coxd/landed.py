@@ -114,7 +114,8 @@ def coxd_identity_email(repo_path: str | None) -> str:
 
 def is_clean_merge(tier: str | None, ci_green: bool, commits: list[tuple[str, str]],
                    bot_emails: list[str], reasons: list[str] | None = None) -> bool:
-    """Clean = tier GREEN (or AMBER whose only reason is size), CI green, and every commit's PRIMARY author AND committer
+    """Clean = tier GREEN (or AMBER whose only reason is size), CI green,
+    and every commit's PRIMARY author AND committer
     email is coxd's identity (or an allowlisted extra). Co-Authored-By trailers are not
     consulted. Unknown/empty commit list or identity is NOT clean (fail closed)."""
     bots = {b.strip().lower() for b in bot_emails if b and b.strip()}
