@@ -227,12 +227,16 @@ def archive_task(task_id: str) -> None:
     with _conn() as c:
         c.execute("UPDATE tasks SET archived_at=?, updated=? WHERE id=?",
                   (time.time(), time.time(), task_id))
+    import status  # lazy: status imports store
+    status.refresh_for_task(task_id)
 
 
 def unarchive_task(task_id: str) -> None:
     with _conn() as c:
         c.execute("UPDATE tasks SET archived_at=NULL, updated=? WHERE id=?",
                   (time.time(), task_id))
+    import status  # lazy: status imports store
+    status.refresh_for_task(task_id)
 
 
 _STATUS_KINDS = {"created", "state", "deployed", "streak"}
