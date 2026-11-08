@@ -100,7 +100,8 @@ landed.run_deploy(mk("t4"), "o/aura-tutor")
 check("recent deploy of same sha → coalesced",
       not deploy_ran and "deploy-coalesced" in kinds("t4"))
 landed.run_deploy(mk("t4a"), "o/aura-tutor", sha="b" * 40)
-check("different sha is NOT coalesced", deploy_ran == ["aura-tutor"] and streamed[-1][1] == "b" * 40)
+check("different sha is NOT coalesced",
+      deploy_ran == ["aura-tutor"] and streamed[-1][1] == "b" * 40)
 
 # 4b. post-merge hook: deploys the merged commit unless the PR touches migrations (#53)
 pings0: list = []
@@ -157,6 +158,7 @@ import server as deployer_server  # noqa: E402
 
 root = tempfile.mkdtemp(prefix="fake-src-")
 import subprocess  # noqa: E402
+
 _git = ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
 subprocess.run(_git + ["init", "-q"], check=True)
 subprocess.run(_git + ["commit", "-q", "--allow-empty", "-m", "x"], check=True)
