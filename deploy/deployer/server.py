@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -26,6 +27,7 @@ REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 MAX_JOBS = 50
+DEFAULT_JOB_TIMEOUT_S = 45 * 60  # a hung build must not block the repo's deploys forever
 DEFAULT_SRC_ROOT = "/volume1/docker"
 
 
@@ -62,10 +64,11 @@ def load_allowlist(path: str, src_root: str = DEFAULT_SRC_ROOT) -> dict[str, dic
 
 class Deployer:
     def __init__(self, allowlist: dict[str, dict], token: str, log_dir: str | None = None,
-                 src_root: str | None = None):
+                 src_root: str | None = None, job_timeout_s: float = DEFAULT_JOB_TIMEOUT_S):
         if not token:
             raise ValueError("DEPLOYER_TOKEN is empty; refusing to start")
         self.allowlist = allowlist
+        self.job_timeout_s = job_timeout_s
         self.src_root = src_root  # when set, cwd is re-checked right before every spawn
         self.token = token
         self.log_dir = log_dir or tempfile.mkdtemp(prefix="deployer-")
@@ -122,8 +125,19 @@ class Deployer:
                     if self.src_root is not None and not _inside(self.src_root, ent["cwd"]):
                         raise OSError(f"cwd {ent['cwd']} is no longer inside {self.src_root}")
                     p = subprocess.Popen(ent["cmd"], cwd=ent["cwd"], stdin=subprocess.DEVNULL,
-                                         stdout=log, stderr=subprocess.STDOUT)
-                    code = p.wait()
+                                         stdout=log, stderr=subprocess.STDOUT,
+                                         start_new_session=True)
+                    try:
+                        code = p.wait(timeout=self.job_timeout_s)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(p.pid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            p.kill()
+                        p.wait()
+                        log.write(f"\ndeployer: timed out after {self.job_timeout_s:.0f}s, "
+                                  "killed\n".encode())
+                        code = 124
                 except OSError as e:
                     log.write(f"deployer: failed to start: {e}\n".encode())
         finally:
@@ -212,7 +226,8 @@ def main() -> None:
     cfg = os.environ.get("DEPLOYER_CONFIG", "/etc/deployer/allowlist.json")
     root = os.environ.get("DEPLOYER_SRC_ROOT", DEFAULT_SRC_ROOT)
     try:
-        d = Deployer(load_allowlist(cfg, root), token, os.environ.get("DEPLOYER_LOG_DIR"), root)
+        d = Deployer(load_allowlist(cfg, root), token, os.environ.get("DEPLOYER_LOG_DIR"), root,
+                     float(os.environ.get("DEPLOYER_JOB_TIMEOUT_S") or DEFAULT_JOB_TIMEOUT_S))
     except (ValueError, OSError) as e:
         print(f"deployer: FATAL config error: {e}. See deploy/README.md (deployer setup).",
               flush=True)

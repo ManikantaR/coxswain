@@ -69,7 +69,8 @@ Rules for a repo's deploy command (the allowlist entry):
   Verifying the deployed commit SHA is a follow-up (tracked in a separate issue).
 - **Container-native — no `ssh nas`.** Use a script like MoneyPulse's `deploy/coxd-deploy.sh`.
 - Non-interactive (stdin is `/dev/null`). coxd stops waiting after `deploy.timeout_s`
-  (default 2700 s = 45 min) and records `deploy-failed` rc=124.
+  (default 2700 s = 45 min) and records `deploy-failed` rc=124. The deployer also kills a job
+  after `DEPLOYER_JOB_TIMEOUT_S` (default 2700), so a hung build cannot block later deploys.
 
 Watching a deploy: the deployer log is relayed live to `docker logs -f coxd` (lines prefixed
 `[deploy <task-id>]`), and a `deploy-progress` event with the latest line lands in the
@@ -139,7 +140,7 @@ internal `deployer-internal` network. It is behind a compose profile, so plain
    ```json
    {
      "example-app": {
-       "cmd": ["docker", "compose", "up", "-d", "--build"],
+       "cmd": ["sh", "-c", "git pull --ff-only origin main && docker compose up -d --build"],
        "cwd": "/volume1/docker/example-app"
      }
    }

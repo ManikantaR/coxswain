@@ -10,7 +10,8 @@ from __future__ import annotations
 import os
 import tempfile
 
-SECRET_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "COXD_TG_TOKEN")
+SECRET_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "COXD_TG_TOKEN",
+               "COXD_DEPLOYER_TOKEN")
 
 
 def scratch_home() -> str:

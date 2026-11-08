@@ -101,12 +101,15 @@ def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
         return 127, f"could not start deploy: bad deployer response ({e})"
     deadline = time.monotonic() + timeout_s
     tail: deque[str] = deque(maxlen=40)
+    stop = threading.Event()  # set on return: a stale relay must emit nothing afterwards
 
     def _relay() -> None:
         last_emit = time.monotonic()
         try:
             with _deployer_req("GET", f"/deploys/{jid}/log", timeout=timeout_s + 30) as r:
                 for raw in r:
+                    if stop.is_set():
+                        return
                     line = raw.decode("utf-8", "replace").rstrip("\r\n")
                     tail.append(line)
                     print(f"[deploy {tid}] {line}", flush=True)
@@ -118,25 +121,28 @@ def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
 
     th = threading.Thread(target=_relay, daemon=True)
     th.start()
-    th.join(max(0.0, deadline - time.monotonic()))
-    while True:
-        try:
-            st = _deployer_status(jid)
-        except (DeployerError, ValueError) as e:
-            if isinstance(e, DeployerError) and e.code == 404:  # deployer restarted: job gone
-                return 127, "deployer no longer knows this job (restarted?)\n" + "\n".join(tail)
+    try:
+        th.join(max(0.0, deadline - time.monotonic()))
+        while True:
+            try:
+                st = _deployer_status(jid)
+            except (DeployerError, ValueError, OSError, http.client.HTTPException) as e:
+                if isinstance(e, DeployerError) and e.code == 404:  # deployer restarted: job gone
+                    return 127, "deployer no longer knows this job (restarted?)\n" + "\n".join(tail)
+                if time.monotonic() >= deadline:
+                    return 124, f"timed out after {int(timeout_s)}s ({e})\n" + "\n".join(tail)
+                time.sleep(2)
+                continue
+            if st.get("status") != "running":
+                th.join(5)  # let the relay drain the last lines
+                code = st.get("exit_code")
+                return (code if isinstance(code, int) else -1), "\n".join(tail)
             if time.monotonic() >= deadline:
-                return 124, f"timed out after {int(timeout_s)}s ({e})\n" + "\n".join(tail)
+                msg = f"timed out after {int(timeout_s)}s (deployer job left running)"
+                return 124, msg + "\n" + "\n".join(tail)
             time.sleep(2)
-            continue
-        if st.get("status") != "running":
-            th.join(5)  # let the relay drain the last lines
-            code = st.get("exit_code")
-            return (code if isinstance(code, int) else -1), "\n".join(tail)
-        if time.monotonic() >= deadline:
-            msg = f"timed out after {int(timeout_s)}s (deployer job left running)"
-            return 124, msg + "\n" + "\n".join(tail)
-        time.sleep(2)
+    finally:
+        stop.set()
 
 
 def _pr_merged(pr_url: str, repo_slug: str) -> tuple[bool, str | None]:
@@ -309,6 +315,9 @@ def run_deploy(t: dict, slug: str, *, manual: bool = False) -> dict:
         rc, out = 127, f"could not start deploy: {e}"
     if rc == 409:
         store.append_event(t["id"], "deploy-skipped", {"reason": out[-200:]})
+        notify.notify_async("coxd: deploy NOT started",
+                            f"{slug}: a deploy is already running on the deployer — "
+                            "check it (a hung job blocks later deploys)", "high")
         return {"error": "a deploy for this repo is already running on the deployer"}
     if rc == 0:
         store.append_event(t["id"], "deployed", {"command": dep["command"]})
