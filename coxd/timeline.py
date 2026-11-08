@@ -11,7 +11,7 @@ _WORKING = ("provision", "implement", "gate", "fix", "review", "ship")
 _START_STATES = {"provisioning", "working", "gating", "fixing", "reviewing",
                  "shipping", "ci-watching"}
 _FINISH_STATES = {"pr_ready", "needs_human", "landed"}
-_IDLE_STATES = _FINISH_STATES | {"failed"}
+_IDLE_STATES = _FINISH_STATES | {"failed", "queued"}
 
 
 def _state_of(ev: dict) -> str | None:
@@ -33,9 +33,16 @@ def derive(task: dict, events: list, now: float) -> dict:
         if b:
             buckets[b] += max(0.0, nxt - ts)
 
-    started = next((ts for ts, st in states if st in _START_STATES), created)
-    if started is None and states:
-        started = states[0][0]
+    # Only the latest attempt counts: look past the most recent `queued` entry,
+    # never at `created` or an earlier attempt.
+    last_q = next((i for i in range(len(states) - 1, -1, -1)
+                   if states[i][1] == "queued"), None)
+    queued_at = states[last_q][0] if cur == "queued" and last_q is not None else None
+    if cur == "queued" and last_q is None:
+        queued_at = created  # no queued event recorded yet
+    started = next((ts for ts, st in states[(last_q or 0):] if st in _START_STATES), None)
+    if started is None and states and cur != "queued":
+        started = states[last_q or 0][0]
 
     finished = None
     landed = None
@@ -86,7 +93,7 @@ def derive(task: dict, events: list, now: float) -> dict:
             buckets[b] += max(0.0, now - states[-1][0])
 
     return {
-        "started_at": started, "finished_at": finished, "landed_at": landed,
+        "started_at": started, "queued_at": queued_at, "finished_at": finished, "landed_at": landed,
         "in_progress": in_progress, "wall_s": wall,
         "active_s": sum(buckets[b] for b in _WORKING),
         "paused_quota_s": buckets["paused"], "human_wait_s": buckets["human"],
