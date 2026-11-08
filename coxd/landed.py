@@ -272,3 +272,8 @@ def check_and_cleanup_merged() -> None:
         except Exception:  # noqa: BLE001 - label hygiene must never block cleanup
             pass
         _maybe_deploy(t, slug)
+        try:
+            import rebase
+            rebase.mark_merged(t["repo"])
+        except Exception:  # noqa: BLE001 - rebasing others must never block cleanup
+            pass
