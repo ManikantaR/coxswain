@@ -17,7 +17,19 @@ def _flag():
     return registry.home() / "paused"
 
 
+_cap: int | None = None  # global concurrency cap of this serve process (shown on the board)
+
+
+def set_concurrency(n: int) -> None:
+    global _cap
+    _cap = n
+
+
 def status() -> dict:
+    return {**_pause_status(), "concurrency": _cap}
+
+
+def _pause_status() -> dict:
     p = _flag()
     if not p.exists():
         return {"paused": False}
