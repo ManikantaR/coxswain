@@ -15,3 +15,5 @@ dist/
 
 .DS_Store
 deploy/.env
+deploy/deployer.env
+deploy/deployer/allowlist.json

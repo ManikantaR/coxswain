@@ -53,6 +53,7 @@ services:
       # until it moves to a separate deployer container (factory Phase 3).
     networks:
       - traefik-public               # so Traefik (10.140.1.3) can reach the board
+      - deployer-internal            # coxd -> http://deployer:8792
     labels:
       # LAN-only board behind Traefik. v1 = NO auth (home network); wildcard cert
       # covers *.home.manikantar.com, AdGuard resolves it internally to Traefik.
@@ -68,6 +69,26 @@ services:
       - 'homepage.href=https://coxd.home.manikantar.com'
       - 'homepage.description=Autonomous coding orchestrator (coxswain)'
 
+  # The ONLY service with docker.sock. Reachable only from coxd over the internal
+  # network (no ports published, not on traefik-public). Token + allowlist live in
+  # NAS-only files (deploy/deployer.env, deploy/deployer/allowlist.json) - never in git.
+  deployer:
+    build:
+      context: ..
+      dockerfile: deploy/deployer/Dockerfile
+    image: coxd-deployer:latest
+    container_name: coxd-deployer
+    restart: unless-stopped
+    env_file:
+      - deployer.env                 # DEPLOYER_TOKEN=... (NAS only)
+    environment:
+      DEPLOYER_CONFIG: /etc/deployer/allowlist.json
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./deployer/allowlist.json:/etc/deployer/allowlist.json:ro
+    networks:
+      - deployer-internal
+
 volumes:
   coxd-data:
   claude-creds:
@@ -77,3 +98,5 @@ volumes:
 networks:
   traefik-public:
     external: true
+  deployer-internal:
+    internal: true                   # no egress, no host publish

@@ -1,0 +1,6 @@
+{
+  "example-app": {
+    "cmd": ["docker", "compose", "up", "-d", "--build"],
+    "cwd": "/deploy-src/example-app"
+  }
+}
