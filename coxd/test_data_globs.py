@@ -73,8 +73,8 @@ check("pdf outside fixture blocked via git (even if removed later)",
       bool(pii.data_file_hits(paths, G, FX)))
 
 # brief
-check("brief carries guard when set",
-      "synthetic fixtures only" in registry.data_guard_brief({"data_globs": G, "fixture_dir": FX}, "do x").lower())
+guarded = registry.data_guard_brief({"data_globs": G, "fixture_dir": FX}, "do x")
+check("brief carries guard when set", "synthetic fixtures only" in guarded.lower())
 check("brief untouched when unset", registry.data_guard_brief({}, "do x") == "do x")
 
 sys.exit(1 if fails else 0)
