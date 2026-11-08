@@ -131,6 +131,14 @@ def propose_auto_merge(repo: str) -> bool:
     return registry.propose_auto_merge(repo)
 
 
+def approve_auto_merge(repo: str) -> bool:
+    """proposed → auto, only while the streak still justifies the proposal."""
+    if get_clean_streak(repo) < registry.AUTO_MERGE_STREAK:
+        registry.withdraw_proposal(repo)
+        return False
+    return registry.approve_auto_merge(repo)
+
+
 def record_merge(repo: str, clean: bool, task_id: str | None = None) -> int:
     """A clean merge bumps the repo's streak; any non-clean merge resets it to 0.
     With task_id it is idempotent: the dedupe check, the counter update and the

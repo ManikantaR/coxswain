@@ -64,6 +64,17 @@ def propose_auto_merge(repo_name: str) -> bool:
         return True
 
 
+def withdraw_proposal(repo_name: str) -> bool:
+    """proposed → manual (the streak broke before the owner approved). Never touches `auto`."""
+    with _level_lock:
+        entry = load(repo_name)
+        if entry is None or merge_level(repo_name) != "proposed":
+            return False
+        entry["merge_level"] = "manual"
+        save(repo_name, entry)
+        return True
+
+
 def approve_auto_merge(repo_name: str) -> bool:
     """proposed → auto. The ONLY function that sets `auto` (called by the board's
     'Approve auto-merge' action). False if the repo has no pending proposal."""

@@ -102,6 +102,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     rows = []
     archived_count = 0
     now = time.time()
+    levels: dict[str, str] = {}  # one registry read per repo per poll
     for t in store.list_tasks():
         if _is_archived(t):
             archived_count += 1
@@ -118,7 +119,8 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "archived": bool(t.get("archived_at")),
             "resumable": bool(t.get("session_id")),
             # Deploy button shows on a landed task whose repo has a deploy command.
-            "approve_auto": registry.merge_level(t["repo"]) == "proposed",
+            "approve_auto": levels.setdefault(
+                t["repo"], registry.merge_level(t["repo"])) == "proposed",
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
             "timing": timeline.derive(t, evs, now),
@@ -229,7 +231,7 @@ async def api_repo_approve_auto(req: Request) -> JSONResponse:
     """The ONLY path to merge_level=auto: the owner taps 'Approve auto-merge' on a
     repo whose streak earned a proposal."""
     repo = req.path_params["repo"]
-    if not registry.approve_auto_merge(repo):
+    if not store.approve_auto_merge(repo):
         return JSONResponse({"error": "no pending auto-merge proposal for this repo"},
                             status_code=400)
     return JSONResponse({"ok": True, "merge_level": "auto"})

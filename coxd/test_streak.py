@@ -118,4 +118,22 @@ store.record_merge(R2, False, task_id="m99")
 landed._maybe_propose_auto(R2)
 check("non-clean merge / re-propose leaves auto untouched", registry.merge_level(R2) == "auto")
 
+# --- a broken streak withdraws the proposal; approve then refuses
+R3 = "delta-sprockets"
+registry.save(R3, {"test": "t"})
+for i in range(10):
+    store.create_task(f"d{i}", R3, "b", "/tmp/wt")
+    store.record_merge(R3, True, task_id=f"d{i}")
+landed._maybe_propose_auto(R3)
+check("R3 proposed", registry.merge_level(R3) == "proposed")
+store.create_task("d99", R3, "b", "/tmp/wt")
+store.record_merge(R3, False, task_id="d99")
+check("approve refused after streak broke", store.approve_auto_merge(R3) is False
+      and registry.merge_level(R3) == "manual")
+store.create_task("d98", "eta-cogs", "b", "/tmp/wt")
+registry.save("eta-cogs", {"test": "t"})
+registry.propose_auto_merge("eta-cogs")
+landed._maybe_propose_auto("eta-cogs")
+check("stale proposal withdrawn on next merge", registry.merge_level("eta-cogs") == "manual")
+
 sys.exit(0 if all(res) else 1)

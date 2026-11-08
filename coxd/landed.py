@@ -169,6 +169,9 @@ def _record_streak(t: dict, slug: str) -> None:
 
 def _maybe_propose_auto(repo: str) -> None:
     """Streak reached the threshold → propose `auto` (once) and ping the owner."""
+    if store.get_clean_streak(repo) < registry.AUTO_MERGE_STREAK:
+        registry.withdraw_proposal(repo)  # streak broke before approval → no longer earned
+        return
     if store.propose_auto_merge(repo):
         notify.notify_async(
             "coxd: auto-merge proposed",
