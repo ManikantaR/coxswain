@@ -281,6 +281,14 @@ def poll_once() -> int | None:
     """One pass over opted-in repos. None (and zero calls) while the factory is paused."""
     if factory.is_paused():
         return None
+    import pii_health
+    st = pii_health.status()
+    if st["level"] == "blocked":  # fail closed: PII denylist missing/empty
+        why = "missing" if not st["exists"] else "empty"
+        print(f"intake: paused — PII denylist {why}")
+        _status.update(at=time.time(), taken=0, blocked=f"pii-denylist-{why}")
+        return 0
+    _status.pop("blocked", None)
     taken = 0
     for r in enabled_repos():
         try:

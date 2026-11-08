@@ -15,6 +15,7 @@ import time
 
 import board
 import notify
+import pii_health
 import registry
 import store
 import triage
@@ -77,6 +78,9 @@ def summary_text(now: float | None = None) -> str:
         out.append(f"Landed in the last 24 h: {len(landed)}")
     if not out:
         out.append("Quiet night — nothing ran, nothing waiting.")
+    pl = pii_health.summary_line()
+    if pl:
+        out.append(pl)
     out.append(f"Cost last 24 h: ${cost:.2f}")
     return "\n".join(out)
 
@@ -105,6 +109,7 @@ async def run() -> None:
         try:
             check_stalls()
             maybe_send_morning_summary()
+            pii_health.maybe_ping(notify.local_now(), notify.notify_async)
         except Exception as e:  # noqa: BLE001
             print(f"watchdog pass failed: {e}")
         await asyncio.sleep(CHECK_INTERVAL_S)

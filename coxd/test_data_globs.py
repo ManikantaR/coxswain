@@ -17,6 +17,7 @@ import registry  # noqa: E402
 import ship  # noqa: E402
 
 fails = 0
+open(pii.denylist_path(), "w").write("Zebulon Quux\n")
 
 
 def check(name: str, cond: bool) -> None:
