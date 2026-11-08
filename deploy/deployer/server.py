@@ -25,9 +25,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
-def load_allowlist(path: str) -> dict[str, dict]:
+MAX_JOBS = 50
+DEFAULT_SRC_ROOT = "/volume1/docker"
+
+
+def _inside(root: str, path: str) -> bool:
+    root, path = os.path.realpath(root), os.path.realpath(path)
+    return path != root and os.path.commonpath([root, path]) == root
+
+
+def load_allowlist(path: str, src_root: str = DEFAULT_SRC_ROOT) -> dict[str, dict]:
+    if os.path.isdir(path):
+        raise ValueError(f"allowlist path {path} is a directory (missing file bind-mounted?)")
+    if not os.path.isfile(path):
+        raise ValueError(f"allowlist file {path} not found")
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError("allowlist must be a JSON object")
     out: dict[str, dict] = {}
     for name, ent in raw.items():
         cmd, cwd = ent.get("cmd"), ent.get("cwd")
@@ -37,6 +52,8 @@ def load_allowlist(path: str) -> dict[str, dict]:
             raise ValueError(f"{name}: cmd must be a non-empty list of strings")
         if not (isinstance(cwd, str) and os.path.isabs(cwd)):
             raise ValueError(f"{name}: cwd must be an absolute path")
+        if not _inside(src_root, cwd):
+            raise ValueError(f"{name}: cwd {cwd} must be inside source root {src_root}")
         out[name] = {"cmd": list(cmd), "cwd": cwd}
     return out
 
@@ -71,8 +88,22 @@ class Deployer:
                    "log": os.path.join(self.log_dir, jid + ".log")}
             open(job["log"], "wb").close()
             self.jobs[jid] = job
+            self._prune()
         threading.Thread(target=self._run, args=(job, ent), daemon=True).start()
         return job
+
+    def _prune(self) -> None:
+        """Keep at most MAX_JOBS jobs (oldest finished first); delete their logs. Caller holds lock."""
+        for jid in list(self.jobs):
+            if len(self.jobs) <= MAX_JOBS:
+                break
+            if self.jobs[jid]["status"] == "running":
+                continue
+            old = self.jobs.pop(jid)
+            try:
+                os.remove(old["log"])
+            except OSError:
+                pass
 
     def _run(self, job: dict, ent: dict) -> None:
         code = -1
@@ -165,7 +196,13 @@ def make_handler(d: Deployer):
 def main() -> None:
     token = os.environ.get("DEPLOYER_TOKEN", "")
     cfg = os.environ.get("DEPLOYER_CONFIG", "/etc/deployer/allowlist.json")
-    d = Deployer(load_allowlist(cfg), token, os.environ.get("DEPLOYER_LOG_DIR"))
+    root = os.environ.get("DEPLOYER_SRC_ROOT", DEFAULT_SRC_ROOT)
+    try:
+        d = Deployer(load_allowlist(cfg, root), token, os.environ.get("DEPLOYER_LOG_DIR"))
+    except (ValueError, OSError) as e:
+        print(f"deployer: FATAL config error: {e}. See deploy/README.md (deployer setup).",
+              flush=True)
+        raise SystemExit(78)
     srv = ThreadingHTTPServer((os.environ.get("DEPLOYER_BIND", "0.0.0.0"),
                                int(os.environ.get("DEPLOYER_PORT", "8792"))), make_handler(d))
     srv.serve_forever()

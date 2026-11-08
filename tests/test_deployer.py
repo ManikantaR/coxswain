@@ -86,3 +86,39 @@ def test_body_cannot_change_command_or_cwd(svc, tmp_path):
 def test_empty_token_refused():
     with pytest.raises(ValueError):
         srv.Deployer({}, "")
+
+
+def _write(tmp_path, cwd):
+    f = tmp_path / "allow.json"
+    f.write_text(json.dumps({"app": {"cmd": ["true"], "cwd": cwd}}))
+    return str(f)
+
+
+def test_cwd_must_be_inside_root(tmp_path):
+    root = tmp_path / "src"
+    root.mkdir()
+    assert srv.load_allowlist(_write(tmp_path, str(root / "app")), str(root))
+    for bad in (str(tmp_path / "other"), str(root), str(root / ".." / "x")):
+        with pytest.raises(ValueError):
+            srv.load_allowlist(_write(tmp_path, bad), str(root))
+
+
+def test_missing_or_dir_allowlist_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        srv.load_allowlist(str(tmp_path / "nope.json"), str(tmp_path))
+    with pytest.raises(ValueError):
+        srv.load_allowlist(str(tmp_path), str(tmp_path))
+
+
+def test_job_history_capped_and_logs_deleted(tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "MAX_JOBS", 3)
+    d = srv.Deployer({"w": {"cmd": [sys.executable, "-c", "pass"], "cwd": str(tmp_path)}},
+                     TOKEN, str(tmp_path / "logs"))
+    for _ in range(6):
+        j = d.start("w")
+        for _ in range(200):
+            if j["status"] != "running":
+                break
+            time.sleep(0.02)
+    assert len(d.jobs) <= 3
+    assert len(list((tmp_path / "logs").glob("*.log"))) <= 3

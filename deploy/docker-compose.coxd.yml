@@ -78,13 +78,19 @@ services:
       dockerfile: deploy/deployer/Dockerfile
     image: coxd-deployer:latest
     container_name: coxd-deployer
-    restart: unless-stopped
+    profiles: ["deployer"]           # opt-in: plain `docker compose up -d` never starts it
+    restart: on-failure:3            # a config error exits 78 with a log line; don't loop forever
     env_file:
-      - deployer.env                 # DEPLOYER_TOKEN=... (NAS only)
+      - path: deployer.env           # DEPLOYER_TOKEN=... (NAS only)
+        required: false
     environment:
       DEPLOYER_CONFIG: /etc/deployer/allowlist.json
+      DEPLOYER_SRC_ROOT: ${DEPLOYER_SRC_ROOT:-/volume1/docker}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Same path inside as on the host, so relative binds in target compose files
+      # resolve correctly on the host daemon.
+      - ${DEPLOYER_SRC_ROOT:-/volume1/docker}:${DEPLOYER_SRC_ROOT:-/volume1/docker}
       - ./deployer/allowlist.json:/etc/deployer/allowlist.json:ro
     networks:
       - deployer-internal
