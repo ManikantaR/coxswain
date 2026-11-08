@@ -123,7 +123,8 @@ def _stream_deploy(tid: str, repo: str, timeout_s: float) -> tuple[int, str]:
             code = st.get("exit_code")
             return (code if isinstance(code, int) else -1), "\n".join(tail)
         if time.monotonic() >= deadline:
-            return 124, f"timed out after {int(timeout_s)}s (deployer job left running)\n" + "\n".join(tail)
+            msg = f"timed out after {int(timeout_s)}s (deployer job left running)"
+            return 124, msg + "\n" + "\n".join(tail)
         time.sleep(2)
 
 

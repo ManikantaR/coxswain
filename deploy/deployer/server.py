@@ -173,7 +173,8 @@ def make_handler(d: Deployer):
             self._json(202, d.public(job))
 
         def do_GET(self):
-            if int(self.headers.get("Content-Length") or 0) > 0 or self.headers.get("Transfer-Encoding"):
+            has_body = int(self.headers.get("Content-Length") or 0) > 0
+            if has_body or self.headers.get("Transfer-Encoding"):
                 self.close_connection = True  # unread body must not be parsed as a request
             if not self._gate():
                 return

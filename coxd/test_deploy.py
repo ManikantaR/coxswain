@@ -95,7 +95,8 @@ check("recent deploy → coalesced", not deploy_ran and "deploy-coalesced" in ki
 import threading  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "deploy", "deployer"))
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_here, "..", "deploy", "deployer"))
 import server as deployer_server  # noqa: E402
 
 root = tempfile.mkdtemp(prefix="fake-src-")
@@ -112,7 +113,8 @@ os.environ["COXD_DEPLOYER_TOKEN"] = "tok-test"
 landed._PROGRESS_EVERY_S = 0.0
 landed._stream_deploy = real_stream  # type: ignore[assignment]
 pings: list = []
-landed.notify.notify_async = lambda title, body, prio="default": pings.append((title, prio))  # type: ignore[assignment]
+landed.notify.notify_async = (  # type: ignore[assignment]
+    lambda title, body, prio="default": pings.append((title, prio)))
 landed._latest_ci_failing = lambda slug, branch: False  # type: ignore[assignment]
 landed._run = lambda args, cwd=None: FakeProc(0)  # type: ignore[assignment]
 
