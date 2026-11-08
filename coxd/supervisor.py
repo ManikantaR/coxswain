@@ -140,7 +140,7 @@ async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
 
 
 def _auto_retry_scan(worker_model: str, review_model: str, effort: str,
-                     now: float | None = None) -> list[str]:
+                     now: float | None = None, concurrency: int = 2) -> list[str]:
     """Schedule the ONE automatic retry for transient needs_human reasons (see
     triage.py). Stateless: the delay is measured from the task's last update, so a
     paused factory / quota wait just defers it (it fires once conditions clear)."""
@@ -150,6 +150,8 @@ def _auto_retry_scan(worker_model: str, review_model: str, effort: str,
     started = []
     for t in store.list_tasks():
         tid = t["id"]
+        if len(_running) >= concurrency:
+            break  # respect the concurrency cap; retry on a later pass
         if t["state"] != "needs_human" or tid in _running or store.is_archived(t):
             continue
         if not triage.due(t, now):
@@ -203,7 +205,7 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
                     store.set_state(t["id"], "working")  # claim before the next scan
                     _running[t["id"]] = asyncio.create_task(
                         _run_one(t["id"], worker_model, review_model, effort))
-        _auto_retry_scan(worker_model, review_model, effort)
+        _auto_retry_scan(worker_model, review_model, effort, concurrency=concurrency)
         await asyncio.sleep(1)
 
 
