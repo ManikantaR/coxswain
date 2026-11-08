@@ -103,6 +103,49 @@ def _pr_merged(pr_url: str, repo_slug: str) -> tuple[bool, str | None]:
     return (d.get("state") == "MERGED", d.get("mergedAt"))
 
 
+def is_clean_merge(tier: str | None, ci_green: bool, commit_authors: list[str],
+                   bot_authors: list[str]) -> bool:
+    """Clean = tier GREEN, CI green, and every commit on the branch by a bot author
+    (no human commits). Unknown/empty commit list is NOT clean (fail closed)."""
+    if tier != "GREEN" or not ci_green or not commit_authors:
+        return False
+    bots = {b.lower() for b in bot_authors}
+    return all(a and a.lower() in bots for a in commit_authors)
+
+
+def _pr_facts(pr_url: str, slug: str) -> tuple[bool, list[str]]:
+    """(ci_green, commit author logins/names) for a PR; fail closed on any error."""
+    import json
+    n = pr_url.rstrip("/").rsplit("/", 1)[-1]
+    r = _run(["gh", "pr", "view", n, "-R", slug, "--json", "commits,statusCheckRollup"])
+    if r.returncode != 0:
+        return (False, [])
+    try:
+        d = json.loads(r.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return (False, [])
+    checks = d.get("statusCheckRollup") or []
+    ci_green = bool(checks) and all(
+        (c.get("conclusion") or c.get("state")) in ("SUCCESS", "NEUTRAL", "SKIPPED")
+        for c in checks)
+    authors: list[str] = []
+    for cm in d.get("commits") or []:
+        for a in cm.get("authors") or []:
+            authors.append(a.get("login") or a.get("name") or "")
+    return (ci_green, authors)
+
+
+def _record_streak(t: dict, slug: str) -> None:
+    try:
+        ci_green, authors = _pr_facts(t["pr_url"], slug)
+        bots = (registry.load(t["repo"]) or {}).get("bot_authors") or ["coxd"]
+        clean = is_clean_merge(t.get("greenlight_tier"), ci_green, authors, bots)
+        n = store.record_merge(t["repo"], clean)
+        store.append_event(t["id"], "streak", {"clean": clean, "streak": n})
+    except Exception:  # noqa: BLE001 - bookkeeping must never block cleanup
+        pass
+
+
 def _close_issue_if_open(brief: str, repo_slug: str, pr_url: str) -> None:
     m = _ISSUE_URL_RE.search(brief or "")
     if not m or m.group(1) != repo_slug:
@@ -261,6 +304,7 @@ def check_and_cleanup_merged() -> None:
             continue
         store.append_event(t["id"], "auto-cleanup", {"pr_url": t["pr_url"]})
         _close_issue_if_open(t["brief"], slug, t["pr_url"])
+        _record_streak(t, slug)
         branch = f"coxd/{t['id']}"
         worktree.remove(Path(t["repo_path"]), Path(t["worktree"]), branch)
         _run(["git", "push", "origin", "--delete", branch], cwd=t["repo_path"])

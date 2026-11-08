@@ -347,6 +347,7 @@ def ship(task_id: str) -> tuple[str, str | None]:
     if url:
         store.set_pr_url(task_id, url)
         if tier:
+            store.set_greenlight_tier(task_id, tier)
             store.append_event(task_id, "greenlight", {"tier": tier})
         if tier == "GREEN":  # pre-label low-risk PRs for one-click merge (best-effort)
             subprocess.run(["gh", "label", "create", "coxd-greenlight", "--color", "0E8A16",
