@@ -17,6 +17,7 @@ import socket
 import time
 
 import factory
+import intake
 import registry
 import store
 import timeline
@@ -42,13 +43,13 @@ _ACTIVE = {"provisioning", "working", "gating", "fixing", "reviewing", "shipping
 _NEEDS_YOU = {"pr_ready", "needs_human"}
 # Terminal, resolved states eligible for silent age-based archiving — never
 # pr_ready/needs_human, those always need a human look regardless of age.
-_ARCHIVABLE = {"landed", "failed"}
+_ARCHIVABLE = store.ARCHIVABLE
 # Manual (explicit button/API) archiving is allowed from pr_ready/needs_human
 # too — a human has already decided the task is dead (e.g. superseded, or its
 # underlying issue closed via another path), so hiding it is a deliberate
 # choice, not silent cleanup.
 _MANUAL_ARCHIVABLE = _ARCHIVABLE | {"pr_ready", "needs_human"}
-_ARCHIVE_DAYS = float(os.environ.get("COXD_ARCHIVE_DAYS", "14"))
+_ARCHIVE_DAYS = store.ARCHIVE_DAYS
 
 
 # Maps a needs_human `reason` to the stage it actually failed at — previously
@@ -79,13 +80,7 @@ def _stage(state: str, reason: str | None = None) -> dict:
     return {"i": _STATE_STAGE.get(state, 0), "status": "active"}
 
 
-def _is_archived(t: dict) -> bool:
-    if t.get("archived_at"):  # manually archived via the board's per-tile button
-        return True
-    if t["state"] not in _ARCHIVABLE:
-        return False
-    age_days = (time.time() - (t["updated"] or t["created"] or 0)) / 86400
-    return age_days > _ARCHIVE_DAYS
+_is_archived = store.is_archived
 
 
 _DEPLOY_CACHE: dict[str, tuple[float, bool]] = {}
@@ -140,7 +135,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
             "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
-            "factory": factory.status()}
+            "factory": factory.status(), "intake": intake.status()}
 
 
 async def index(_: Request) -> HTMLResponse:
@@ -541,7 +536,7 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 #foff{background:#b3261e;color:#fff;font-weight:600;text-align:center;padding:6px;letter-spacing:.05em}#foff[hidden]{display:none}
 .offline{text-align:center;padding:40px 16px}.offline h2{margin:0 0 8px}</style></head><body>
 <div id=foff hidden>⏸ FACTORY OFF — nothing new will start; running tasks finish</div>
-<header><h1>▟ coxd</h1><span class=pill id=hostchip hidden></span><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b></span>
+<header><h1>▟ coxd</h1><span class=pill id=hostchip hidden></span><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b></span><span class=pill id=pi hidden></span>
 <button id=ab class=pill hidden>archived <b>0</b></button>
 <span class=spacer></span><button id=fb title="Factory ON = picks up queued work. OFF = starts nothing new; running tasks finish.">Factory …</button><button id=rb title="Restart the coxd process in place — refuses while anything is active">↻ Restart cox</button><button id=nb>+ Dispatch</button><span id=conn class=pill>connecting…</span></header>
 <section id=dp hidden><div class=dform>
@@ -608,7 +603,7 @@ for(const e of document.querySelectorAll('.tm[data-resume]')){const r=parseFloat
 function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').textContent='offline';const m=document.getElementById('board');m.innerHTML='<div class="empty offline" id=offline-panel><h2>coxd is not running on this machine</h2>'+(HOST?'<div class=meta>host: '+esc(HOST)+'</div>':'')+'<p><button id=retry>Retry</button></p></div>';document.getElementById('retry').onclick=()=>{m.innerHTML='<div class=empty>Loading…</div>';startWatch()}}
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
-function render(s){GOT=true;clearTimeout(offT);STAGES=s.stages||STAGES;renderFactory(s.factory);document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+function render(s){GOT=true;clearTimeout(offT);STAGES=s.stages||STAGES;renderFactory(s.factory);{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
 if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last,t.issue_url,t.resume_at,t.timing&&[t.timing.started_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}

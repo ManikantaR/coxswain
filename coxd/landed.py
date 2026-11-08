@@ -266,4 +266,9 @@ def check_and_cleanup_merged() -> None:
         _run(["git", "push", "origin", "--delete", branch], cwd=t["repo_path"])
         pr_number = t["pr_url"].rstrip("/").rsplit("/", 1)[-1]
         store.set_state(t["id"], "landed", f"merged as PR #{pr_number}")
+        try:
+            import intake
+            intake.clear_working(t["repo"], slug, t["brief"])
+        except Exception:  # noqa: BLE001 - label hygiene must never block cleanup
+            pass
         _maybe_deploy(t, slug)
