@@ -462,8 +462,10 @@ def _hold(t: dict, slug: str, reason: str) -> None:
 def _maybe_deploy(t: dict, slug: str) -> None:
     """Post-merge deploy hook for repos that opted in (`deploy.enabled`). Deploys exactly
     the merged commit; the deployer verifies its source matches. HELD (event + ping, nothing
-    deployed) when the PR touched migrations (#53: never deploy a migration unattended), when
-    that cannot be determined, or when the merge commit cannot be resolved."""
+    deployed) per `_migration_hold` (#53): when anything in the whole range since the last
+    successful deploy touches migrations (not just this PR), when the merge commit is not
+    ahead of it, when there is no baseline or the compare fails, when the merge commit cannot
+    be resolved, or when another deploy for the repo is running."""
     dep = (registry.load(t["repo"]) or {}).get("deploy") or {}
     if not (dep.get("command") and dep.get("enabled")):
         return

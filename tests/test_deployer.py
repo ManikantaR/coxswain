@@ -137,7 +137,30 @@ def test_not_a_git_repo_is_stale_source(tmp_path):
         if j["status"] != "running":
             break
         time.sleep(0.02)
-    assert j["status"] == "failed" and j["reason"] == "stale-source"
+    assert j["status"] == "failed" and j["reason"] == "head-unreadable"
+
+
+def test_head_argv_scopes_safe_directory_to_cwd(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_run(argv, **kw):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, SHA + "\n", "")
+
+    monkeypatch.setattr(srv.subprocess, "run", fake_run)
+    assert srv.Deployer._head(str(tmp_path)) == (SHA, "")
+    assert seen == [["git", "-c", f"safe.directory={tmp_path}", "-C", str(tmp_path),
+                     "rev-parse", "HEAD"]]
+    assert "*" not in " ".join(seen[0])
+
+
+def test_git_dubious_ownership_is_head_unreadable_not_stale(tmp_path, monkeypatch):
+    def fake_run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 128, "", "fatal: detected dubious ownership")
+
+    monkeypatch.setattr(srv.subprocess, "run", fake_run)
+    head, err = srv.Deployer._head(str(tmp_path))
+    assert head is None and "dubious" in err
 
 
 def test_bad_sha_400_and_body_ignored(svc, tmp_path):

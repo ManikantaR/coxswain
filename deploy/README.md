@@ -56,8 +56,8 @@ coxd does **not** run deploys itself: it has no `docker.sock` and no `/volume1/d
 After the CI gate, `run_deploy` calls the
 [deployer](#deployer-optional-opt-in) (`POST /deploy/<repo>/<sha>`, then streams the job log).
 The deployer runs the allowlisted argv for that repo name; the registry's `deploy.command`
-only marks the repo as deployable, coxd never executes it. Only the board button reaches
-the deployer; auto-deploy after merge is held (see below).
+only marks the repo as deployable, coxd never executes it. The board button and the
+post-merge hook (subject to the holds below) are the only callers of the deployer.
 
 Setup: run the deployer (below) and set `COXD_DEPLOYER_TOKEN` (same value as the
 deployer's `DEPLOYER_TOKEN`) in `deploy/.env`; set `COXD_DEPLOYER_URL=http://deployer:8792`
@@ -67,8 +67,10 @@ to enable it. With the URL unset the board's Deploy returns an error and calls n
 commit (40 hex characters, else 400; the body is never read). The deployer exports
 `EXPECTED_SHA=<sha>` to the allowlisted command, which must fetch and check out that commit.
 After the command exits 0 the deployer runs `git -C <cwd> rev-parse HEAD`; if it differs (or
-cannot be read) the job is `failed` with reason `stale-source` and coxd records `deploy-failed`
-and pings. The deployer image includes `git`.
+cannot be read) the job is `failed` and coxd records `deploy-failed` and pings. The reason is
+`stale-source` when HEAD is a different commit, and `head-unreadable` when git could not read HEAD
+at all (the check runs with `safe.directory` scoped to that one cwd, so a checkout owned by
+another uid is fine). The deployer image includes `git`.
 
 Networks: the deployer sits on `deployer-internal` (`internal: true`, the only network coxd
 shares with it) and also on `deployer-egress`, a normal network, so its command can reach
@@ -81,8 +83,8 @@ deployed one and the merge commit touches migration files (`migrations/`, `alemb
 `db/migrate/`, `*.sql`; #53) - so a held migration stays held until a human deploys it - when
 the merge commit is not strictly ahead of the last deployed one (no rollbacks from a
 late-detected older merge), when there is no deployed baseline yet (deploy once by hand; a
-successful deploy of any kind records it), when the comparison fails, or when the merge commit
-cannot be resolved. The manual board button deploys the current head of
+successful deploy of any kind records it), when the comparison fails, when the merge commit
+cannot be resolved, or when another deploy for this repo is running. The manual board button deploys the current head of
 `deploy.branch` (default `main`). A 409 (deploy already running) ends the attempt as
 `deploy-start` then `deploy-skipped` and does not write the coalesce stamp; repeat deploys are
 only coalesced for the *same* commit within 3 minutes.
@@ -172,11 +174,14 @@ internal `deployer-internal` network. It is behind a compose profile, so plain
    ```json
    {
      "example-app": {
-       "cmd": ["docker", "compose", "up", "-d", "--build"],
+       "cmd": ["sh", "-c", "git fetch origin && git checkout --detach \"$EXPECTED_SHA\" && docker compose up -d --build"],
        "cwd": "/volume1/docker/example-app"
      }
    }
    ```
+   The command must sync to `$EXPECTED_SHA` before building; the deployer only verifies HEAD
+   afterwards (a stale tree fails the job). If the checkout is owned by another uid, add
+   `-c safe.directory=<cwd>` to the git calls in the command as well.
 3. Start it: `docker compose -f docker-compose.coxd.yml --profile deployer up -d --build deployer`.
 
 If the allowlist is missing, a directory, or has a cwd outside the root, the deployer logs a

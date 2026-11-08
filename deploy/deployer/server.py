@@ -9,7 +9,8 @@ caller sends can change what runs. Commands run as argv (no shell).
                                                      -> 202 {"id", "repo", "status"}
                              The command gets EXPECTED_SHA in its env and must sync the
                              source to it; afterwards `git rev-parse HEAD` in cwd must equal
-                             it, else the job fails with reason "stale-source".
+                             it, else the job fails with reason "stale-source" (or "head-unreadable" if git cannot read
+                             HEAD at all).
                              timeout_s (clamped to the deployer's own cap) lets the per-repo
                              deploy.timeout_s reach the job.
   GET  /deploys/<id>/status  status              -> {"id","repo","status","exit_code","reason"}
@@ -153,9 +154,13 @@ class Deployer:
                                   "killed\n".encode())
                         code = 124
                     if code == 0:
-                        head = self._head(ent["cwd"])
-                        if head != job["sha"]:
-                            log.write(f"\ndeployer: stale-source: HEAD is {head or 'unknown'}, "
+                        head, err = self._head(ent["cwd"])
+                        if head is None:
+                            log.write(f"\ndeployer: head-unreadable: {err}\n".encode())
+                            job["reason"] = "head-unreadable"
+                            code = STALE_RC
+                        elif head != job["sha"]:
+                            log.write(f"\ndeployer: stale-source: HEAD is {head}, "
                                       f"expected {job['sha']}\n".encode())
                             job["reason"] = "stale-source"
                             code = STALE_RC
@@ -166,13 +171,22 @@ class Deployer:
             job["status"] = "succeeded" if code == 0 else "failed"
 
     @staticmethod
-    def _head(cwd: str) -> str | None:
+    def _head_argv(cwd: str) -> list[str]:
+        # safe.directory scoped to this one allowlisted cwd (checkouts are often owned by a
+        # different uid than the deployer); never a global wildcard.
+        return ["git", "-c", f"safe.directory={cwd}", "-C", cwd, "rev-parse", "HEAD"]
+
+    @staticmethod
+    def _head(cwd: str) -> tuple[str | None, str]:
+        """(HEAD sha, "") or (None, why git could not read it)."""
         try:
-            r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"], capture_output=True,
-                               text=True, timeout=30, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return r.stdout.strip().lower() if r.returncode == 0 else None
+            r = subprocess.run(Deployer._head_argv(cwd), capture_output=True, text=True,
+                               timeout=30, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as e:
+            return None, str(e)
+        if r.returncode != 0:
+            return None, (r.stderr or "").strip()[-300:] or f"git exited {r.returncode}"
+        return r.stdout.strip().lower(), ""
 
     @staticmethod
     def public(job: dict) -> dict:
