@@ -24,6 +24,7 @@ import repos  # noqa: E402
 import store  # noqa: E402
 
 fails = 0
+open(pii.denylist_path(), "w").write("Zebulon Quux\n")
 
 
 def check(name, cond):
