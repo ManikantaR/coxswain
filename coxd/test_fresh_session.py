@@ -77,8 +77,11 @@ def run(n, acts, gate_results=None):
     store.create_task(tid, "example-shop", "add a cart badge", "/wt", repo_path="/repo/x")
     store.set_session(tid, "s0")
     try:
+        def emit(k, d):
+            store.append_event(tid, k, d)
+
         r = asyncio.run(loop._gate_review_ship(tid, Path("/wt"), "example-shop", {}, "w",
-                                               "r", "low", lambda k, d: store.append_event(tid, k, d)))
+                                               "r", "low", emit))
     except quota.QuotaWait:
         r = "quota"
     return tid, r
