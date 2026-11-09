@@ -61,7 +61,9 @@ lane.review = fake_review
 
 
 def run(n, acts, gate_results=None):
-    calls.clear(); gates.clear(); reviews.clear()
+    calls.clear()
+    gates.clear()
+    reviews.clear()
     script[:] = acts
     seq = list(gate_results or [False, True])
 
@@ -113,13 +115,16 @@ assert len(calls) == 1 and "fresh-session" not in kinds(tid)
 tid = "fresh-cap"
 store.create_task(tid, "example-shop", "b", "/wt", repo_path="/repo/x")
 store.set_session(tid, "s0")
-store.append_event(tid, "fresh-session", {}); store.append_event(tid, "fresh-session", {})
-script[:] = ["nochange"]; calls.clear()
+store.append_event(tid, "fresh-session", {})
+store.append_event(tid, "fresh-session", {})
+script[:] = ["nochange"]
+calls.clear()
 stalled = asyncio.run(loop._resume_fix(tid, Path("/wt"), "w", lambda k, d: None, "fix it"))
 assert stalled and len(calls) == 1
 
 # human note with expect_change=False: no-change is fine
-script[:] = ["nochange"]; calls.clear()
+script[:] = ["nochange"]
+calls.clear()
 assert not asyncio.run(loop._resume_fix(tid, Path("/wt"), "w", lambda k, d: None, "ok?",
                                         expect_change=False))
 assert len(calls) == 1
