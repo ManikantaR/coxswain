@@ -16,6 +16,7 @@ import gate
 import lane
 import quota
 import registry
+import sandbox
 import store
 import worktree
 
@@ -77,7 +78,16 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
                    "Fix it minimally, re-run the check, and commit. Do not push.")
         emit("fix-trigger", {"source": "gate", "failing": g["failing"],
                              "reason": g.get("reason", ""), "feedback": feedback})
-        await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort)
+        if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort):
+            # The worker changed nothing twice. That can be right (the gate was
+            # flaky), so re-run the gate once before paging a person.
+            store.set_state(task_id, "gating")
+            g = gate.run_gate(wt, entry)
+            emit("gate", g)
+            if not g["passed"]:
+                return _terminal(task_id, "needs_human", "worker-stalled")
+            store.set_gate_steps(task_id, g.get("steps"), g.get("test_output"))
+            break
 
     # --- one review pass ---------------------------------------------------
     store.set_state(task_id, "reviewing")
@@ -99,7 +109,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         feedback = ("Address these review findings, then re-run tests and commit "
                    "(do not push):\n" + str(r.findings))
         emit("fix-trigger", {"source": "review", "findings": r.findings, "feedback": feedback})
-        await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort)
+        if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort):
+            return _terminal(task_id, "needs_human", "worker-stalled")
         g = gate.run_gate(wt, entry)
         emit("gate", g)
         if not g["passed"]:
@@ -155,7 +166,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
 
 async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonnet-5-5",
                       review_model: str = "claude-opus-5-5",
-                      effort: str = "medium") -> str:
+                      effort: str = "medium", human_note: bool = False) -> str:
     """Board-triggered resume: a human gives the SAME worker session a note (e.g.
     'the gate-red was a flaky port conflict, just retry' or 'use approach X instead'),
     then re-runs the shared gate->review->ship tail. Distinct from _resume_fix, which
@@ -170,16 +181,77 @@ async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonne
         store.append_event(task_id, kind, data)
 
     emit("human-note", {"note": note})
-    await _resume_fix(task_id, wt, worker_model, emit, note, effort=effort)
+    # Automatic resumes (crash-restart, usage-limit resume, one-shot auto-retry:
+    # "continue from where you left off") are expected to change nothing when the
+    # work is already committed, so no stall handling: straight to the gate.
+    # A note a person/lead sent gets the fresh-session fallback (an exhausted
+    # session can't silently drop it); "no change needed" is still a valid answer
+    # there, so a second no-change is not terminal.
+    await _resume_fix(task_id, wt, worker_model, emit, note, effort=effort,
+                      stall_is_terminal=False, detect_stall=human_note)
     entry = registry.get_or_scout(repo, wt)
     return await _gate_review_ship(task_id, wt, repo, entry, worker_model,
                                    review_model, effort, emit)
 
 
+MAX_FRESH_PER_TASK = 2
+
+
+def _snapshot(wt: Path) -> tuple[str, bool] | None:
+    """(HEAD sha, has uncommitted changes), or None if git can't tell us."""
+    try:
+        head = sandbox.run_in_worktree(["git", "rev-parse", "HEAD"], wt)
+        st = sandbox.run_in_worktree(["git", "status", "--porcelain"], wt)
+    except Exception:
+        return None
+    if head.returncode != 0 or st.returncode != 0:
+        return None
+    return head.stdout.strip(), bool(st.stdout.strip())
+
+
+def _stalled(before, after, wr) -> bool:
+    """A fix round made no progress. The rule (all must hold):
+      - the worker result is NOT an error (an error follows today's path),
+      - no usage-limit cut-off (`quota_reset_at`; that parks via QuotaWait),
+      - git state is readable before and after (unknown = not stalled),
+      - HEAD is unchanged AND there are no uncommitted changes afterwards
+        (and none were pre-existing, so we cannot mistake old dirt for work).
+    A deliberate "no change needed" is only honoured where the caller says no
+    change is a valid outcome (`stall_is_terminal=False`, i.e. a human note)."""
+    if before is None or after is None or wr.quota_reset_at or wr.is_error:
+        return False
+    return before[0] == after[0] and not after[1] and not before[1]
+
+
+def _fresh_prompt(task_id: str, wt: Path, feedback: str) -> str:
+    t = store.get_task(task_id)
+    reg = registry.load(t["repo"]) or {}
+    brief = registry.data_guard_brief(reg, t["brief"])  # keep the synthetic-only rule
+    return (f"Your earlier session ended without making any change, and its context is "
+            f"gone. Task brief:\n{brief}\n\n"
+            f"Feedback to address in this round:\n{feedback}\n\n"
+            f"FIRST read `git log` and `git diff {gate._base_ref(wt)}...HEAD` to see what "
+            "is already done, then make the fix, re-run the checks and commit. "
+            "Do not push.")
+
+
 async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
-                      effort: str = "medium") -> None:
+                      effort: str = "medium", stall_is_terminal: bool = True,
+                      detect_stall: bool = True) -> bool:
+    """Run one fix round on the resumed session. Returns True when the worker is
+    stalled (caller decides: gate path re-runs the gate once, review path stops
+    with needs_human/worker-stalled).
+
+    A session that exhausts its task budget replies "out of budget", edits nothing
+    and exits normally. If the round was a stall (see `_stalled`), start ONE fresh
+    session (resume=None) in the same worktree (one per round, MAX_FRESH_PER_TASK per
+    task). If that also makes no change (or the cap is spent) the round is stalled,
+    unless `stall_is_terminal=False` (human note: "no change needed" is valid, so
+    return False and follow the normal path). `detect_stall=False` skips stall
+    handling entirely (automatic resumes)."""
     store.set_state(task_id, "fixing")
     sid = store.get_task(task_id)["session_id"]  # resume the SAME session (cheap)
+    before = _snapshot(wt)
     wr = await lane.run_worker(wt, feedback, model, emit, resume=sid, effort=effort)
     store.add_cost(task_id, wr.cost)
     store.set_summary(task_id, wr.summary)
@@ -187,6 +259,27 @@ async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
         store.set_session(task_id, wr.session_id)
     if wr.quota_reset_at:
         raise quota.QuotaWait(wr.quota_reset_at, "fix")
+    if not detect_stall or not _stalled(before, _snapshot(wt), wr):
+        return False
+    used = sum(1 for e in store.events(task_id) if e["kind"] == "fresh-session")
+    if used >= MAX_FRESH_PER_TASK:
+        emit("worker-stalled", {"reason": "fresh-session cap reached"})
+        return stall_is_terminal
+    emit("fresh-session", {"reason": "fix round made no change (HEAD unchanged, "
+                                     "tree clean); session likely out of budget"})
+    before = _snapshot(wt)
+    wr = await lane.run_worker(wt, _fresh_prompt(task_id, wt, feedback), model, emit,
+                               resume=None, effort=effort)
+    store.add_cost(task_id, wr.cost)
+    store.set_summary(task_id, wr.summary)
+    if wr.session_id:
+        store.set_session(task_id, wr.session_id)
+    if wr.quota_reset_at:
+        raise quota.QuotaWait(wr.quota_reset_at, "fix")
+    if _stalled(before, _snapshot(wt), wr):
+        emit("worker-stalled", {"reason": "fresh session also made no change"})
+        return stall_is_terminal
+    return False
 
 
 def _terminal(task_id: str, state: str, reason: str | None) -> str:

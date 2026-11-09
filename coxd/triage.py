@@ -37,6 +37,14 @@ TRIAGE: dict[str, dict] = {
             "resume it from the board to re-run the review."
         ),
     },
+    "worker-stalled": {
+        "retry": False,
+        "next_step": (
+            "The worker made no change in its fix round or in a fresh session. "
+            "Read the feedback and the branch on the board, then resume with a "
+            "more specific note or finish the fix by hand."
+        ),
+    },
     "gate-red": {
         "retry": False,
         "next_step": (

@@ -120,7 +120,7 @@ def _latest_resume_note(task_id: str) -> str:
 
 async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
                           effort: str, note: str | None = None,
-                          after_quota: bool = False) -> None:
+                          after_quota: bool = False, human_note: bool = False) -> None:
     """Auto-recovery for an orphan that had a live SDK session (see
     `_reclaim_orphans`): resume that session where it left off and re-run the
     gate->review->ship tail, instead of restarting from scratch. Same crash
@@ -130,7 +130,8 @@ async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
                          "where you left off. Re-check the working tree first; some work "
                          "may already be committed.")
     try:
-        await loop.resume_task(task_id, note, worker_model, review_model, effort=effort)
+        await loop.resume_task(task_id, note, worker_model, review_model, effort=effort,
+                               human_note=human_note)
     except quota.QuotaWait as q:
         quota.park(task_id, q.reset_at, q.stage)
     except asyncio.CancelledError:
@@ -250,7 +251,7 @@ async def _runner(concurrency: int, worker_model: str, review_model: str,
                     store.set_state(t["id"], "fixing")  # claim before the next scan
                     _running[t["id"]] = asyncio.create_task(
                         _run_one_resume(t["id"], worker_model, review_model, effort,
-                                        note=note))
+                                        note=note, human_note=True))
                 elif t.get("reason") in (_AUTO_RESUME, quota.QUOTA_RESUME) and t.get("session_id"):
                     store.set_state(t["id"], "fixing")  # claim before the next scan
                     after_quota = t.get("reason") == quota.QUOTA_RESUME  # read before the claim
