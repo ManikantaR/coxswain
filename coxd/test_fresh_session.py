@@ -125,7 +125,7 @@ calls.clear()
 stalled = asyncio.run(loop._resume_fix(tid, Path("/wt"), "w", lambda k, d: None, "fix it"))
 assert stalled and len(calls) == 1
 
-# human note with expect_change=False: no-change is fine
+# human note: stall_is_terminal=False, no-change is fine
 store.create_task("fresh-note", "example-shop", "b", "/wt", repo_path="/repo/x")
 store.set_session("fresh-note", "s0")
 script[:] = ["nochange", "nochange"]
@@ -144,3 +144,15 @@ loop.registry.load = lambda repo: None
 tid, r = run(7, ["nochange", "nochange"], [False, True])
 assert r == "pr_ready" and len(gates) == 2
 print("ok test_fresh_session")
+
+# usage-limit / auto resume with a clean tree (work already committed): not a stall
+store.create_task("fresh-auto", "example-shop", "b", "/wt", repo_path="/repo/x")
+store.set_session("fresh-auto", "s0")
+script[:] = ["nochange"]
+calls.clear()
+gate.run_gate = lambda wt, entry: {"passed": True, "steps": {}}
+loop.registry.get_or_scout = lambda repo, wt: {}
+r = asyncio.run(loop.resume_task("fresh-auto", "continue from where you left off"))
+assert r == "pr_ready" and len(calls) == 1
+assert "fresh-session" not in kinds("fresh-auto")
+print("ok test_fresh_session auto-resume")

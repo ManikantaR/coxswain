@@ -166,7 +166,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
 
 async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonnet-5-5",
                       review_model: str = "claude-opus-5-5",
-                      effort: str = "medium") -> str:
+                      effort: str = "medium", human_note: bool = False) -> str:
     """Board-triggered resume: a human gives the SAME worker session a note (e.g.
     'the gate-red was a flaky port conflict, just retry' or 'use approach X instead'),
     then re-runs the shared gate->review->ship tail. Distinct from _resume_fix, which
@@ -181,11 +181,14 @@ async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonne
         store.append_event(task_id, kind, data)
 
     emit("human-note", {"note": note})
-    # A human note may legitimately ask for no code change ("just retry"): the
-    # fresh-session fallback still runs (so an exhausted session can't silently
-    # drop the note) but a second no-change is not terminal here.
+    # Automatic resumes (crash-restart, usage-limit resume, one-shot auto-retry:
+    # "continue from where you left off") are expected to change nothing when the
+    # work is already committed, so no stall handling: straight to the gate.
+    # A note a person/lead sent gets the fresh-session fallback (an exhausted
+    # session can't silently drop it); "no change needed" is still a valid answer
+    # there, so a second no-change is not terminal.
     await _resume_fix(task_id, wt, worker_model, emit, note, effort=effort,
-                      stall_is_terminal=False)
+                      stall_is_terminal=False, detect_stall=human_note)
     entry = registry.get_or_scout(repo, wt)
     return await _gate_review_ship(task_id, wt, repo, entry, worker_model,
                                    review_model, effort, emit)
@@ -214,7 +217,7 @@ def _stalled(before, after, wr) -> bool:
       - HEAD is unchanged AND there are no uncommitted changes afterwards
         (and none were pre-existing, so we cannot mistake old dirt for work).
     A deliberate "no change needed" is only honoured where the caller says no
-    change is a valid outcome (`expect_change=False`, i.e. a human note)."""
+    change is a valid outcome (`stall_is_terminal=False`, i.e. a human note)."""
     if before is None or after is None or wr.quota_reset_at or wr.is_error:
         return False
     return before[0] == after[0] and not after[1] and not before[1]
@@ -233,7 +236,8 @@ def _fresh_prompt(task_id: str, wt: Path, feedback: str) -> str:
 
 
 async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
-                      effort: str = "medium", stall_is_terminal: bool = True) -> bool:
+                      effort: str = "medium", stall_is_terminal: bool = True,
+                      detect_stall: bool = True) -> bool:
     """Run one fix round on the resumed session. Returns True when the worker is
     stalled (caller decides: gate path re-runs the gate once, review path stops
     with needs_human/worker-stalled).
@@ -243,7 +247,8 @@ async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
     session (resume=None) in the same worktree (one per round, MAX_FRESH_PER_TASK per
     task). If that also makes no change (or the cap is spent) the round is stalled,
     unless `stall_is_terminal=False` (human note: "no change needed" is valid, so
-    return False and follow the normal path)."""
+    return False and follow the normal path). `detect_stall=False` skips stall
+    handling entirely (automatic resumes)."""
     store.set_state(task_id, "fixing")
     sid = store.get_task(task_id)["session_id"]  # resume the SAME session (cheap)
     before = _snapshot(wt)
@@ -254,7 +259,7 @@ async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
         store.set_session(task_id, wr.session_id)
     if wr.quota_reset_at:
         raise quota.QuotaWait(wr.quota_reset_at, "fix")
-    if not _stalled(before, _snapshot(wt), wr):
+    if not detect_stall or not _stalled(before, _snapshot(wt), wr):
         return False
     used = sum(1 for e in store.events(task_id) if e["kind"] == "fresh-session")
     if used >= MAX_FRESH_PER_TASK:
