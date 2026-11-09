@@ -60,7 +60,7 @@ _ARCHIVE_DAYS = store.ARCHIVE_DAYS
 # (a worker-error during implement looked identical to a real review rejection).
 _REASON_STAGE = {
     "worker-error": 0, "coxd-error": 0,
-    "gate-red": 1,
+    "gate-red": 1, "worker-stalled": 1,
     "review-error": 2, "review-findings": 2,
     "push-rejected": 3, "pr-error": 3,
     "pii-block": 3, "pii-scan-error": 3,

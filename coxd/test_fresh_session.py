@@ -101,10 +101,10 @@ assert r == "pr_ready" and len(reviews) == 1
 assert store.get_task(tid)["session_id"] == "s2"
 
 # 3: fresh session also no change -> worker-stalled; no more gate/review
-tid, r = run(2, ["nochange", "nochange"])
+tid, r = run(2, ["nochange", "nochange"], [False, False])
 t = store.get_task(tid)
 assert r == "needs_human" and t["reason"] == "worker-stalled", t
-assert len(gates) == 1 and not reviews
+assert len(gates) == 2 and not reviews
 
 # 4: usage limit is not a stall
 tid, r = run(3, ["quota"])
@@ -126,9 +126,21 @@ stalled = asyncio.run(loop._resume_fix(tid, Path("/wt"), "w", lambda k, d: None,
 assert stalled and len(calls) == 1
 
 # human note with expect_change=False: no-change is fine
-script[:] = ["nochange"]
+store.create_task("fresh-note", "example-shop", "b", "/wt", repo_path="/repo/x")
+store.set_session("fresh-note", "s0")
+script[:] = ["nochange", "nochange"]
 calls.clear()
-assert not asyncio.run(loop._resume_fix(tid, Path("/wt"), "w", lambda k, d: None, "ok?",
-                                        expect_change=False))
-assert len(calls) == 1
+assert not asyncio.run(loop._resume_fix("fresh-note", Path("/wt"), "w", lambda k, d: None,
+                                        "ok?", stall_is_terminal=False))
+assert len(calls) == 2 and calls[1]["resume"] is None
+
+# data-guard note survives into the fresh prompt
+loop.registry.load = lambda repo: {"data_globs": ["db/*.csv"], "fixture_dir": "fixtures"}
+tid, r = run(6, ["nochange", "commit"])
+assert "db/*.csv" in calls[1]["prompt"] and "fixtures" in calls[1]["prompt"]
+loop.registry.load = lambda repo: None
+
+# gate path: worker stalls twice but a re-run of the gate passes -> continues, no page
+tid, r = run(7, ["nochange", "nochange"], [False, True])
+assert r == "pr_ready" and len(gates) == 2
 print("ok test_fresh_session")
