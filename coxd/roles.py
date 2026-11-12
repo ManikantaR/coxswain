@@ -9,11 +9,12 @@ level is ignored (falls through to the next level) rather than failing a task.
 from __future__ import annotations
 
 import os
+import sys
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULTS = {
     "worker_model": "claude-sonnet-5-5",
-    "worker_effort": "high",  # owner decision 2026-11-12
+    "worker_effort": "medium",
     "review_model": "claude-opus-5-5",
     "review_effort": "medium",
 }
@@ -33,9 +34,12 @@ def resolve(reg: dict | None, **explicit: str | None) -> dict:
     reg = reg or {}
     out = {}
     for key, default in DEFAULTS.items():
-        for cand in (reg.get(key), explicit.get(key),
-                     os.environ.get("COXD_" + key.upper())):
+        for src, cand in (("registry", reg.get(key)), ("arg", explicit.get(key)),
+                          ("env", os.environ.get("COXD_" + key.upper()))):
             v = _ok(key, cand)
+            if v is None and cand not in (None, "") and key.endswith("_effort"):
+                print(f"coxd: ignoring invalid {key} {cand!r} from {src}; "
+                      f"expected one of {'|'.join(EFFORTS)}", file=sys.stderr)
             if v:
                 out[key] = v
                 break

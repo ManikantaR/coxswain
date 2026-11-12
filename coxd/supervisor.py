@@ -99,7 +99,7 @@ def _reclaim_orphans() -> None:
 async def _run_one(task_id: str, worker_model: str, review_model: str,
                    effort: str) -> None:
     try:
-        await loop.run_task(task_id, worker_model, review_model, effort=effort)
+        await loop.run_task(task_id, worker_model, review_model, worker_effort=effort)
     except quota.QuotaWait as q:
         quota.park(task_id, q.reset_at, q.stage)
     except asyncio.CancelledError:
@@ -131,7 +131,7 @@ async def _run_one_resume(task_id: str, worker_model: str, review_model: str,
                          "where you left off. Re-check the working tree first; some work "
                          "may already be committed.")
     try:
-        await loop.resume_task(task_id, note, worker_model, review_model, effort=effort,
+        await loop.resume_task(task_id, note, worker_model, review_model, worker_effort=effort,
                                human_note=human_note)
     except quota.QuotaWait as q:
         quota.park(task_id, q.reset_at, q.stage)
@@ -284,7 +284,7 @@ async def _cleanup_loop(concurrency: int = 2) -> None:
 async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
                 worker_model: str | None = None,
                 review_model: str | None = None,
-                effort: str | None = None) -> None:
+                worker_effort: str | None = None) -> None:
     _reclaim_orphans()
     factory.set_concurrency(concurrency)
     # Loopback by default (the laptop crew); the NAS container sets COXD_BIND=0.0.0.0
@@ -294,7 +294,7 @@ async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
     # reviewer to Sonnet when the weekly Opus cap is hit).
     # Resolved per task in loop.py (registry > these > shipped default).
     base = roles.resolve(None, worker_model=worker_model, review_model=review_model,
-                         worker_effort=effort)
+                         worker_effort=worker_effort)
     worker_model, review_model, effort = (base["worker_model"], base["review_model"],
                                           base["worker_effort"])
     if os.environ.get("COXD_OWNER_USER"):

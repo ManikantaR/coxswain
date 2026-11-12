@@ -9,7 +9,7 @@ def test_defaults(monkeypatch):
     for k in ("WORKER_MODEL", "WORKER_EFFORT", "REVIEW_MODEL", "REVIEW_EFFORT"):
         monkeypatch.delenv("COXD_" + k, raising=False)
     c = roles.resolve(None)
-    assert c == {"worker_model": "claude-sonnet-5-5", "worker_effort": "high",
+    assert c == {"worker_model": "claude-sonnet-5-5", "worker_effort": "medium",
                  "review_model": "claude-opus-5-5", "review_effort": "medium"}
 
 
@@ -23,15 +23,15 @@ def test_precedence(monkeypatch):
 
 def test_invalid_effort_falls_through(monkeypatch):
     monkeypatch.setenv("COXD_WORKER_EFFORT", "bogus")
-    assert roles.resolve({"worker_effort": "nope"})["worker_effort"] == "high"
+    assert roles.resolve({"worker_effort": "nope"})["worker_effort"] == "medium"
 
 
 def test_effort_reaches_sdk(monkeypatch):
     import asyncio
-    import loop
+
     import lane
+    import loop
     import registry
-    import store
     seen = {}
 
     async def fake_worker(wt, prompt, model, emit, resume=None, effort="medium", **k):
@@ -51,3 +51,9 @@ def test_effort_reaches_sdk(monkeypatch):
     except RuntimeError:
         pass
     assert seen["w"] == ("claude-sonnet-5-5", "xhigh")
+
+
+def test_invalid_effort_warns_and_defaults_medium(monkeypatch, capsys):
+    monkeypatch.setenv("COXD_REVIEW_EFFORT", "turbo")
+    assert roles.resolve(None)["review_effort"] == "medium"
+    assert "invalid review_effort" in capsys.readouterr().err
