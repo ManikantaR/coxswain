@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -183,7 +184,15 @@ Transcript (JSONL, one event per line):
 """
 
 
-async def run_deep(model: str = "claude-opus-4-8", limit_files: int = 5) -> int:
+DEFAULT_REVIEW_MODEL = "claude-opus-5-5"
+
+
+def reviewer_model() -> str:
+    """Configured reviewer model (COX_MODEL_REVIEW, optional ":effort" suffix dropped)."""
+    return (os.environ.get("COX_MODEL_REVIEW") or DEFAULT_REVIEW_MODEL).split(":")[0]
+
+
+async def run_deep(model: str | None = None, limit_files: int = 5) -> int:
     """Fresh-context Claude review pass over transcripts since the last deep run.
     Writes pending rule_suggestions. Returns the number written."""
     from claude_agent_sdk import (
@@ -194,6 +203,7 @@ async def run_deep(model: str = "claude-opus-4-8", limit_files: int = 5) -> int:
         query,
     )
 
+    model = model or reviewer_model()
     state = _load_state()
     start = float(state.get("last_deep", 0.0))
     now = time.time()
@@ -255,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                         "mark)")
     p.add_argument("--deep", action="store_true",
                    help="run the fresh-context LLM review pass instead")
-    p.add_argument("--model", default="claude-opus-4-8", help="model for --deep")
+    p.add_argument("--model", default=None,
+                   help="model for --deep (default: COX_MODEL_REVIEW or claude-opus-5-5)")
     a = p.parse_args(argv)
     if a.deep:
         import asyncio
