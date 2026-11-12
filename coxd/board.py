@@ -110,12 +110,12 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     all_evs: list[list[dict]] = []
     levels: dict[str, str] = {}  # one registry read per repo per poll
     for t in store.list_tasks():
+        evs = store.events(t["id"])
+        all_evs.append(evs)  # month spend counts every task, archived or not
         if _is_archived(t):
             archived_count += 1
             if not show_archived:
                 continue
-        evs = store.events(t["id"])
-        all_evs.append(evs)
         issue_match = _ISSUE_URL_RE.search(t.get("brief") or "")
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
@@ -688,7 +688,7 @@ for(const e of document.querySelectorAll('.tm[data-run]'))e.textContent=e.textCo
 for(const e of document.querySelectorAll('.tm[data-resume]')){const r=parseFloat(e.dataset.resume)-Date.now()/1000;e.textContent=e.textContent.replace(/ \\(in [^)]*\\)/,r>0?' (in '+dur(r)+')':'')}},1000);
 function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').textContent='offline';const m=document.getElementById('board');m.innerHTML='<div class="empty offline" id=offline-panel><h2>coxd is not running on this machine</h2>'+(HOST?'<div class=meta>host: '+esc(HOST)+'</div>':'')+'<p><button id=retry>Retry</button></p></div>';document.getElementById('retry').onclick=()=>{m.innerHTML='<div class=empty>Loading…</div>';startWatch()}}
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
-function renderSpend(sp){const el=document.getElementById('mspend');if(!sp){el.hidden=true;return}el.hidden=false;const fm=o=>Object.entries(o||{}).filter(([,v])=>v>0||true).map(([k,v])=>esc(k)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+'<div class=meta>by model: '+fm(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'}
+function renderSpend(sp){const el=document.getElementById('mspend');if(!sp){el.hidden=true;return}el.hidden=false;const fm=o=>Object.entries(o||{}).map(([k,v])=>esc(k)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+'<div class=meta>by model: '+fm(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;document.getElementById('pcap').textContent=f.concurrency?' / '+f.concurrency:'';if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
 function render(s){GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}

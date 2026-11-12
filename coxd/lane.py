@@ -250,10 +250,6 @@ _REVIEWER_DENY = _WORKER_DENY + ["Bash", "BashOutput", "KillShell", "Write", "Ed
                                  "MultiEdit", "NotebookEdit"]
 
 
-# Workers never get the GitHub credential: only the control plane (ship.py/landed.py
-# in the coxd process) pushes and opens PRs. A worker holding GH_TOKEN could `gh pr
-# merge` or push main, and the text-matching boundary hook is easy to route around.
-# See envscrub.py.
 def result_payload(result, model: str, with_usage: bool = True) -> dict:
     """The `result` event body: cost/turns plus the configured model and the SDK's
     per-model usage (keyed by model id, with costUSD) so spend can be attributed."""
@@ -265,6 +261,10 @@ def result_payload(result, model: str, with_usage: bool = True) -> dict:
     return d
 
 
+# Workers never get the GitHub credential: only the control plane (ship.py/landed.py
+# in the coxd process) pushes and opens PRs. A worker holding GH_TOKEN could `gh pr
+# merge` or push main, and the text-matching boundary hook is easy to route around.
+# See envscrub.py.
 async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
                      resume: str | None = None, effort: str = "medium",
                      task_budget_tokens: int | None = _WORKER_TASK_BUDGET_TOKENS,
