@@ -21,8 +21,8 @@ import time
 import factory
 import intake
 import pii_health
-import spend
 import registry
+import spend
 import store
 import timeline
 

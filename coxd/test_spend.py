@@ -58,7 +58,10 @@ check("below limit → no banner", spend.status(NOV)["banner"] is None)
 ledger(datetime(2026, 11, 5, 10, 0, tzinfo=ET), 5.0)
 check("crossed → alert sent", spend.maybe_alert(NOV) and len(sent) == 1)
 check("message has spend and limit", "$11.00" in sent[0][1] and "$10.00" in sent[0][1])
-check("banner shown", spend.status(NOV)["banner"] == "Spend this month $11.00, over your $10.00 alert")
+check(
+    "banner shown",
+    spend.status(NOV)["banner"] == "Spend this month $11.00, over your $10.00 alert",
+)
 ledger(datetime(2026, 11, 6, 10, 0, tzinfo=ET), 5.0)
 check("still over → no second alert", not spend.maybe_alert(NOV) and len(sent) == 1)
 check("December starts at zero", spend.status(DEC)["mtd"] == 0 and not spend.maybe_alert(DEC))
