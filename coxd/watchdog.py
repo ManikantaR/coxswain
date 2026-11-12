@@ -17,6 +17,7 @@ import board
 import notify
 import pii_health
 import registry
+import spend
 import status
 import store
 import triage
@@ -117,6 +118,7 @@ def summary_text(now: float | None = None, since: float | None = None) -> str:
     if pl:
         out.append(pl)
     out.append(f"Cost last 24 h: ${cost:.2f}")
+    out.append(f"Month to date: ${spend.month_to_date():.2f}")
     return "\n".join(out)
 
 
@@ -145,6 +147,7 @@ async def run() -> None:
         try:
             check_stalls()
             maybe_send_morning_summary()
+            spend.maybe_alert()
             pii_health.maybe_ping(notify.local_now(), notify.notify_async)
             status.refresh_all()
         except Exception as e:  # noqa: BLE001
