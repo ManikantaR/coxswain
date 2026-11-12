@@ -28,7 +28,22 @@ def test_invalid_effort_falls_through(monkeypatch):
 
 def test_effort_reaches_sdk(monkeypatch):
     import asyncio
+    import sys
+    import types
 
+    # CI is zero-network without claude_agent_sdk: stub it, and force fresh
+    # imports of lane/loop (restored by monkeypatch) so they bind to the stub.
+    stub = types.ModuleType("claude_agent_sdk")
+    for n in ("AssistantMessage", "ClaudeAgentOptions", "ClaudeSDKClient",
+              "HookMatcher", "RateLimitEvent", "ResultMessage", "TextBlock",
+              "ToolUseBlock", "query"):
+        setattr(stub, n, type(n, (), {}))
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except ImportError:
+        monkeypatch.setitem(sys.modules, "claude_agent_sdk", stub)
+    monkeypatch.delitem(sys.modules, "lane", raising=False)
+    monkeypatch.delitem(sys.modules, "loop", raising=False)
     import lane
     import loop
     import registry
