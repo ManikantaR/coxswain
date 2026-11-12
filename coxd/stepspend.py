@@ -96,6 +96,7 @@ def aggregate(events_by_task: list[list[dict]], since: float) -> dict:
     return {"total": total, "by_model": by_model, "by_phase": by_phase}
 
 
-def month_spend(events_by_task: list[list[dict]], tz: str = "UTC", now: float | None = None) -> dict:
+def month_spend(events_by_task: list[list[dict]], tz: str = "UTC",
+                now: float | None = None) -> dict:
     now = time.time() if now is None else now
     return aggregate(events_by_task, month_start(now, tz))
