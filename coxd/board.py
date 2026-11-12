@@ -23,6 +23,7 @@ import intake
 import pii_health
 import registry
 import spend
+import stepspend
 import store
 import timeline
 
@@ -106,6 +107,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     rows = []
     archived_count = 0
     now = time.time()
+    all_evs: list[list[dict]] = []
     levels: dict[str, str] = {}  # one registry read per repo per poll
     for t in store.list_tasks():
         if _is_archived(t):
@@ -113,6 +115,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             if not show_archived:
                 continue
         evs = store.events(t["id"])
+        all_evs.append(evs)
         issue_match = _ISSUE_URL_RE.search(t.get("brief") or "")
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
@@ -128,6 +131,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
             "timing": timeline.derive(t, evs, now),
+            "models": {str(k): v for k, v in stepspend.stage_models(evs).items()},
             "resume_at": t.get("resume_at"),
             "_updated": t["updated"] or t["created"] or 0,
         })
@@ -142,6 +146,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
             "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
+            "model_spend": stepspend.month_spend(all_evs, os.environ.get("COXD_TZ", "America/New_York"), now),
             "factory": factory.status(), "intake": intake.status(), "pii": pii_health.pill(), "spend": spend.status()}
 
 
@@ -587,7 +592,7 @@ h1{font-size:15px;margin:0}.pill{font-size:12px;color:var(--dim);background:var(
 .b-work{background:#10233b;color:#6cb6ff}.b-warn{background:#2a2110;color:var(--warn)}.b-ok{background:#0f2417;color:var(--ok)}.b-bad{background:#2b1213;color:var(--bad)}
 .tid{font-weight:600;word-break:break-all}.meta{color:var(--dim);font-size:12px;margin-top:2px}.last{font-size:12.5px;margin-top:6px;color:var(--fg);opacity:.85}
 .retryrow{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}.retryrow button{margin-top:0}.retryrow input{flex:1;min-width:160px;padding:5px 8px}.rsmsg{font-size:12px;color:var(--dim)}
-.pipe{display:flex;align-items:center;margin-top:10px}.step{display:flex;flex-direction:column;align-items:center;flex:0 0 auto;font-size:10px;text-transform:uppercase;color:#6e7681;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background .15s}.step:hover{background:#1c2333}
+.mdl{display:block;text-transform:none;font-size:10px;color:#8b949e}.pipe{display:flex;align-items:center;margin-top:10px}.step{display:flex;flex-direction:column;align-items:center;flex:0 0 auto;font-size:10px;text-transform:uppercase;color:#6e7681;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background .15s}.step:hover{background:#1c2333}
 .dot{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;margin-bottom:3px;transition:background .3s,border-color .3s,color .3s,transform .3s}
 .step.done .dot{background:#0f2417;border-color:var(--ok);color:var(--ok);animation:pop .35s ease}.step.done{color:var(--ok)}
 .step.active .dot{border-color:var(--acc);color:#6cb6ff;background:#10233b;animation:p 1.4s infinite}.step.active{color:#6cb6ff}
@@ -623,6 +628,7 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 <textarea id=dbrief rows=3 placeholder="brief (blank = use the issue)"></textarea>
 <div class=drow><button id=dgo class=go>Dispatch</button><span id=dmsg></span></div>
 </div></section>
+<section id=mspend hidden><div class=dform><div id=spendbody></div></div></section>
 <section id=sug hidden><div class=dform>
 <div class=row><b>Suggested rules</b><span class=spacer></span><button id=sugtoggle>Hide</button></div>
 <div id=suglist></div>
@@ -633,12 +639,12 @@ const open=new Set(),esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;'
 const STAGE_TIP=[
  'IMPLEMENT — the worker (Claude) writes code in an isolated git worktree and commits. It never pushes; the control plane does that later.',
  'GATE — deterministic checks (migrations, tests, lint, build) run against the repo\\'s real toolchain. Must pass before the paid review runs. A failure here resumes the SAME worker session with the exact error to fix, up to 2 rounds.',
- 'REVIEW — one pass from a second model (Opus) against the full diff since the branch point. Checks correctness/security/contract; verdict is approve, fix (resumes the worker once), or reject (stops for you).',
+ 'REVIEW — one pass from a second model (model shown on the chip) against the full diff since the branch point. Checks correctness/security/contract; verdict is approve, fix (resumes the worker once), or reject (stops for you).',
  'MERGE — pushes the branch, opens the PR, then watches its CI checks: known flakes get auto-retried (up to 2x), a real-looking failure or one touching e2e/test files stops for you. Passing CI still waits for YOUR merge click — that\\'s the one standing human gate.',
 ];
 const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed'],waiting_quota:['b-warn','waiting quota']};
-function pipe(st){let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}
-h+='<div class="step '+c+'" data-stage="'+k+'" title="'+esc(STAGE_TIP[k])+'"><span class=dot>'+ic+'</span>'+STAGES[k]+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
+function pipe(st,models){models=models||{};let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}
+h+='<div class="step '+c+'" data-stage="'+k+'" title="'+esc(STAGE_TIP[k])+'"><span class=dot>'+ic+'</span>'+STAGES[k]+(models[k]?'<span class=mdl>'+esc(models[k])+'</span>':'')+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
 function fmtTime(ts){if(!ts)return'--:--:--';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
 function fmtFindings(fs){if(!fs||!fs.length)return'    (none)';return fs.map(f=>'    - ['+(f.severity||'?')+'/'+(f.pillar||'?')+'] '+(f.file?f.file+(f.line?':'+f.line:'')+' — ':'')+(f.summary||'')).join('\\n')}
 function feedLine(e,t){
@@ -646,6 +652,7 @@ if(e.kind==='state'){const st=String((e.data||{}).state||'').toUpperCase(),rs=(e
 if(e.kind==='gate'){const g=e.data||{};if(g.passed)return t+'  ✓ gate passed'+(g.steps?' ('+Object.entries(g.steps).map(([k,v])=>k+':'+v).join(', ')+')':'');
 return t+'  ✕ gate FAILED at '+g.failing+(g.reason?'\\n      reason: '+String(g.reason).slice(0,600).split('\\n').join('\\n      '):'')}
 if(e.kind==='review'){const r=e.data||{};return t+'  review — outcome:'+r.outcome+' verdict:'+r.verdict+'\\n'+fmtFindings(r.findings)}
+if(e.kind==='result'){const r=e.data||{};return t+'    ['+(r.model||'unknown')+'] $'+(typeof r.cost==='number'?r.cost.toFixed(3):'?')+' · '+(r.num_turns==null?'?':r.num_turns)+' turns'}
 if(e.kind==='fix-trigger'){const f=e.data||{};return t+'  → sending back to fix (source: '+f.source+')\\n'+
   (f.source==='gate'?'    '+f.failing+': '+String(f.reason||'').slice(0,400).split('\\n').join('\\n    '):fmtFindings(f.findings))}
 return t+'    '+e.kind+' '+JSON.stringify(e.data).slice(0,90)}
@@ -681,16 +688,17 @@ for(const e of document.querySelectorAll('.tm[data-run]'))e.textContent=e.textCo
 for(const e of document.querySelectorAll('.tm[data-resume]')){const r=parseFloat(e.dataset.resume)-Date.now()/1000;e.textContent=e.textContent.replace(/ \\(in [^)]*\\)/,r>0?' (in '+dur(r)+')':'')}},1000);
 function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').textContent='offline';const m=document.getElementById('board');m.innerHTML='<div class="empty offline" id=offline-panel><h2>coxd is not running on this machine</h2>'+(HOST?'<div class=meta>host: '+esc(HOST)+'</div>':'')+'<p><button id=retry>Retry</button></p></div>';document.getElementById('retry').onclick=()=>{m.innerHTML='<div class=empty>Loading…</div>';startWatch()}}
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
+function renderSpend(sp){const el=document.getElementById('mspend');if(!sp){el.hidden=true;return}el.hidden=false;const fm=o=>Object.entries(o||{}).filter(([,v])=>v>0||true).map(([k,v])=>esc(k)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+'<div class=meta>by model: '+fm(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;document.getElementById('pcap').textContent=f.concurrency?' / '+f.concurrency:'';if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
-function render(s){GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+function render(s){GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last,t.issue_url,t.resume_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.models,t.last,t.issue_url,t.resume_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
 h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
-'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
+'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
 (t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
 (t.state==='needs_human'?'<div class=retryrow>'+
  '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
