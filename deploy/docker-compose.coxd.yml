@@ -22,6 +22,11 @@ services:
       # Board header chip + (later) notification prefix; the Mac backup sets "mac".
       COXD_HOST_LABEL: nas
       COXD_ROLE: primary
+      # Per-role model/effort (unset -> shipped defaults; see deploy/README.md).
+      COXD_WORKER_MODEL: ${COXD_WORKER_MODEL:-}
+      COXD_WORKER_EFFORT: ${COXD_WORKER_EFFORT:-}
+      COXD_REVIEW_MODEL: ${COXD_REVIEW_MODEL:-}
+      COXD_REVIEW_EFFORT: ${COXD_REVIEW_EFFORT:-}
       COXD_CONCURRENCY: ${COXD_CONCURRENCY:-1}   # global cap; one Claude subscription
       # Declares this isolated, LAN-only container as a sandbox so the claude CLI will
       # run headless as the container's root user. Without it, worker dispatch fails at

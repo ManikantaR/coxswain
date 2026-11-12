@@ -21,6 +21,7 @@ import loop
 import quota
 import rebase
 import registry
+import roles
 import store
 import triage
 import uvicorn
@@ -281,9 +282,9 @@ async def _cleanup_loop(concurrency: int = 2) -> None:
 
 
 async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
-                worker_model: str = "claude-sonnet-5-5",
-                review_model: str = "claude-opus-5-5",
-                effort: str = "medium") -> None:
+                worker_model: str | None = None,
+                review_model: str | None = None,
+                effort: str | None = None) -> None:
     _reclaim_orphans()
     factory.set_concurrency(concurrency)
     # Loopback by default (the laptop crew); the NAS container sets COXD_BIND=0.0.0.0
@@ -291,8 +292,11 @@ async def serve(host: str | None = None, port: int = 8791, concurrency: int = 2,
     host = host or os.environ.get("COXD_BIND", "127.0.0.1")
     # Model pins are overridable per instance without a rebuild (e.g. drop the
     # reviewer to Sonnet when the weekly Opus cap is hit).
-    worker_model = os.environ.get("COXD_WORKER_MODEL") or worker_model
-    review_model = os.environ.get("COXD_REVIEW_MODEL") or review_model
+    # Resolved per task in loop.py (registry > these > shipped default).
+    base = roles.resolve(None, worker_model=worker_model, review_model=review_model,
+                         worker_effort=effort)
+    worker_model, review_model, effort = (base["worker_model"], base["review_model"],
+                                          base["worker_effort"])
     if os.environ.get("COXD_OWNER_USER"):
         board.ensure_admin_token()  # create admin.token at first start
     config = uvicorn.Config(board.app, host=host, port=port, log_level="warning")
