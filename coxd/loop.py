@@ -16,6 +16,7 @@ import gate
 import lane
 import quota
 import registry
+import roles
 import sandbox
 import store
 import worktree
@@ -23,9 +24,10 @@ import worktree
 MAX_FIX = 2
 
 
-async def run_task(task_id: str, worker_model: str = "claude-sonnet-5-5",
-                   review_model: str = "claude-opus-5-5",
-                   effort: str = "medium") -> str:
+async def run_task(task_id: str, worker_model: str | None = None,
+                   review_model: str | None = None,
+                   worker_effort: str | None = None,
+                   review_effort: str | None = None) -> str:
     t = store.get_task(task_id)
     if t is None:
         raise ValueError(f"unknown task {task_id}")
@@ -42,8 +44,12 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5-5",
     # --- implement ---------------------------------------------------------
     store.set_state(task_id, "working")
     reg = registry.load(repo) or {}
+    cfg = roles.resolve(reg, worker_model=worker_model, review_model=review_model,
+                        worker_effort=worker_effort, review_effort=review_effort)
+    worker_model, review_model = cfg["worker_model"], cfg["review_model"]
+    emit("config", cfg)
     wr = await lane.run_worker(wt, registry.data_guard_brief(reg, brief), worker_model, emit,
-                               effort=effort)
+                               effort=cfg["worker_effort"])
     store.set_session(task_id, wr.session_id)
     store.add_cost(task_id, wr.cost)
     store.set_summary(task_id, wr.summary)
@@ -54,12 +60,13 @@ async def run_task(task_id: str, worker_model: str = "claude-sonnet-5-5",
 
     entry = registry.get_or_scout(repo, wt)
     return await _gate_review_ship(task_id, wt, repo, entry, worker_model,
-                                   review_model, effort, emit)
+                                   review_model, cfg["worker_effort"], emit,
+                                   review_effort=cfg["review_effort"])
 
 
 async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
                             worker_model: str, review_model: str, effort: str,
-                            emit) -> str:
+                            emit, review_effort: str = "medium") -> str:
     """The tail shared by a fresh implement (run_task) and a human-resumed retry
     (resume_task): gate (+ resumed fix loop) -> one review pass -> ship -> CI watch."""
     t = store.get_task(task_id)
@@ -91,7 +98,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
 
     # --- one review pass ---------------------------------------------------
     store.set_state(task_id, "reviewing")
-    r = await lane.review(gate.diff(wt), review_model, emit, effort=effort,
+    r = await lane.review(gate.diff(wt), review_model, emit, effort=review_effort,
                           worktree=wt)
     store.add_cost(task_id, r.cost)
     if r.quota_reset_at:
@@ -120,7 +127,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         # let two PRs land with their own reviewer's blocking finding still
         # open (2026-10). Only a fresh `approve` ships; anything else stops.
         store.set_state(task_id, "reviewing")
-        r = await lane.review(gate.diff(wt), review_model, emit, effort=effort,
+        r = await lane.review(gate.diff(wt), review_model, emit, effort=review_effort,
                           worktree=wt)
         store.add_cost(task_id, r.cost)
         if r.quota_reset_at:
@@ -164,9 +171,10 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
     return _terminal(task_id, "pr_ready", None)
 
 
-async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonnet-5-5",
-                      review_model: str = "claude-opus-5-5",
-                      effort: str = "medium", human_note: bool = False) -> str:
+async def resume_task(task_id: str, note: str, worker_model: str | None = None,
+                      review_model: str | None = None,
+                      worker_effort: str | None = None, human_note: bool = False,
+                      review_effort: str | None = None) -> str:
     """Board-triggered resume: a human gives the SAME worker session a note (e.g.
     'the gate-red was a flaky port conflict, just retry' or 'use approach X instead'),
     then re-runs the shared gate->review->ship tail. Distinct from _resume_fix, which
@@ -180,6 +188,12 @@ async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonne
     def emit(kind: str, data: dict) -> None:
         store.append_event(task_id, kind, data)
 
+    cfg = roles.resolve(registry.load(repo), worker_model=worker_model,
+                        review_model=review_model, worker_effort=worker_effort,
+                        review_effort=review_effort)
+    worker_model, review_model = cfg["worker_model"], cfg["review_model"]
+    effort = cfg["worker_effort"]
+    emit("config", cfg)
     emit("human-note", {"note": note})
     # Automatic resumes (crash-restart, usage-limit resume, one-shot auto-retry:
     # "continue from where you left off") are expected to change nothing when the
@@ -191,7 +205,8 @@ async def resume_task(task_id: str, note: str, worker_model: str = "claude-sonne
                       stall_is_terminal=False, detect_stall=human_note)
     entry = registry.get_or_scout(repo, wt)
     return await _gate_review_ship(task_id, wt, repo, entry, worker_model,
-                                   review_model, effort, emit)
+                                   review_model, cfg["worker_effort"], emit,
+                                   review_effort=cfg["review_effort"])
 
 
 MAX_FRESH_PER_TASK = 2

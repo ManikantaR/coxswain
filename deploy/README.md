@@ -262,3 +262,17 @@ Reminders (counts only): one line in the morning digest when not `ok`; a Telegra
 Fail closed when `blocked`: `intake.poll_once` takes nothing new (one log line per poll cycle), and
 `ship` blocks the PR with `pii-scan-error` for any repo with `intake: true` or `data_globs`. Other
 repos keep the old behaviour (a `pii-denylist-missing` event).
+
+## Model and effort per role
+
+| Var | Default | Meaning |
+|---|---|---|
+| `COXD_WORKER_MODEL` | `claude-sonnet-5-5` | worker model |
+| `COXD_WORKER_EFFORT` | `medium` | worker effort: `low\|medium\|high\|xhigh\|max` |
+| `COXD_REVIEW_MODEL` | `claude-opus-5-5` | reviewer model |
+| `COXD_REVIEW_EFFORT` | `medium` | reviewer effort |
+
+Set them in `deploy/.env`; empty/unset keeps the default, and an invalid effort logs a warning and falls back to `medium`.
+A repo's registry entry may set `worker_model`, `worker_effort`, `review_model`,
+`review_effort`; precedence is **registry > env > default**. Each run records the
+effective values in a `config` event.
