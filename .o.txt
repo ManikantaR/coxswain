@@ -1,2 +1,0 @@
-ok   paused: no events, no push, still pending
-ok   concurrency full: deferred
