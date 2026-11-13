@@ -66,7 +66,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
     fixes = 0
     while True:
         store.set_state(task_id, "gating")
-        g = gate.run_gate(wt, entry)
+        g = await asyncio.to_thread(gate.run_gate, wt, entry)
         emit("gate", g)
         if g["passed"]:
             store.set_gate_steps(task_id, g.get("steps"), g.get("test_output"))
@@ -82,7 +82,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
             # The worker changed nothing twice. That can be right (the gate was
             # flaky), so re-run the gate once before paging a person.
             store.set_state(task_id, "gating")
-            g = gate.run_gate(wt, entry)
+            g = await asyncio.to_thread(gate.run_gate, wt, entry)
             emit("gate", g)
             if not g["passed"]:
                 return _terminal(task_id, "needs_human", "worker-stalled")
@@ -111,7 +111,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         emit("fix-trigger", {"source": "review", "findings": r.findings, "feedback": feedback})
         if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort):
             return _terminal(task_id, "needs_human", "worker-stalled")
-        g = gate.run_gate(wt, entry)
+        g = await asyncio.to_thread(gate.run_gate, wt, entry)
         emit("gate", g)
         if not g["passed"]:
             return _terminal(task_id, "needs_human", "gate-red")
