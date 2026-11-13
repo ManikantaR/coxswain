@@ -50,19 +50,14 @@ assert a["by_model"]["unknown"] == 4.0, a
 assert a["by_phase"] == {"implement": 6.0, "fix": 1.0, "review": 3.0}, a
 assert abs(a["total"] - 10.0) < 1e-9
 assert spend.month_start(1767225600 + 86400 * 20, "UTC") == 1767225600  # 2026-01-01
-# resumed session: model_usage costUSD is cumulative for the session (2.0 + 3.0 = 5.0)
-# but total_cost_usd (ledger delta) is per call -> panel must follow the event cost.
-resumed = [st(10, "working"),
-           res(11, model="claude-sonnet-5-5", cost=2.0,
-               model_usage={"claude-sonnet-5-5": {"costUSD": 2.0}}),
-           st(12, "fixing"),
-           res(13, model="claude-sonnet-5-5", cost=3.0,
-               model_usage={"claude-sonnet-5-5": {"costUSD": 5.0}})]
-a = spend.aggregate([resumed], since=0)
-assert abs(a["total"] - 5.0) < 1e-9 and abs(a["by_model"]["Sonnet 5.5"] - 5.0) < 1e-9, a
-# panel total == ledger total; the gap is surfaced, not silently dropped
-m = spend.month_spend([resumed], "UTC", now=100.0, ledger_total=7.0)
-assert m["total"] == 7.0 and abs(m["by_model"]["unattributed"] - 2.0) < 1e-9, m
-m = spend.month_spend([resumed], "UTC", now=100.0, ledger_total=5.0)
-assert m["total"] == 5.0 and "unattributed" not in m["by_model"], m
+# panel total == ledger total; the gap is surfaced in both breakdowns, never negative
+evs = [st(10, "working"), res(11, model="claude-sonnet-5-5", cost=2.0)]
+m = spend.month_spend([evs], "UTC", now=100.0, ledger_total=7.0)
+assert m["total"] == 7.0 and abs(m["by_model"]["unattributed"] - 5.0) < 1e-9, m
+assert abs(m["by_phase"]["unattributed"] - 5.0) < 1e-9, m
+m = spend.month_spend([evs], "UTC", now=100.0, ledger_total=2.0)
+assert m["total"] == 2.0 and "unattributed" not in m["by_model"], m
+m = spend.month_spend([evs], "UTC", now=100.0, ledger_total=1.0)
+assert m["total"] == 1.0 and "unattributed" not in m["by_model"], m
+assert abs(m["events_exceed_ledger"] - 1.0) < 1e-9, m
 print("ok")

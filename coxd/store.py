@@ -60,7 +60,38 @@ def _conn() -> sqlite3.Connection:
                      ("greenlight_tier", "TEXT"), ("greenlight_reasons", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
+    if str(p) not in _BACKFILLED:
+        backfill_ledger(c)
+        _BACKFILLED.add(str(p))
     return c
+
+
+_BACKFILLED: set[str] = set()
+
+
+def backfill_ledger(c: sqlite3.Connection) -> int:
+    """One-time, idempotent: cost_ledger was introduced after result events already existed,
+    so month-to-date undercounted. Insert a ledger row (event ts, event cost) for every
+    result event older than the earliest existing ledger row. Re-running adds nothing,
+    because the earliest ledger row then is at or before every event already covered."""
+    first = c.execute("SELECT MIN(ts) FROM cost_ledger").fetchone()[0]
+    q = "SELECT task_id, ts, data FROM events WHERE kind='result'"
+    args: tuple = ()
+    if first is not None:
+        q += " AND ts < ?"
+        args = (first,)
+    rows = []
+    for r in c.execute(q + " ORDER BY seq", args):
+        try:
+            cost = json.loads(r["data"] or "{}").get("cost")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost:
+            rows.append((r["task_id"], r["ts"], float(cost)))
+    if rows:
+        with c:
+            c.executemany("INSERT INTO cost_ledger(task_id,ts,delta) VALUES(?,?,?)", rows)
+    return len(rows)
 
 
 def create_task(task_id: str, repo: str, brief: str, worktree: str,

@@ -45,7 +45,10 @@ ruff check . && pytest -q
 Month-to-date spend comes from the `cost_ledger` table (`spend.month_to_date()`, one row per
 `store.add_cost` call, month boundary in `COXD_TZ`). The board header and the spend panel both
 show that number. The panel's by-model / by-phase split is derived from `result` events using
-each event's `total_cost_usd`; any remainder the events don't cover is listed as `unattributed`.
+each event's cost; any remainder the events don't cover is listed as `unattributed` (and if events
+exceed the ledger, `events_exceed_ledger`). `cost_ledger` was added after result events already
+existed, so `store` backfills one ledger row per older result event on startup (idempotent: only
+events older than the earliest ledger row).
 
 ## Onboarding a document repo
 
