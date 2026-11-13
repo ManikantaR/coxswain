@@ -22,6 +22,7 @@ import factory
 import intake
 import pii_health
 import registry
+import spend
 import store
 import timeline
 
@@ -141,7 +142,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
             "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
-            "factory": factory.status(), "intake": intake.status(), "pii": pii_health.pill()}
+            "factory": factory.status(), "intake": intake.status(), "pii": pii_health.pill(), "spend": spend.status()}
 
 
 async def index(_: Request) -> HTMLResponse:
@@ -608,9 +609,11 @@ input,select,textarea{font:inherit;background:var(--bg);color:var(--fg);border:1
 textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:500}
 #dmsg{font-size:13px;color:var(--dim);align-self:center}
 #foff{background:#b3261e;color:#fff;font-weight:600;text-align:center;padding:6px;letter-spacing:.05em}#foff[hidden]{display:none}
+#fspend{background:#b8860b;color:#fff;font-weight:600;text-align:center;padding:6px}#fspend[hidden]{display:none}
 .offline{text-align:center;padding:40px 16px}.offline h2{margin:0 0 8px}</style></head><body>
+<div id=fspend hidden></div>
 <div id=foff hidden>⏸ FACTORY OFF — nothing new will start; running tasks finish</div>
-<header><h1>▟ coxd</h1><span class=pill id=hostchip hidden></span><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b><span id=pcap></span></span><span class=pill id=pi hidden></span><span class=pill id=pd hidden></span>
+<header><h1>▟ coxd</h1><span class=pill id=hostchip hidden></span><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b><span id=pcap></span></span><span class=pill id=pi hidden></span><span class=pill id=pd hidden></span><span class=pill id=pm hidden></span>
 <button id=ab class=pill hidden>archived <b>0</b></button>
 <span class=spacer></span><button id=fb title="Factory ON = picks up queued work. OFF = starts nothing new; running tasks finish.">Factory …</button><button id=rb title="Restart the coxd process in place — refuses while anything is active">↻ Restart cox</button><button id=nb>+ Dispatch</button><span id=conn class=pill>connecting…</span></header>
 <section id=dp hidden><div class=dform>
@@ -679,7 +682,7 @@ for(const e of document.querySelectorAll('.tm[data-resume]')){const r=parseFloat
 function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').textContent='offline';const m=document.getElementById('board');m.innerHTML='<div class="empty offline" id=offline-panel><h2>coxd is not running on this machine</h2>'+(HOST?'<div class=meta>host: '+esc(HOST)+'</div>':'')+'<p><button id=retry>Retry</button></p></div>';document.getElementById('retry').onclick=()=>{m.innerHTML='<div class=empty>Loading…</div>';startWatch()}}
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;document.getElementById('pcap').textContent=f.concurrency?' / '+f.concurrency:'';if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
-function render(s){GOT=true;clearTimeout(offT);STAGES=s.stages||STAGES;renderFactory(s.factory);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+function render(s){GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
 if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.last,t.issue_url,t.resume_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}

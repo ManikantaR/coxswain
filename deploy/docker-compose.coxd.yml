@@ -44,6 +44,8 @@ services:
       COXD_TG_TOKEN: ${COXD_TG_TOKEN:-}
       COXD_TG_CHAT: ${COXD_TG_CHAT:-}
       COXD_BOARD_URL: ${COXD_BOARD_URL:-}
+      # monthly AI-spend alert in USD (alert only, work continues); unset/blank = off
+      COXD_MONTHLY_SPEND_ALERT_USD: ${COXD_MONTHLY_SPEND_ALERT_USD:-}
       # deployer API, e.g. http://deployer:8792; unset = board Deploy disabled (see "Deployer" in deploy/README.md); token must equal DEPLOYER_TOKEN
       COXD_DEPLOYER_URL: ${COXD_DEPLOYER_URL:-}
       COXD_DEPLOYER_TOKEN: ${COXD_DEPLOYER_TOKEN:-}
