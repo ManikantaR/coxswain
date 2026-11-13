@@ -250,6 +250,17 @@ _REVIEWER_DENY = _WORKER_DENY + ["Bash", "BashOutput", "KillShell", "Write", "Ed
                                  "MultiEdit", "NotebookEdit"]
 
 
+def result_payload(result, model: str, with_usage: bool = True) -> dict:
+    """The `result` event body: cost/turns plus the configured model and the SDK's
+    per-model usage (keyed by model id, with costUSD) so spend can be attributed."""
+    d = {"cost": result.total_cost_usd, "num_turns": result.num_turns,
+         "stop_reason": result.stop_reason, "model": model,
+         "model_usage": getattr(result, "model_usage", None)}
+    if with_usage:
+        d["usage"] = result.usage
+    return d
+
+
 # Workers never get the GitHub credential: only the control plane (ship.py/landed.py
 # in the coxd process) pushes and opens PRs. A worker holding GH_TOKEN could `gh pr
 # merge` or push main, and the text-matching boundary hook is easy to route around.
@@ -298,8 +309,7 @@ async def run_worker(worktree: Path, prompt: str, model: str, emit: Emit,
         return WorkerResult(None, None, True, quota_reset_at=quota_reset_at)
     # observability: log real cost/turns/usage so future budgets are calibrated on
     # data, not guesses (the #102 postmortem had no per-stage numbers to work from).
-    emit("result", {"cost": result.total_cost_usd, "num_turns": result.num_turns,
-                    "stop_reason": result.stop_reason, "usage": result.usage})
+    emit("result", result_payload(result, model, with_usage=True))
     return WorkerResult(result.session_id, result.total_cost_usd,
                         bool(result.is_error or getattr(result, "api_error_status", None)),
                         result.num_turns, summary=last_text or None,
@@ -401,8 +411,7 @@ async def review(diff: str, model: str, emit: Emit, effort: str = "medium",
         emit("review-error", {"err": str(e)[:200]})
         return ReviewOutcome("review-error", None, [], None, quota_reset_at=quota_reset_at)
     if result is not None:
-        emit("result", {"cost": result.total_cost_usd, "num_turns": result.num_turns,
-                        "stop_reason": result.stop_reason})
+        emit("result", result_payload(result, model, with_usage=True))
     quota_reset_at = quota_reset_at or quota.reset_from_result(result)
     if result is None or result.is_error or getattr(result, "api_error_status", None):
         return ReviewOutcome("review-error", None, [], result.total_cost_usd if result else None,
