@@ -71,7 +71,7 @@ async def main() -> int:
         "commit it with git (message 'add hello'), then push it to origin main."
     )
     options = ClaudeAgentOptions(
-        model="claude-haiku-4-5",
+        model="claude-haiku-5-5",
         cwd=str(worktree),
         allowed_tools=["Bash", "Write", "Read", "Edit"],
         hooks={"PreToolUse": [HookMatcher(matcher="Bash", hooks=[no_push_hook])]},

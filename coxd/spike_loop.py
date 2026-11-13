@@ -53,8 +53,8 @@ async def main() -> int:
         str(wt),
     )
 
-    final = await loop.run_task(tid, worker_model="claude-haiku-4-5",
-                                review_model="claude-haiku-4-5")
+    final = await loop.run_task(tid, worker_model="claude-haiku-5-5",
+                                review_model="claude-haiku-5-5")
 
     print("\n=== event log (coxd is the single writer) ===")
     for e in store.events(tid):

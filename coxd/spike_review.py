@@ -66,7 +66,7 @@ def _parse(text: str) -> tuple[str | None, list[dict]] | None:
 
 async def review(diff: str) -> ReviewOutcome:
     options = ClaudeAgentOptions(
-        model="claude-sonnet-4-6",  # different model than the (haiku) worker
+        model="claude-sonnet-5-5",  # different model than the (haiku) worker
         permission_mode="plan",      # read-only: the reviewer never edits
         allowed_tools=[],
         max_turns=1,

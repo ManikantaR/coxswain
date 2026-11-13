@@ -58,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="unix ts; default resumes from the last run's high-water mark")
     m.add_argument("--deep", action="store_true",
                    help="fresh-context LLM review pass instead of the cheap textual scan")
-    m.add_argument("--model", default="claude-opus-4-8", help="model for --deep")
+    m.add_argument("--model", default=None,
+                   help="model for --deep (default: COX_MODEL_REVIEW or claude-opus-5-5)")
 
     a = p.parse_args(argv)
 

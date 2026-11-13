@@ -30,7 +30,7 @@ async def main() -> int:
         return 1
 
     options = ClaudeAgentOptions(
-        model="claude-haiku-4-5",  # cheapest model — this is a billing probe, not work
+        model="claude-haiku-5-5",  # cheapest model — this is a billing probe, not work
         max_turns=1,
         allowed_tools=[],  # no tools: a pure round-trip
     )
