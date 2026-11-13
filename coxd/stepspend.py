@@ -97,6 +97,19 @@ def aggregate(events_by_task: list[list[dict]], since: float) -> dict:
 
 
 def month_spend(events_by_task: list[list[dict]], tz: str = "UTC",
-                now: float | None = None) -> dict:
+                now: float | None = None, ledger_total: float | None = None) -> dict:
+    """Month-to-date spend. With `ledger_total` (spend.month_to_date(), the cost_ledger
+    sum — the authoritative total) the panel total IS that number. Any remainder the result
+    events don't cover is 'unattributed' in both breakdowns; if events exceed the ledger the
+    gap is clamped to 0 and reported as `events_exceed_ledger`."""
     now = time.time() if now is None else now
-    return aggregate(events_by_task, month_start(now, tz))
+    out = aggregate(events_by_task, month_start(now, tz))
+    if ledger_total is not None:
+        gap = ledger_total - out["total"]
+        if gap >= 0.005:
+            out["by_model"]["unattributed"] = gap
+            out["by_phase"]["unattributed"] = gap
+        elif gap <= -0.005:
+            out["events_exceed_ledger"] = -gap
+        out["total"] = ledger_total
+    return out

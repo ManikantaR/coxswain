@@ -60,7 +60,53 @@ def _conn() -> sqlite3.Connection:
                      ("greenlight_tier", "TEXT"), ("greenlight_reasons", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
+    backfill_ledger(c)
     return c
+
+
+_MARGIN = 60.0  # seconds: result events are emitted just before their add_cost row
+
+
+def backfill_ledger(c: sqlite3.Connection) -> int:
+    """One-time migration (marker 'ledger_backfill_v1'): cost_ledger was introduced after
+    result events already existed, so month-to-date undercounted. Insert a ledger row
+    (event ts, event cost) for each result event that predates the ledger: ts is more than
+    _MARGIN before the earliest ledger row AND its task has no ledger row with the same
+    delta within _MARGIN of the event. Runs in one BEGIN IMMEDIATE transaction with the
+    marker check inside it, so concurrent first-openers produce exactly one backfill."""
+    c.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY)")
+    c.commit()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        if c.execute("SELECT 1 FROM meta WHERE key='ledger_backfill_v1'").fetchone():
+            c.rollback()
+            return 0
+        first = c.execute("SELECT MIN(ts) FROM cost_ledger").fetchone()[0]
+        q = "SELECT task_id, ts, data FROM events WHERE kind='result'"
+        args: tuple = ()
+        if first is not None:
+            q += " AND ts < ?"
+            args = (first - _MARGIN,)
+        rows = []
+        for r in c.execute(q + " ORDER BY seq", args).fetchall():
+            try:
+                cost = json.loads(r["data"] or "{}").get("cost")
+            except (ValueError, AttributeError):
+                continue
+            if not isinstance(cost, (int, float)) or isinstance(cost, bool) or not cost:
+                continue
+            dup = c.execute(
+                "SELECT 1 FROM cost_ledger WHERE task_id=? AND ABS(ts-?)<=? AND ABS(delta-?)<1e-9",
+                (r["task_id"], r["ts"], _MARGIN, cost)).fetchone()
+            if not dup:
+                rows.append((r["task_id"], r["ts"], float(cost)))
+        c.executemany("INSERT INTO cost_ledger(task_id,ts,delta) VALUES(?,?,?)", rows)
+        c.execute("INSERT INTO meta(key) VALUES('ledger_backfill_v1')")
+        c.commit()
+        return len(rows)
+    except BaseException:
+        c.rollback()
+        raise
 
 
 def create_task(task_id: str, repo: str, brief: str, worktree: str,
