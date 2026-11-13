@@ -44,17 +44,24 @@ def _num(v) -> float:
 
 
 def result_costs(data: dict) -> dict[str, float]:
-    """model id -> cost for one result event. Old events (no model_usage) fall back to
-    the event's total cost under its `model`, or 'unknown'."""
+    """model id -> cost for one result event. The event's `cost` (total_cost_usd, the
+    very number store.add_cost puts in the ledger) is authoritative; model_usage only
+    supplies the split between models (proportional to its costUSD). Summing costUSD
+    directly could disagree with the ledger on resumed sessions."""
+    total = _num(data.get("cost"))
     mu = data.get("model_usage")
     if isinstance(mu, dict) and mu:
-        out: dict[str, float] = {}
+        parts: dict[str, float] = {}
         for k, v in mu.items():
             c = _num(v.get("costUSD")) if isinstance(v, dict) else 0.0
-            out[str(k)] = out.get(str(k), 0.0) + c
-        return out
+            parts[str(k)] = parts.get(str(k), 0.0) + max(c, 0.0)
+        s = sum(parts.values())
+        if s > 0:
+            return {k: total * c / s for k, c in parts.items()}
+        if len(parts) == 1:
+            return {next(iter(parts)): total}
     model = data.get("model")
-    return {model if isinstance(model, str) and model else UNKNOWN: _num(data.get("cost"))}
+    return {model if isinstance(model, str) and model else UNKNOWN: total}
 
 
 def phased_results(events: list[dict]):
@@ -97,6 +104,16 @@ def aggregate(events_by_task: list[list[dict]], since: float) -> dict:
 
 
 def month_spend(events_by_task: list[list[dict]], tz: str = "UTC",
-                now: float | None = None) -> dict:
+                now: float | None = None, ledger_total: float | None = None) -> dict:
+    """Month-to-date spend. With `ledger_total` (spend.month_to_date(), the cost_ledger
+    sum — the authoritative total) the panel total IS that number; whatever the result
+    events don't account for (pre-event history, calls with no result) is shown as
+    'unattributed' in by_model so header and panel can never disagree."""
     now = time.time() if now is None else now
-    return aggregate(events_by_task, month_start(now, tz))
+    out = aggregate(events_by_task, month_start(now, tz))
+    if ledger_total is not None:
+        gap = ledger_total - out["total"]
+        if abs(gap) >= 0.005:
+            out["by_model"]["unattributed"] = gap
+        out["total"] = ledger_total
+    return out

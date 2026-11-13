@@ -41,6 +41,12 @@ pip install -e ".[dev]"
 ruff check . && pytest -q
 ```
 
+## Spend: which number is authoritative
+Month-to-date spend comes from the `cost_ledger` table (`spend.month_to_date()`, one row per
+`store.add_cost` call, month boundary in `COXD_TZ`). The board header and the spend panel both
+show that number. The panel's by-model / by-phase split is derived from `result` events using
+each event's `total_cost_usd`; any remainder the events don't cover is listed as `unattributed`.
+
 ## Onboarding a document repo
 
 A repo with `data_globs` gets `intake: true` only after `deploy/smoke-sandbox.sh`

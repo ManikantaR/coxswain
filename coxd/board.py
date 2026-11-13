@@ -141,13 +141,15 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     rows.sort(key=lambda r: (not r["needs_you"], not r["active"], -r["_updated"]))
     for r in rows:
         del r["_updated"]
+    spend_now = spend.status()  # cost_ledger: the one authoritative month total
     return {"tasks": rows, "stages": STAGES,
             "tz": os.environ.get("COXD_TZ", "America/New_York"),
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
             "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
-            "model_spend": stepspend.month_spend(all_evs, os.environ.get("COXD_TZ", "America/New_York"), now),
-            "factory": factory.status(), "intake": intake.status(), "pii": pii_health.pill(), "spend": spend.status()}
+            "model_spend": stepspend.month_spend(all_evs, os.environ.get("COXD_TZ", "America/New_York"), now,
+                                                  ledger_total=spend_now["mtd"]),
+            "factory": factory.status(), "intake": intake.status(), "pii": pii_health.pill(), "spend": spend_now}
 
 
 async def index(_: Request) -> HTMLResponse:
