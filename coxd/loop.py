@@ -13,6 +13,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 
+import agy_handoff
 import gate
 import lane
 import notify
@@ -82,6 +83,8 @@ async def run_task(task_id: str, worker_model: str | None = None,
         store.append_event(task_id, kind, data)
 
     if t.get("lane") == AGY_LANE:  # agy handoff: plan + branch, never implement here
+        if t.get("plan_md"):  # plan already handed off: a pushed branch / Claude-fix round
+            return await _agy_continue(task_id, t, emit)
         return await _plan_and_hand_off(task_id, t, emit)
 
     # --- provision: install deps so the worker + gate run the repo's REAL checks
@@ -117,7 +120,6 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
                             emit, review_effort: str = "medium") -> str:
     """The tail shared by a fresh implement (run_task) and a human-resumed retry
     (resume_task): gate (+ resumed fix loop) -> one review pass -> ship -> CI watch."""
-    t = store.get_task(task_id)
     fixes = 0
     while True:
         store.set_state(task_id, "gating")
@@ -189,6 +191,11 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         if r.verdict != "approve":
             return _terminal(task_id, "needs_human", "review-findings")
 
+    return await _ship_tail(task_id, wt, emit)
+
+
+async def _ship_tail(task_id: str, wt: Path, emit) -> str:
+    t = store.get_task(task_id)
     # --- ship: control plane pushes + opens the PR (workers can't) ----------
     store.set_state(task_id, "shipping")
     import ship
@@ -217,6 +224,81 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
                 return _terminal(task_id, "needs_human", f"ci-red: {detail}")
     # pr | local -> ready for the captain's merge (the one standing human gate)
     return _terminal(task_id, "pr_ready", None)
+
+
+async def _agy_continue(task_id: str, t: dict, emit) -> str:
+    """agy-handoff pickup. Either a human pushed to coxd-agy/<id> (fetch it, gate, review,
+    then ship from that branch or ask the human what to do with the findings), or the
+    human chose "Let Claude fix" on a needs_choice card. Plain git only; agy is never run."""
+    wt, repo = Path(t["worktree"]), t["repo"]
+    cfg = roles.resolve(registry.load(repo) or {})
+    emit("config", cfg)
+    if agy_handoff.claude_fix_pending(task_id):
+        return await _agy_claude_fix(task_id, t, wt, cfg, emit)
+    store.set_state(task_id, "gating")
+    sha = await asyncio.to_thread(agy_handoff.fetch_into_worktree, t)
+    if not sha:
+        return _terminal(task_id, "needs_human", "agy-fetch-error")
+    emit("agy-pickup", {"sha": sha})
+    entry = registry.get_or_scout(repo, wt)
+    g = await asyncio.to_thread(gate.run_gate, wt, entry)
+    emit("gate", g)
+    if not g["passed"]:
+        if agy_handoff.rounds_used(task_id) >= agy_handoff.MAX_FIX_ROUNDS:
+            return _terminal(task_id, "needs_human", "gate-red")
+        plan = f"The gate failed at {g['failing']}:\n{g.get('reason', '')}\n"
+        agy_handoff.next_round(task_id, plan, "agy", "gate")
+        return "waiting_agy"
+    store.set_gate_steps(task_id, g.get("steps"), g.get("test_output"))
+    store.set_state(task_id, "reviewing")
+    r = await lane.review(gate.diff(wt), cfg["review_model"], emit,
+                          effort=cfg["review_effort"], worktree=wt)
+    store.add_cost(task_id, r.cost)
+    if r.quota_reset_at:  # just wait for the reset (quota.park); never fall back
+        raise quota.QuotaWait(r.quota_reset_at, "review")
+    emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings})
+    if r.outcome == "reviewed":
+        store.set_review(task_id, r.verdict, r.findings)
+    if r.outcome == "review-error":
+        return _terminal(task_id, "needs_human", "review-error")
+    if r.verdict == "approve":
+        return await _ship_tail(task_id, wt, emit)
+    if r.verdict == "fix" and r.findings:
+        if agy_handoff.rounds_used(task_id) >= agy_handoff.MAX_FIX_ROUNDS:
+            return _terminal(task_id, "needs_human", "review-findings")
+        store.set_state(task_id, "needs_choice", "review-findings")
+        notify.notify_async("coxd · needs your choice (agy)",
+                            f"{task_id}: review has findings — Send to agy or Let Claude fix",
+                            priority="high")
+        return "needs_choice"
+    return _terminal(task_id, "needs_human", "review-findings")
+
+
+async def _agy_claude_fix(task_id: str, t: dict, wt: Path, cfg: dict, emit) -> str:
+    """"Let Claude fix": a fresh worker session on the worktree (already at the agy
+    head), then the normal gate -> review -> ship tail. Pushes land on coxd-agy/<id>."""
+    store.append_event(task_id, "agy-claude-fix-start", {})
+    store.set_state(task_id, "fixing")
+    sha = await asyncio.to_thread(agy_handoff.fetch_into_worktree, t)
+    if not sha:
+        return _terminal(task_id, "needs_human", "agy-fetch-error")
+    feedback = ("Address these review findings, then re-run tests and commit "
+                "(do not push):\n" + str(store.findings_of(store.get_task(task_id))))
+    emit("fix-trigger", {"source": "review", "feedback": feedback})
+    wr = await lane.run_worker(wt, feedback, cfg["worker_model"], emit, resume=None,
+                               effort=cfg["worker_effort"])
+    store.set_session(task_id, wr.session_id)
+    store.add_cost(task_id, wr.cost)
+    store.set_summary(task_id, wr.summary)
+    emit("agy-claude-fix-done", {"cost": wr.cost})
+    if wr.quota_reset_at:
+        raise quota.QuotaWait(wr.quota_reset_at, "fix")
+    if wr.is_error or not wr.session_id:
+        return _terminal(task_id, "needs_human", "worker-error")
+    entry = registry.get_or_scout(t["repo"], wt)
+    return await _gate_review_ship(task_id, wt, t["repo"], entry, cfg["worker_model"],
+                                   cfg["review_model"], cfg["worker_effort"], emit,
+                                   review_effort=cfg["review_effort"])
 
 
 async def resume_task(task_id: str, note: str, worker_model: str | None = None,

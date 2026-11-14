@@ -18,6 +18,7 @@ import secrets
 import socket
 import time
 
+import agy_handoff
 import factory
 import intake
 import pii_health
@@ -43,10 +44,10 @@ STAGES = ["implement", "gate", "review", "merge"]
 _STATE_STAGE = {"queued": 0, "provisioning": 0, "working": 0, "gating": 1,
                 "fixing": 1, "reviewing": 2, "shipping": 3, "ci-watching": 3,
                 "pr_ready": 3, "landed": 3, "waiting_quota": 1,
-                "planning": 0, "waiting_agy": 0}
+                "planning": 0, "waiting_agy": 0, "needs_choice": 2}
 _ACTIVE = {"planning", "provisioning", "working", "gating", "fixing", "reviewing", "shipping",
           "ci-watching"}
-_NEEDS_YOU = {"pr_ready", "needs_human", "waiting_agy"}
+_NEEDS_YOU = {"pr_ready", "needs_human", "waiting_agy", "needs_choice"}
 # Terminal, resolved states eligible for silent age-based archiving — never
 # pr_ready/needs_human, those always need a human look regardless of age.
 _ARCHIVABLE = store.ARCHIVABLE
@@ -104,6 +105,31 @@ def _repo_has_deploy(repo: str) -> bool:
     return _DEPLOY_CACHE[repo][1]
 
 
+_SEV_CHIP = {"high": "critical", "med": "major", "low": "minor"}
+
+
+def _last_claude_fix_cost(evs: list[dict]) -> float | None:
+    """What the last Claude fix round cost (about), from its step spend; None if never."""
+    for e in reversed(evs):
+        if e["kind"] == "agy-claude-fix-done" and (e.get("data") or {}).get("cost") is not None:
+            return float(e["data"]["cost"])
+    return None
+
+
+def _choice_payload(t: dict, evs: list[dict]) -> dict:
+    used = sum(1 for e in evs if e["kind"] == "fix-round")
+    capped = used >= agy_handoff.MAX_FIX_ROUNDS
+    findings = [{"severity": _SEV_CHIP.get(str(f.get("severity")), "minor"),
+                 "summary": str(f.get("summary") or ""), "file": f.get("file"),
+                 "line": f.get("line")}
+                for f in store.findings_of(t)]
+    order = ("critical", "major", "minor")
+    findings.sort(key=lambda f: order.index(f["severity"]))
+    return {"findings": findings, "round": used + 1, "capped": capped,
+            "cap_reason": f"fix-round cap ({agy_handoff.MAX_FIX_ROUNDS}) reached" if capped else None,
+            "claude_cost": _last_claude_fix_cost(evs)}
+
+
 def _tasks_payload(show_archived: bool = False) -> dict:
     rows = []
     archived_count = 0
@@ -127,6 +153,11 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "archived": bool(t.get("archived_at")),
             "resumable": bool(t.get("session_id")),
             "agy_cmd": f"agy-next {t['id']}" if t["state"] == "waiting_agy" else None,
+            "agy_round": (sum(1 for e in evs if e["kind"] == "plan")
+                          if t.get("lane") == "agy-handoff" and t["state"] == "waiting_agy"
+                          else None),
+            "choice": _choice_payload(t, evs) if t["state"] == "needs_choice" else None,
+            "quota_wait_at": agy_handoff.quota_wait_at(t) if t.get("lane") == "agy-handoff" else None,
             # Deploy button shows on a landed task whose repo has a deploy command.
             "approve_auto": levels.setdefault(
                 t["repo"], registry.merge_level(t["repo"])) == "proposed",
@@ -179,6 +210,21 @@ async def api_task_plan(req: Request) -> JSONResponse:
     return JSONResponse({"task_id": tid, "repo": t["repo"],
                          "branch": f"coxd-agy/{tid}", "base_sha": t.get("base_sha"),
                          "round": len(evs), "plan_md": t.get("plan_md")})
+
+
+async def api_task_choice(req: Request) -> JSONResponse:
+    """needs_choice buttons: {"choice": "send"} (Send to agy) | {"choice": "claude"}
+    (Let Claude fix). The next agy round / worker fix is queued; nothing runs here."""
+    tid = req.path_params["tid"]
+    try:
+        body = await req.json()
+    except ValueError:
+        body = {}
+    ok, err = agy_handoff.choose(tid, str((body or {}).get("choice") or ""))
+    if not ok:
+        code = 404 if err.startswith("no such") else 400
+        return JSONResponse({"error": err}, status_code=code)
+    return JSONResponse({"ok": True})
 
 
 async def api_task_retry(req: Request) -> JSONResponse:
@@ -576,6 +622,7 @@ app = Starlette(middleware=[Middleware(_GuardMiddleware)], routes=[
     Route("/api/dispatch", api_dispatch, methods=["POST"]),
     Route("/api/task/{tid}/plan", api_task_plan),
     Route("/api/task/{tid}/retry", api_task_retry, methods=["POST"]),
+    Route("/api/task/{tid}/agy-choice", api_task_choice, methods=["POST"]),
     Route("/api/task/{tid}/stop", api_task_stop, methods=["POST"]),
     Route("/api/task/{tid}/resume", api_task_resume, methods=["POST"]),
     Route("/api/task/{tid}/deploy", api_task_deploy, methods=["POST"]),
@@ -608,6 +655,7 @@ h1{font-size:15px;margin:0}.pill{font-size:12px;color:var(--dim);background:var(
 .row{display:flex;gap:10px;align-items:center}.badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;text-transform:uppercase}
 .b-work{background:#10233b;color:#6cb6ff}.b-warn{background:#2a2110;color:var(--warn)}.b-ok{background:#0f2417;color:var(--ok)}.b-bad{background:#2b1213;color:var(--bad)}
 .tid{font-weight:600;word-break:break-all}.meta{color:var(--dim);font-size:12px;margin-top:2px}.last{font-size:12.5px;margin-top:6px;color:var(--fg);opacity:.85}
+.agychoice ul{margin:6px 0;padding-left:18px}.chip{border-radius:8px;padding:1px 7px;font-size:11px;color:#fff;background:#888}.chip.sev-critical{background:#c0392b}.chip.sev-major{background:#d68910}.chip.sev-minor{background:#7f8c8d}.agyc{font-size:15px;padding:10px 16px;flex:1}.agyc small{font-size:11px;opacity:.8}
 .retryrow{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}.retryrow button{margin-top:0}.retryrow input{flex:1;min-width:160px;padding:5px 8px}.rsmsg{font-size:12px;color:var(--dim)}
 .mdl{display:block;text-transform:none;font-size:10px;color:#8b949e}.pipe{display:flex;align-items:center;margin-top:10px}.step{display:flex;flex-direction:column;align-items:center;flex:0 0 auto;font-size:10px;text-transform:uppercase;color:#6e7681;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background .15s}.step:hover{background:#1c2333}
 .dot{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;margin-bottom:3px;transition:background .3s,border-color .3s,color .3s,transform .3s}
@@ -659,7 +707,7 @@ const STAGE_TIP=[
  'REVIEW — one pass from a second model (model shown on the chip) against the full diff since the branch point. Checks correctness/security/contract; verdict is approve, fix (resumes the worker once), or reject (stops for you).',
  'MERGE — pushes the branch, opens the PR, then watches its CI checks: known flakes get auto-retried (up to 2x), a real-looking failure or one touching e2e/test files stops for you. Passing CI still waits for YOUR merge click — that\\'s the one standing human gate.',
 ];
-const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed'],waiting_quota:['b-warn','waiting quota'],planning:['b-work','planning'],waiting_agy:['b-warn','needs you']};
+const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed'],waiting_quota:['b-warn','waiting quota'],planning:['b-work','planning'],waiting_agy:['b-warn','needs you'],needs_choice:['b-warn','choose']};
 function pipe(st,models){models=models||{};let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}
 h+='<div class="step '+c+'" data-stage="'+k+'" title="'+esc(STAGE_TIP[k])+'"><span class=dot>'+ic+'</span>'+STAGES[k]+(models[k]?'<span class=mdl>'+esc(models[k])+'</span>':'')+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
 function fmtTime(ts){if(!ts)return'--:--:--';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
@@ -707,15 +755,19 @@ function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').te
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
 function renderSpend(sp){const el=document.getElementById('mspend');if(!sp){el.hidden=true;return}el.hidden=false;const fm=o=>Object.entries(o||{}).map(([k,v])=>esc(k)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+'<div class=meta>by model: '+fm(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;document.getElementById('pcap').textContent=f.concurrency?' / '+f.concurrency:'';if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
+function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow><button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button><button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+'</div>'}
 function render(s){GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.models,t.last,t.issue_url,t.resume_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
 h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
 '<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
+(t.agy_cmd&&t.agy_round?'<div class=meta>round '+t.agy_round+'</div>':'')+
+(t.quota_wait_at?'<div class=meta>Review waits for Claude reset at '+esc(new Date(t.quota_wait_at*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ}))+'</div>':'')+
+(t.choice?agyChoiceHtml(t.choice):'')+
 (t.agy_cmd?'<div class=retryrow>Run on your Mac: <code class=agycmd style="user-select:all">'+esc(t.agy_cmd)+'</code> <button class=agyb data-cmd="'+esc(t.agy_cmd)+'">Copy</button></div>':'')+
 (t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
 (t.state==='needs_human'?'<div class=retryrow>'+
@@ -737,6 +789,7 @@ const depb=c.querySelector('.depb'),depmsg=c.querySelector('.depmsg');
 if(depb)depb.onclick=async()=>{if(!confirm('Deploy '+depb.dataset.repo+' at current main to the NAS?\\n\\nThis builds images, recreates containers, and runs migrations — coxd runs the repo\\'s deploy script on the NAS.'))return;depb.disabled=true;depb.textContent='deploying…';depmsg.textContent='';try{const r=await(await fetch('/api/task/'+id+'/deploy',{method:'POST'})).json();if(r.error){depmsg.textContent='✗ '+r.error;depb.disabled=false;depb.textContent='Deploy ▸'}else{depmsg.textContent='building on the NAS — watch Events; you\\'ll get a ping when done';open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}}catch(e){depmsg.textContent='✗ '+e;depb.disabled=false;depb.textContent='Deploy ▸'}};
 c.querySelectorAll('.step').forEach(stepEl=>{stepEl.onclick=()=>{const s=parseInt(stepEl.dataset.stage,10);
 feedFilter.set(id,feedFilter.get(id)===s?undefined:s);open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}});
+for(const ab of c.querySelectorAll('.agyc'))ab.onclick=async()=>{for(const x of c.querySelectorAll('.agyc'))x.disabled=true;try{const r=await(await fetch('/api/task/'+id+'/agy-choice',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({choice:ab.dataset.choice})})).json();if(r.error){alert(r.error);for(const x of c.querySelectorAll('.agyc'))x.disabled=false}else{sig=null}}catch(e){alert(e)}};
 const agyb=c.querySelector('.agyb');if(agyb)agyb.onclick=()=>{navigator.clipboard.writeText(agyb.dataset.cmd);agyb.textContent='copied'};
 const spb=c.querySelector('.spb');if(spb)spb.onclick=async()=>{if(!confirm('Stop this task now? Whatever is already committed is kept — it lands at needs_human and you can Resume w/ note to pick it back up.'))return;spb.disabled=true;spb.textContent='stopping…';try{const r=await(await fetch('/api/task/'+id+'/stop',{method:'POST'})).json();if(r.error){alert(r.error);spb.disabled=false;spb.textContent='Stop'}else{sig=null}}catch(e){alert(e)}};
 const rtb=c.querySelector('.rtb');if(rtb)rtb.onclick=async()=>{const warn=rtb.dataset.pr?'This task already has an open PR — Retry fresh starts a SECOND implementation from scratch and will likely open a duplicate PR. Merge or close the existing PR first, or use Resume w/ note instead. Continue anyway?':'Retry fresh discards this session\\'s context and starts over from the original brief. Continue?';if(!confirm(warn))return;rtb.disabled=true;rtb.textContent='retrying…';try{const r=await(await fetch('/api/task/'+id+'/retry',{method:'POST'})).json();if(r.error){alert(r.error);rtb.disabled=false;rtb.textContent='Retry fresh'}else{sig=null}}catch(e){alert(e)}};

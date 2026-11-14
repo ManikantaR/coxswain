@@ -108,5 +108,5 @@ assert r.outcome == "review-error" and r.verdict is None
 # --- callers pass the worktree ---
 assert "worktree" in inspect.signature(lane.review).parameters
 src = inspect.getsource(loop)
-assert src.count("lane.review(") == src.count("worktree=wt)") == 2
+assert src.count("lane.review(") == src.count("worktree=wt)") == 3
 print("ok test_review_readonly")
