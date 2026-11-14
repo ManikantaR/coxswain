@@ -145,6 +145,13 @@ check("plan endpoint shape", r == {"task_id": tid, "repo": "widgets",
 check("plan 404 for ready task", c.get(f"/api/task/{ready['id']}/plan").status_code == 404)
 row = next(x for x in c.get("/api/tasks").json()["tasks"] if x["id"] == tid)
 check("board needs_you + cmd", row["needs_you"] and row["agy_cmd"] == f"agy-next {tid}")
+check("board agy lane + stages + plan_md + split",
+      row["lane"] == "agy" and row["stages"] == ["plan", "agy", "gate", "review", "pr"]
+      and row["stage"]["i"] == 1 and row["plan_md"] == t["plan_md"]
+      and set(row["claude_split"]) == {"plan", "review"})
+rrow = next(x for x in c.get("/api/tasks").json()["tasks"] if x["id"] == ready["id"])
+check("ready row stays claude lane", rrow["lane"] == "claude" and rrow["stages"] is None
+      and rrow["plan_md"] is None and rrow["claude_split"] is None)
 
 # plan failure -> needs_human, no branch
 add(3, "coxd-agy")

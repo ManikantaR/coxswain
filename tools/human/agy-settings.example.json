@@ -6,6 +6,7 @@
       "command(git status)",
       "command(git diff)",
       "command(regex:^(npm (ci|run (build|test|lint))|pytest( .*)?|ruff check( .*)?|python -m pytest( .*)?)$)",
+      "command(regex:^(cd web && )?node (--test|--experimental-strip-types) [A-Za-z0-9_./* -]+( && node (--test|--experimental-strip-types) [A-Za-z0-9_./* -]+)?$)",
       "write_file(.)"
     ],
     "deny": [

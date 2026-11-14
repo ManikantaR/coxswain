@@ -87,6 +87,53 @@ def _stage(state: str, reason: str | None = None) -> dict:
     return {"i": _STATE_STAGE.get(state, 0), "status": "active"}
 
 
+AGY_STAGES = ["plan", "agy", "gate", "review", "pr"]
+_AGY_SHIFT = {0: 1, 1: 2, 2: 3, 3: 4}  # claude-lane stage index -> agy-lane index
+
+
+def _agy_stage(state: str, reason: str | None) -> dict:
+    if state == "planning":
+        return {"i": 0, "status": "active"}
+    if state == "waiting_agy":
+        return {"i": 1, "status": "active"}
+    st = _stage(state, reason)
+    if state in ("queued", "provisioning", "working"):  # picked up, not yet gating
+        return {"i": 1, "status": "active" if st["status"] != "error" else "error"}
+    return {"i": _AGY_SHIFT[st["i"]], "status": st["status"]}
+
+
+def _agy_info(evs: list[dict]) -> dict:
+    """Card facts for an agy-handoff task, derived from its events (read-only)."""
+    phase, plan_c, review_c, tokens = None, 0.0, 0.0, None
+    models: dict[str, str] = {}
+    pickup, waiting_since = None, None
+    for e in evs:
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if e["kind"] == "state":
+            phase = d.get("state")
+            waiting_since = e["ts"] if phase == "waiting_agy" else waiting_since
+            if phase != "waiting_agy":
+                waiting_since = None
+        elif e["kind"] == "result":
+            c = d.get("cost")
+            c = float(c) if isinstance(c, (int, float)) and not isinstance(c, bool) else 0.0
+            m = d.get("model")
+            if phase == "planning":
+                plan_c += c
+                if isinstance(m, str) and m:
+                    models["0"] = stepspend.short_name(m)
+            elif phase == "reviewing":
+                review_c += c
+                if isinstance(m, str) and m:
+                    models["3"] = stepspend.short_name(m)
+        elif e["kind"] == "agy-pickup":
+            pickup = {"sha": str(d.get("sha") or "")[:7], "ts": e["ts"]}
+        if isinstance(d.get("agy_tokens"), int) and not isinstance(d.get("agy_tokens"), bool):
+            tokens = d["agy_tokens"]
+    return {"cost_split": {"plan": plan_c, "review": review_c}, "agy_tokens": tokens,
+            "models": models, "pickup": pickup, "waiting_since": waiting_since}
+
+
 _is_archived = store.is_archived
 
 
@@ -143,10 +190,19 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             archived_count += 1
             if not show_archived:
                 continue
+        is_agy = t.get("lane") == "agy-handoff"
+        info = _agy_info(evs) if is_agy else None
         issue_match = _ISSUE_URL_RE.search(t.get("brief") or "")
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
-            "cost": t["cost"], "pr_url": t["pr_url"], "stage": _stage(t["state"], t["reason"]),
+            "cost": t["cost"], "pr_url": t["pr_url"], "stage": (_agy_stage if is_agy else _stage)(t["state"], t["reason"]),
+            "lane": "agy" if is_agy else "claude",
+            "stages": AGY_STAGES if is_agy else None,
+            "plan_md": t.get("plan_md") if is_agy else None,
+            "claude_split": info["cost_split"] if info else None,
+            "agy_tokens": info["agy_tokens"] if info else None,
+            "agy_pickup": info["pickup"] if info else None,
+            "waiting_since": info["waiting_since"] if info else None,
             "active": t["state"] in _ACTIVE, "needs_you": t["state"] in _NEEDS_YOU,
             "issue_url": issue_match.group(0) if issue_match else None,
             "archivable": t["state"] in _MANUAL_ARCHIVABLE,
@@ -154,8 +210,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "resumable": bool(t.get("session_id")),
             "agy_cmd": f"agy-next {t['id']}" if t["state"] == "waiting_agy" else None,
             "agy_round": (sum(1 for e in evs if e["kind"] == "plan")
-                          if t.get("lane") == "agy-handoff" and t["state"] == "waiting_agy"
-                          else None),
+                          if is_agy else None),
             "choice": _choice_payload(t, evs) if t["state"] == "needs_choice" else None,
             "quota_wait_at": agy_handoff.quota_wait_at(t) if t.get("lane") == "agy-handoff" else None,
             # Deploy button shows on a landed task whose repo has a deploy command.
@@ -164,7 +219,8 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
             "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
             "timing": timeline.derive(t, evs, now),
-            "models": {str(k): v for k, v in stepspend.stage_models(evs).items()},
+            "models": (info["models"] if is_agy else
+                       {str(k): v for k, v in stepspend.stage_models(evs).items()}),
             "resume_at": t.get("resume_at"),
             "_updated": t["updated"] or t["created"] or 0,
         })
@@ -655,7 +711,7 @@ h1{font-size:15px;margin:0}.pill{font-size:12px;color:var(--dim);background:var(
 .row{display:flex;gap:10px;align-items:center}.badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;text-transform:uppercase}
 .b-work{background:#10233b;color:#6cb6ff}.b-warn{background:#2a2110;color:var(--warn)}.b-ok{background:#0f2417;color:var(--ok)}.b-bad{background:#2b1213;color:var(--bad)}
 .tid{font-weight:600;word-break:break-all}.meta{color:var(--dim);font-size:12px;margin-top:2px}.last{font-size:12.5px;margin-top:6px;color:var(--fg);opacity:.85}
-.agychoice ul{margin:6px 0;padding-left:18px}.chip{border-radius:8px;padding:1px 7px;font-size:11px;color:#fff;background:#888}.chip.sev-critical{background:#c0392b}.chip.sev-major{background:#d68910}.chip.sev-minor{background:#7f8c8d}.agyc{font-size:15px;padding:10px 16px;flex:1}.agyc small{font-size:11px;opacity:.8}
+.agychoice ul{margin:6px 0;padding-left:18px}.chip{border-radius:8px;padding:1px 7px;font-size:11px;color:#fff;background:#888}.chip.sev-critical{background:#c0392b}.chip.sev-major{background:#d68910}.chip.sev-minor{background:#7f8c8d}.lane{border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;color:#fff;background:#555}.lane.agy{background:#138d90}.agybox{border:2px solid #138d90;border-radius:8px;padding:10px;margin:8px 0}.agybox code{display:block;font-family:ui-monospace,monospace;font-size:14px;padding:6px;background:#0006;margin:6px 0;user-select:all}.agyplan{white-space:normal;max-height:300px;overflow:auto;padding:6px;border:1px solid #444;margin-top:6px;font-size:12px}.agyplan pre{background:#0006;padding:6px;overflow:auto}.agyc{font-size:15px;padding:10px 16px;flex:1}.agyc small{font-size:11px;opacity:.8}
 .retryrow{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}.retryrow button{margin-top:0}.retryrow input{flex:1;min-width:160px;padding:5px 8px}.rsmsg{font-size:12px;color:var(--dim)}
 .mdl{display:block;text-transform:none;font-size:10px;color:#8b949e}.pipe{display:flex;align-items:center;margin-top:10px}.step{display:flex;flex-direction:column;align-items:center;flex:0 0 auto;font-size:10px;text-transform:uppercase;color:#6e7681;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background .15s}.step:hover{background:#1c2333}
 .dot{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;margin-bottom:3px;transition:background .3s,border-color .3s,color .3s,transform .3s}
@@ -683,7 +739,7 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 .offline{text-align:center;padding:40px 16px}.offline h2{margin:0 0 8px}</style></head><body>
 <div id=fspend hidden></div>
 <div id=foff hidden>⏸ FACTORY OFF — nothing new will start; running tasks finish</div>
-<header><h1>▟ coxd</h1><span class=pill id=hostchip hidden></span><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b><span id=pcap></span></span><span class=pill id=pi hidden></span><span class=pill id=pd hidden></span><span class=pill id=pm hidden></span>
+<header><h1>▟ coxd</h1><span class=pill id=hostchip hidden></span><span class=pill id=pn>needs you <b>0</b></span><span class=pill id=pa>running <b>0</b><span id=pcap></span></span><span class=pill id=pi hidden></span><span class=pill id=pd hidden></span><span class=pill id=pm hidden></span><button class=pill id=lf title="Filter by lane">lane: all</button>
 <button id=ab class=pill hidden>archived <b>0</b></button>
 <span class=spacer></span><button id=fb title="Factory ON = picks up queued work. OFF = starts nothing new; running tasks finish.">Factory …</button><button id=rb title="Restart the coxd process in place — refuses while anything is active">↻ Restart cox</button><button id=nb>+ Dispatch</button><span id=conn class=pill>connecting…</span></header>
 <section id=dp hidden><div class=dform>
@@ -708,8 +764,24 @@ const STAGE_TIP=[
  'MERGE — pushes the branch, opens the PR, then watches its CI checks: known flakes get auto-retried (up to 2x), a real-looking failure or one touching e2e/test files stops for you. Passing CI still waits for YOUR merge click — that\\'s the one standing human gate.',
 ];
 const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed'],waiting_quota:['b-warn','waiting quota'],planning:['b-work','planning'],waiting_agy:['b-warn','needs you'],needs_choice:['b-warn','choose']};
-function pipe(st,models){models=models||{};let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}
-h+='<div class="step '+c+'" data-stage="'+k+'" title="'+esc(STAGE_TIP[k])+'"><span class=dot>'+ic+'</span>'+STAGES[k]+(models[k]?'<span class=mdl>'+esc(models[k])+'</span>':'')+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
+function pipe(st,models,names,notes){models=models||{};notes=notes||{};const ST=names||STAGES,AG=!!names;let h='<div class=pipe>';for(let k=0;k<ST.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}
+h+='<div class="step '+c+'"'+(AG?'':' data-stage="'+k+'" title="'+esc(STAGE_TIP[k])+'"')+'><span class=dot>'+ic+'</span>'+ST[k]+(AG&&k===1?'<span class=mdl>you'+(notes[1]?' · '+esc(notes[1]):'')+'</span>':models[k]?'<span class=mdl>'+esc(models[k])+'</span>':'')+'</div>';if(k<ST.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
+let LANE='all';
+function mdHtml(src){const out=[];let code=false,list=false;const inl=x=>esc(x).replace(/`([^`]+)`/g,'<code style="display:inline;padding:0;margin:0;background:none">$1</code>').replace(/[*][*]([^*]+)[*][*]/g,'<b>$1</b>');
+for(const ln of String(src||'').split('\n')){if(/^```/.test(ln)){if(code){out.push('</pre>');code=false}else{if(list){out.push('</ul>');list=false}out.push('<pre>');code=true}continue}
+if(code){out.push(esc(ln)+'\n');continue}
+const li=ln.match(/^\s*(?:[-*]|\d+[.])\s+(.*)$/);if(li){if(!list){out.push('<ul>');list=true}out.push('<li>'+inl(li[1])+'</li>');continue}
+if(list){out.push('</ul>');list=false}
+const hd=ln.match(/^#{1,6}\s+(.*)$/);if(hd){out.push('<h4>'+inl(hd[1])+'</h4>');continue}
+if(ln.trim())out.push('<p>'+inl(ln)+'</p>')}
+if(code)out.push('</pre>');if(list)out.push('</ul>');return out.join('')}
+function usd(n){return '$'+(n||0).toFixed(2)}
+function agyCardHtml(t){let h='';const sp=t.claude_split;
+if(t.state==='waiting_agy'&&t.agy_cmd){h+='<div class=agybox><b>Your turn: run on your Mac</b><code>'+esc(t.agy_cmd)+'</code><button class=agyb data-cmd="'+esc(t.agy_cmd)+'">Copy</button> <button class=planb>View plan</button><div class=agyplan hidden>'+mdHtml(t.plan_md)+'</div></div>'}
+if(t.agy_pickup)h+='<div class=meta>picked up your push '+esc(t.agy_pickup.sha)+' at '+new Date(t.agy_pickup.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ})+(t.agy_round?' · round '+t.agy_round:'')+'</div>';
+if(sp)h+='<div class=meta>Claude '+usd(sp.plan+sp.review)+' (plan '+usd(sp.plan)+' + review '+usd(sp.review)+')'+(t.agy_tokens!=null?' · agy '+t.agy_tokens+' tokens':'')+'</div>';
+if(t.waiting_since&&t.state==='waiting_agy')h+='<div class=meta>waiting on you '+Math.max(0,Math.floor((Date.now()/1000-t.waiting_since)/60))+'m</div>';
+return h}
 function fmtTime(ts){if(!ts)return'--:--:--';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
 function fmtFindings(fs){if(!fs||!fs.length)return'    (none)';return fs.map(f=>'    - ['+(f.severity||'?')+'/'+(f.pillar||'?')+'] '+(f.file?f.file+(f.line?':'+f.line:'')+' — ':'')+(f.summary||'')).join('\\n')}
 function feedLine(e,t){
@@ -758,17 +830,16 @@ function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getEle
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow><button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button><button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+'</div>'}
 function render(s){GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[t.id,t.state,t.reason,t.cost,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.waiting_since&&Math.floor(Date.now()/60000),t.state,t.reason,t.cost,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
-h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
+h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="lane '+(t.lane==='agy'?'agy':'')+'">'+(t.lane==='agy'?'AGY':'CLAUDE')+'</span><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
-'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
-(t.agy_cmd&&t.agy_round?'<div class=meta>round '+t.agy_round+'</div>':'')+
+'<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models,t.stages,t.agy_round?{1:'round '+t.agy_round}:null)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
+(t.lane==='agy'?agyCardHtml(t):'')+
 (t.quota_wait_at?'<div class=meta>Review waits for Claude reset at '+esc(new Date(t.quota_wait_at*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ}))+'</div>':'')+
 (t.choice?agyChoiceHtml(t.choice):'')+
-(t.agy_cmd?'<div class=retryrow>Run on your Mac: <code class=agycmd style="user-select:all">'+esc(t.agy_cmd)+'</code> <button class=agyb data-cmd="'+esc(t.agy_cmd)+'">Copy</button></div>':'')+
 (t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
 (t.state==='needs_human'?'<div class=retryrow>'+
  '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
@@ -790,7 +861,8 @@ if(depb)depb.onclick=async()=>{if(!confirm('Deploy '+depb.dataset.repo+' at curr
 c.querySelectorAll('.step').forEach(stepEl=>{stepEl.onclick=()=>{const s=parseInt(stepEl.dataset.stage,10);
 feedFilter.set(id,feedFilter.get(id)===s?undefined:s);open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}});
 for(const ab of c.querySelectorAll('.agyc'))ab.onclick=async()=>{for(const x of c.querySelectorAll('.agyc'))x.disabled=true;try{const r=await(await fetch('/api/task/'+id+'/agy-choice',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({choice:ab.dataset.choice})})).json();if(r.error){alert(r.error);for(const x of c.querySelectorAll('.agyc'))x.disabled=false}else{sig=null}}catch(e){alert(e)}};
-const agyb=c.querySelector('.agyb');if(agyb)agyb.onclick=()=>{navigator.clipboard.writeText(agyb.dataset.cmd);agyb.textContent='copied'};
+const agyb=c.querySelector('.agyb');if(agyb)agyb.onclick=async()=>{try{await navigator.clipboard.writeText(agyb.dataset.cmd);agyb.textContent='copied'}catch(e){const r=document.createRange();r.selectNodeContents(agyb.parentNode.querySelector('code'));const sl=getSelection();sl.removeAllRanges();sl.addRange(r);agyb.textContent='selected — press Ctrl/Cmd+C'}};
+const planb=c.querySelector('.planb');if(planb)planb.onclick=()=>{const pl=c.querySelector('.agyplan');pl.hidden=!pl.hidden;planb.textContent=pl.hidden?'View plan':'Hide plan'};
 const spb=c.querySelector('.spb');if(spb)spb.onclick=async()=>{if(!confirm('Stop this task now? Whatever is already committed is kept — it lands at needs_human and you can Resume w/ note to pick it back up.'))return;spb.disabled=true;spb.textContent='stopping…';try{const r=await(await fetch('/api/task/'+id+'/stop',{method:'POST'})).json();if(r.error){alert(r.error);spb.disabled=false;spb.textContent='Stop'}else{sig=null}}catch(e){alert(e)}};
 const rtb=c.querySelector('.rtb');if(rtb)rtb.onclick=async()=>{const warn=rtb.dataset.pr?'This task already has an open PR — Retry fresh starts a SECOND implementation from scratch and will likely open a duplicate PR. Merge or close the existing PR first, or use Resume w/ note instead. Continue anyway?':'Retry fresh discards this session\\'s context and starts over from the original brief. Continue?';if(!confirm(warn))return;rtb.disabled=true;rtb.textContent='retrying…';try{const r=await(await fetch('/api/task/'+id+'/retry',{method:'POST'})).json();if(r.error){alert(r.error);rtb.disabled=false;rtb.textContent='Retry fresh'}else{sig=null}}catch(e){alert(e)}};
 const rsb=c.querySelector('.rsb'),rsnote=c.querySelector('.rsnote'),rsgo=c.querySelector('.rsgo'),rsmsg=c.querySelector('.rsmsg');
@@ -807,7 +879,7 @@ document.getElementById('dgo').onclick=async()=>{const body={repo:drepo.value,is
 let showArchived=false,es=null;
 function connect(){if(es)es.close();const q=showArchived?'?all=1':'';es=new EventSource('/events'+q);es.onopen=()=>{document.getElementById('conn').textContent='live'};es.onmessage=e=>render(JSON.parse(e.data));es.onerror=()=>{document.getElementById('conn').textContent='reconnecting…'};
 fetch('/api/tasks'+q).then(r=>r.json()).then(render).catch(()=>{})}
-document.getElementById('ab').onclick=()=>{showArchived=!showArchived;sig=null;connect()};
+document.getElementById('lf').onclick=()=>{LANE=LANE==='all'?'claude':LANE==='claude'?'agy':'all';document.getElementById('lf').textContent='lane: '+LANE;sig=null;connect()};document.getElementById('ab').onclick=()=>{showArchived=!showArchived;sig=null;connect()};
 // --- session-mined rule suggestions (issue #7) — captain approves/rejects, never auto-applied ---
 async function loadSuggestions(){try{const d=await(await fetch('/api/suggestions')).json();const list=d.suggestions||[];const sec=document.getElementById('sug'),ul=document.getElementById('suglist');
 if(!list.length){sec.hidden=true;return}sec.hidden=false;
