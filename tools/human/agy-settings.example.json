@@ -10,6 +10,7 @@
     ],
     "deny": [
       "command(git push)",
+      "command(regex:^git .*push)",
       "command(regex:^curl)",
       "command(regex:^rm -rf)"
     ]

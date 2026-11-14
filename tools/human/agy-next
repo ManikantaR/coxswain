@@ -49,17 +49,39 @@ wt="$REPO_ROOT/$repo.agy/$tid"
 [ -e "$main/.git" ] || { echo "agy-next: $main is not a git repo" >&2; exit 1; }
 
 git -C "$main" fetch --quiet origin
+start=$base
+if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
+  start="origin/$branch"
+fi
 if [ ! -e "$wt" ]; then
   mkdir -p "$REPO_ROOT/$repo.agy"
-  start=$base
-  if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
-    start="origin/$branch"
+  git -C "$main" worktree prune
+  if git -C "$main" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
+    git -C "$main" worktree add "$wt" "$branch"
+  else
+    git -C "$main" worktree add -b "$branch" "$wt" "$start"
   fi
-  git -C "$main" worktree add -B "$branch" "$wt" "$start"
 fi
 
-started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Sync the (possibly reused) worktree to this round's start point.
 cd "$wt"
+if git merge-base --is-ancestor "$start" HEAD; then
+  :  # at or ahead of the start point (e.g. earlier unpublished agy commits)
+elif git merge-base --is-ancestor HEAD "$start"; then
+  [ -z "$(git status --porcelain)" ] \
+    || { echo "agy-next: $wt has uncommitted changes and is behind $start; clean it up first" >&2; exit 1; }
+  git merge --ff-only --quiet "$start"
+else
+  echo "agy-next: $wt has diverged from $start (stale round?). Remove it with" >&2
+  echo "  git -C $main worktree remove --force $wt && git -C $main branch -D $branch" >&2
+  echo "then re-run." >&2
+  exit 1
+fi
+git merge-base --is-ancestor "$base" HEAD \
+  || { echo "agy-next: $wt is not based on plan base_sha $base" >&2; exit 1; }
+pre=$(git rev-parse HEAD)
+
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
 agy -p "$(cat "$tmp/plan.md")" --output-format json --print-timeout 1800 | tee "$tmp/agy.out"
 agy_rc=${PIPESTATUS[0]}
@@ -67,7 +89,7 @@ set -e
 ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 [ "$agy_rc" -eq 0 ] || echo "agy-next: agy exited with status $agy_rc" >&2
 
-if git diff --quiet "$base"..HEAD && [ -z "$(git status --porcelain)" ]; then
+if git diff --quiet "$pre"..HEAD && [ -z "$(git status --porcelain)" ]; then
   echo "agy made no changes"
   exit 1
 fi

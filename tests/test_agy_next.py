@@ -70,6 +70,39 @@ def test_diff_commits_and_publishes(tmp_path):
     assert entry["task_id"] == "T1" and entry["tokens"]["output_tokens"] == 4
 
 
+def test_reused_worktree_no_new_changes_exits_1(tmp_path):
+    env, bare = setup(tmp_path, "echo hi > new.txt\necho '{}'\n")
+    assert run(env, "n\n").returncode == 1  # declined: commit stays local
+    (tmp_path / "bin/agy").write_text("#!/bin/sh\necho '{}'\n")
+    r = run(env, "y\n")
+    assert r.returncode == 1 and "agy made no changes" in r.stdout
+    assert "coxd-agy/T1" not in sh("git", "branch", cwd=bare)
+
+
+def test_stale_worktree_fast_forwards_to_origin_branch(tmp_path):
+    env, bare = setup(tmp_path, "echo '{}'\n")
+    run(env)  # creates worktree at base; no changes -> exit 1
+    seed = tmp_path / "seed"
+    (seed / "b.txt").write_text("b\n")
+    sh("git", "add", ".", cwd=seed)
+    sh("git", "commit", "-qm", "coxd", cwd=seed, env=env)
+    sh("git", "push", "-q", "origin", "HEAD:coxd-agy/T1", cwd=seed)
+    run(env)
+    assert (tmp_path / "repo/proj.agy/T1/b.txt").exists()
+
+
+def test_diverged_worktree_refused(tmp_path):
+    env, bare = setup(tmp_path, "echo hi > new.txt\necho '{}'\n")
+    assert run(env, "n\n").returncode == 1  # local unpublished commit
+    seed = tmp_path / "seed"
+    (seed / "b.txt").write_text("b\n")
+    sh("git", "add", ".", cwd=seed)
+    sh("git", "commit", "-qm", "coxd", cwd=seed, env=env)
+    sh("git", "push", "-q", "origin", "HEAD:coxd-agy/T1", cwd=seed)
+    r = run(env, "y\n")
+    assert r.returncode == 1 and "diverged" in r.stderr
+
+
 def test_decline_does_not_publish(tmp_path):
     env, bare = setup(tmp_path, "echo hi > new.txt\necho '{}'\n")
     assert run(env, "n\n").returncode == 1
