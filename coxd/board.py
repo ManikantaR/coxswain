@@ -770,9 +770,9 @@ let LANE='all';
 function mdHtml(src){const out=[];let code=false,list=false;const inl=x=>esc(x).replace(/`([^`]+)`/g,'<code style="display:inline;padding:0;margin:0;background:none">$1</code>').replace(/[*][*]([^*]+)[*][*]/g,'<b>$1</b>');
 for(const ln of String(src||'').split('\n')){if(/^```/.test(ln)){if(code){out.push('</pre>');code=false}else{if(list){out.push('</ul>');list=false}out.push('<pre>');code=true}continue}
 if(code){out.push(esc(ln)+'\n');continue}
-const li=ln.match(/^\s*(?:[-*]|\d+[.])\s+(.*)$/);if(li){if(!list){out.push('<ul>');list=true}out.push('<li>'+inl(li[1])+'</li>');continue}
+const li=ln.match(/^\\s*(?:[-*]|\\d+[.])\\s+(.*)$/);if(li){if(!list){out.push('<ul>');list=true}out.push('<li>'+inl(li[1])+'</li>');continue}
 if(list){out.push('</ul>');list=false}
-const hd=ln.match(/^#{1,6}\s+(.*)$/);if(hd){out.push('<h4>'+inl(hd[1])+'</h4>');continue}
+const hd=ln.match(/^#{1,6}\\s+(.*)$/);if(hd){out.push('<h4>'+inl(hd[1])+'</h4>');continue}
 if(ln.trim())out.push('<p>'+inl(ln)+'</p>')}
 if(code)out.push('</pre>');if(list)out.push('</ul>');return out.join('')}
 function usd(n){return '$'+(n||0).toFixed(2)}
