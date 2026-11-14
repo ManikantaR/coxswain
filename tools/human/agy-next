@@ -4,8 +4,19 @@
 # confirmation) publishes branch coxd-agy/<task_id> to origin.
 set -euo pipefail
 
-[ $# -eq 1 ] || { echo "usage: agy-next <task_id>" >&2; exit 2; }
-tid=$1
+usage() { echo "usage: agy-next <task_id> [--model <agy-model-id>]   (default \$AGY_MODEL or gemini-4-argon-high; list: agy models)" >&2; exit 2; }
+[ $# -ge 1 ] || usage
+tid=$1; shift
+model=${AGY_MODEL:-gemini-4-argon-high}
+while [ $# -gt 0 ]; do
+  case $1 in
+    --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+case $model in
+  ''|*[!A-Za-z0-9._-]*) echo "agy-next: invalid model id '$model'" >&2; exit 2 ;;
+esac
 case $tid in
   ''|*[!A-Za-z0-9._-]*|.*) echo "agy-next: invalid task id" >&2; exit 2 ;;
 esac
@@ -171,7 +182,8 @@ open(sys.argv[2], "w").write(json.dumps(usage))
 
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
-agy -p "$(cat "$tmp/prompt.md")" --output-format stream-json --print-timeout 30m \
+echo "agy-next: model $model"
+agy -p "$(cat "$tmp/prompt.md")" --model "$model" --output-format stream-json --print-timeout 30m \
   | filter "$tmp/agy.out" "$tmp/usage.json"
 agy_rc=${PIPESTATUS[0]}
 set -e
@@ -195,9 +207,9 @@ echo "usage: $tokens"
 mkdir -p "$(dirname "$LOG")"
 python3 -c '
 import json, sys
-t, r, tok, s, e = sys.argv[1:6]
-print(json.dumps({"task_id": t, "round": int(r), "tokens": json.loads(tok), "started": s, "ended": e}))' \
-  "$tid" "$round" "$tokens" "$started" "$ended" >> "$LOG"
+t, r, m, tok, s, e = sys.argv[1:7]
+print(json.dumps({"task_id": t, "round": int(r), "model": m, "tokens": json.loads(tok), "started": s, "ended": e}))' \
+  "$tid" "$round" "$model" "$tokens" "$started" "$ended" >> "$LOG"
 
 printf 'Publish %s to origin? [y/N] ' "$branch"
 read -r ans || ans=n

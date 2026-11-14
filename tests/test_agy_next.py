@@ -135,3 +135,33 @@ def test_print_timeout_is_a_duration(tmp_path):
     env, bare = setup(tmp_path, body)
     r = run(env, "y\n")
     assert r.returncode == 0, r.stderr
+
+
+def run_args(env, *args, stdin=""):
+    return subprocess.run([str(SCRIPT), "T1", *args], env=env, input=stdin,
+                          capture_output=True, text=True)
+
+
+def test_default_model_is_argon_high_and_logged(tmp_path):
+    argv = tmp_path / "argv.txt"
+    env, _ = setup(tmp_path, f'printf "%s\\n" "$@" > {argv}\necho hi > new.txt\n')
+    env.pop("AGY_MODEL", None)
+    assert run(env, "y\n").returncode == 0
+    args = argv.read_text().splitlines()
+    assert args[args.index("--model") + 1] == "gemini-4-argon-high"
+    entry = json.loads((tmp_path / "log/agy.log").read_text().splitlines()[-1])
+    assert entry["model"] == "gemini-4-argon-high"
+
+
+def test_model_flag_overrides(tmp_path):
+    argv = tmp_path / "argv.txt"
+    env, _ = setup(tmp_path, f'printf "%s\\n" "$@" > {argv}\necho hi > new.txt\n')
+    assert run_args(env, "--model", "claude-opus-5-5-high", stdin="y\n").returncode == 0
+    args = argv.read_text().splitlines()
+    assert args[args.index("--model") + 1] == "claude-opus-5-5-high"
+
+
+def test_bad_model_rejected(tmp_path):
+    env, _ = setup(tmp_path, "exit 0\n")
+    assert run_args(env, "--model", "x; rm -rf /").returncode == 2
+    assert run_args(env, "--bogus").returncode == 2
