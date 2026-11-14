@@ -14,7 +14,7 @@ Install: `ln -sf "$PWD/tools/human/agy-next" ~/.local/bin/agy-next`
 
 It fetches the plan, fetches `~/repo/<repo>`, creates/reuses a worktree at
 `~/repo/<repo>.agy/<task_id>` on branch `coxd-agy/<task_id>`, writes the plan to a temp
-file outside the worktree and runs `agy -p ... --output-format json --print-timeout 1800`
+file outside the worktree and runs `agy -p ... --output-format stream-json --print-timeout 30m`
 in the foreground. It never passes `--dangerously-skip-permissions`.
 
 Afterwards: if nothing changed (agy can report success falsely) it prints

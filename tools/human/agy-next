@@ -142,7 +142,7 @@ open(sys.argv[2], "w").write(json.dumps(usage))
 
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
-agy -p "$(cat "$tmp/prompt.md")" --output-format stream-json --print-timeout 1800 \
+agy -p "$(cat "$tmp/prompt.md")" --output-format stream-json --print-timeout 30m \
   | filter "$tmp/agy.out" "$tmp/usage.json"
 agy_rc=${PIPESTATUS[0]}
 set -e

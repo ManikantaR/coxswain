@@ -121,3 +121,12 @@ def test_decline_does_not_publish(tmp_path):
     env, bare = setup(tmp_path, "echo hi > new.txt\necho '{}'\n")
     assert run(env, "n\n").returncode == 1
     assert "coxd-agy/T1" not in sh("git", "branch", cwd=bare)
+
+
+def test_print_timeout_is_a_duration(tmp_path):
+    # real agy rejects a bare number ("missing unit in duration") and exits 2
+    body = ('case "$*" in *"--print-timeout 30m"*) ;; *) exit 2 ;; esac\n'
+            'echo hi > new.txt\n')
+    env, bare = setup(tmp_path, body)
+    r = run(env, "y\n")
+    assert r.returncode == 0, r.stderr
