@@ -61,7 +61,8 @@ issues: dict[int, dict] = {}
 
 
 def add(n, label):
-    issues[n] = {"number": n, "title": f"Add thing number {n}", "body": "Do a thing.", "url": URL + str(n),
+    issues[n] = {"number": n, "title": f"Add thing number {n}", "body": "Do a thing.",
+                 "url": URL + str(n),
                  "createdAt": f"2026-01-0{n}T00:00:00Z", "state": "OPEN",
                  "labels": [{"name": label}], "label": label}
 

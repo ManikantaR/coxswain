@@ -10,7 +10,8 @@ def test_defaults(monkeypatch):
         monkeypatch.delenv("COXD_" + k, raising=False)
     c = roles.resolve(None)
     assert c == {"worker_model": "claude-sonnet-5-5", "worker_effort": "medium",
-                 "review_model": "claude-opus-5-5", "review_effort": "medium"}
+                 "review_model": "claude-opus-5-5", "review_effort": "medium",
+                 "planner_model": "claude-sonnet-5-5", "planner_effort": "medium"}
 
 
 def test_precedence(monkeypatch):
