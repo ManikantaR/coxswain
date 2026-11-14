@@ -61,7 +61,8 @@ def test_no_diff_exit_1_no_publish(tmp_path):
 def test_diff_commits_and_publishes(tmp_path):
     env, bare = setup(
         tmp_path,
-        'echo hi > new.txt\necho \'{"type":"result","usage":{"input_tokens":3,"output_tokens":4}}\'\n')
+        'echo hi > new.txt\n'
+        'echo \'{"type":"result","usage":{"input_tokens":3,"output_tokens":4}}\'\n')
     r = run(env, "y\n")
     assert r.returncode == 0, r.stderr
     subj = sh("git", "log", "-1", "--format=%s", "coxd-agy/T1", cwd=bare).strip()
