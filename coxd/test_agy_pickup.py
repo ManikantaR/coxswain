@@ -116,8 +116,10 @@ async def fake_review(diff, model, emit, effort="medium", *, worktree):
 
 
 lane.review = fake_review
-FINDINGS = [{"severity": "low", "summary": "rename x"}, {"severity": "high", "summary": "no input check",
-                                                          "file": "b.py", "line": 1}]
+FINDINGS = [
+    {"severity": "low", "summary": "rename x"},
+    {"severity": "high", "summary": "no input check", "file": "b.py", "line": 1},
+]
 
 # ---- detection fires once; red gate -> waiting_agy round 2 ---------------------------
 t1 = new_agy_task()
@@ -134,7 +136,8 @@ t = store.get_task(t1)
 check("worktree at agy head", git(t["worktree"], "rev-parse", "HEAD").strip() == sha1)
 check("gate ran once", len(gate_calls) == 1)
 check("red gate -> waiting_agy", t["state"] == "waiting_agy")
-check("plan is gate summary", "test_thing" in t["plan_md"] and "The gate failed at test" in t["plan_md"])
+check("plan is gate summary",
+      "test_thing" in t["plan_md"] and "The gate failed at test" in t["plan_md"])
 c = TestClient(board.app, base_url="http://localhost:8791")
 check("round 2 on plan endpoint", c.get(f"/api/task/{t1}/plan").json()["round"] == 2)
 check("same head not re-run", agy_handoff.scan() == [])
@@ -150,9 +153,11 @@ asyncio.run(loop.run_task(t1))
 check("findings -> needs_choice", store.get_task(t1)["state"] == "needs_choice")
 row = next(r for r in c.get("/api/tasks").json()["tasks"] if r["id"] == t1)
 check("board card: severity order + needs_you",
-      row["needs_you"] and [f["severity"] for f in row["choice"]["findings"]] == ["critical", "minor"]
+      row["needs_you"]
+      and [f["severity"] for f in row["choice"]["findings"]] == ["critical", "minor"]
       and not row["choice"]["capped"])
-check("bad choice refused", c.post(f"/api/task/{t1}/agy-choice", json={"choice": "x"}).status_code == 400)
+check("bad choice refused",
+      c.post(f"/api/task/{t1}/agy-choice", json={"choice": "x"}).status_code == 400)
 
 # ---- Send to agy: findings are the next plan round --------------------------------------
 r = c.post(f"/api/task/{t1}/agy-choice", json={"choice": "send"})
@@ -163,7 +168,8 @@ check("findings are the plan", "no input check" in t["plan_md"] and
 check("round 3", c.get(f"/api/task/{t1}/plan").json()["round"] == 3)
 check("agy-next command on card", next(x for x in c.get("/api/tasks").json()["tasks"]
       if x["id"] == t1)["agy_round"] == 3)
-check("double click refused", c.post(f"/api/task/{t1}/agy-choice", json={"choice": "send"}).status_code == 400)
+check("double click refused",
+      c.post(f"/api/task/{t1}/agy-choice", json={"choice": "send"}).status_code == 400)
 
 # ---- round cap: two fix rounds used, third red gate -> needs_human -----------------------
 gate_result[0] = RED
@@ -188,7 +194,8 @@ gh_calls = []
 def fake_run(argv, *a, **k):
     if argv and argv[0] == "gh":
         gh_calls.append(argv)
-        return SimpleNamespace(returncode=0, stdout="https://github.com/acme/widgets/pull/7\n", stderr="")
+        return SimpleNamespace(
+            returncode=0, stdout="https://github.com/acme/widgets/pull/7\n", stderr="")
     return real_run(argv, *a, **k)
 
 
@@ -201,9 +208,10 @@ pr = next(c_ for c_ in gh_calls if c_[:3] == ["gh", "pr", "create"])
 check("approve -> pr_ready", t["state"] == "pr_ready" and t["pr_url"].endswith("/pull/7"))
 check("PR head is agy branch", pr[pr.index("--head") + 1] == f"coxd-agy/{t2}")
 check("PR title tagged", pr[pr.index("--title") + 1].startswith("[agy] "))
-check("agy branch untouched by ship", git(origin, "rev-parse", f"refs/heads/coxd-agy/{t2}").strip() == shaB)
-check("no coxd/ branch pushed", real_run(["git", "rev-parse", "--verify", "-q", f"refs/heads/coxd/{t2}"],
-                                         cwd=origin).returncode != 0)
+check("agy branch untouched by ship",
+      git(origin, "rev-parse", f"refs/heads/coxd-agy/{t2}").strip() == shaB)
+no_coxd = real_run(["git", "rev-parse", "--verify", "-q", f"refs/heads/coxd/{t2}"], cwd=origin)
+check("no coxd/ branch pushed", no_coxd.returncode != 0)
 
 # ---- Let Claude fix: fresh worker session, normal tail, pushes onto the agy branch ------
 verdict[0] = lane.ReviewOutcome("reviewed", "fix", FINDINGS, 0.02)

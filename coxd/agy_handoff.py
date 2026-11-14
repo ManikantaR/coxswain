@@ -70,7 +70,8 @@ def fetch_into_worktree(task: dict) -> str | None:
     if not sha:
         return None
     ref = f"refs/remotes/origin/{BRANCH_PREFIX}{task['id']}"
-    f = _git(Path(task["repo_path"]), "fetch", "origin", f"+refs/heads/{BRANCH_PREFIX}{task['id']}:{ref}")
+    f = _git(Path(task["repo_path"]), "fetch", "origin",
+             f"+refs/heads/{BRANCH_PREFIX}{task['id']}:{ref}")
     if f.returncode != 0:
         return None
     if sha != last_seen(task):
@@ -92,7 +93,8 @@ def format_findings(findings: list[dict]) -> str:
         return _SEV.index(s) if s in _SEV else len(_SEV)
     lines = ["## Fix these review findings", ""]
     for f in sorted(findings, key=sev):
-        where = f" ({f['file']}{':' + str(f['line']) if f.get('line') else ''})" if f.get("file") else ""
+        line = f":{f['line']}" if f.get("line") else ""
+        where = f" ({f['file']}{line})" if f.get("file") else ""
         lines.append(f"- **{f.get('severity', 'note')}**{where}: "
                      f"{f.get('summary') or f.get('title') or f.get('detail') or f}")
     return "\n".join(lines) + "\n"
@@ -143,6 +145,7 @@ def quota_wait_at(task: dict) -> float | None:
     """resume time when this task is parked on a Claude usage limit (board banner)."""
     if "review" not in (task.get("reason") or ""):
         return None
-    if task["state"] == "waiting_quota" and task.get("resume_at") and task["resume_at"] > time.time():
+    resume_at = task.get("resume_at")
+    if task["state"] == "waiting_quota" and resume_at and resume_at > time.time():
         return task["resume_at"]
     return None
