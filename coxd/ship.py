@@ -155,6 +155,8 @@ def _pr_title(t: dict) -> str:
         lines = [ln for ln in lines[1:] if not ln.lstrip().startswith("- ")]
     first = (lines[0] if lines else "coxd task").strip()
     first = re.split(r"\s*GitHub issue:\s*", first, maxsplit=1)[0].strip() or first
+    if t.get("lane") == "agy-handoff":
+        return ("[agy] " + first)[:70]
     return first[:70]
 
 
@@ -329,6 +331,10 @@ def ship(task_id: str) -> tuple[str, str | None]:
     wt = Path(t["worktree"])
     repo_path = Path(t["repo_path"]) if t["repo_path"] else None
     branch = f"coxd/{task_id}"
+    # agy handoff: the PR comes from the branch the human pushed (coxd-agy/<id>); the
+    # local worktree branch is only what we scan. Nothing new is pushed unless Claude
+    # added commits on top (a fast-forward of that same branch).
+    remote_branch = (f"coxd-agy/{task_id}" if t.get("lane") == "agy-handoff" else branch)
 
     if repo_path is None or not _has_gh_remote(repo_path):
         return ("local", None)  # nothing to push to — the work is on the local branch
@@ -341,7 +347,8 @@ def ship(task_id: str) -> tuple[str, str | None]:
     # From the main checkout, never from the worker-owned worktree (see sandbox.py):
     # the branch ref is shared, and root's config/hooks there are not worker-writable.
     sha = ctx.get("sha")
-    refspec = [f"{sha}:refs/heads/{branch}"] if sha else [branch]
+    refspec = [f"{sha}:refs/heads/{remote_branch}"] if sha else (
+        [branch] if remote_branch == branch else [f"{branch}:refs/heads/{remote_branch}"])
     push = subprocess.run(["git", "push", "origin", *refspec], cwd=repo_path,
                           capture_output=True, text=True)
     if push.returncode != 0:
@@ -361,7 +368,7 @@ def ship(task_id: str) -> tuple[str, str | None]:
         tier, gl_header, tier_reasons = _greenlight(t, wt)
         body = _build_body(t, wt, gl_header)
     pr = subprocess.run(
-        ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
+        ["gh", "pr", "create", "--title", title, "--body", body, "--head", remote_branch],
         cwd=repo_path, capture_output=True, text=True)
     if pr.returncode != 0:
         store.append_event(task_id, "ship-error", {"stage": "pr", "err": pr.stderr[-300:]})

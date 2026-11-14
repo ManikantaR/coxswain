@@ -276,6 +276,15 @@ def set_review(task_id: str, verdict: str | None, findings: list[dict] | None) -
                   (verdict, json.dumps(findings or []), time.time(), task_id))
 
 
+def findings_of(task: dict) -> list[dict]:
+    """The stored review findings of a task row (empty list when none / malformed)."""
+    try:
+        v = json.loads(task.get("review_findings") or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [f for f in v if isinstance(f, dict)] if isinstance(v, list) else []
+
+
 def archive_task(task_id: str) -> None:
     """Manually archive a task now, regardless of age — the board's per-tile Archive
     button. Distinct from the age-based auto-archive in board.py's `_is_archived`,
