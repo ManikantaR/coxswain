@@ -120,7 +120,6 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
                             emit, review_effort: str = "medium") -> str:
     """The tail shared by a fresh implement (run_task) and a human-resumed retry
     (resume_task): gate (+ resumed fix loop) -> one review pass -> ship -> CI watch."""
-    t = store.get_task(task_id)
     fixes = 0
     while True:
         store.set_state(task_id, "gating")
