@@ -42,10 +42,11 @@ from starlette.routing import Route
 STAGES = ["implement", "gate", "review", "merge"]
 _STATE_STAGE = {"queued": 0, "provisioning": 0, "working": 0, "gating": 1,
                 "fixing": 1, "reviewing": 2, "shipping": 3, "ci-watching": 3,
-                "pr_ready": 3, "landed": 3, "waiting_quota": 1}
-_ACTIVE = {"provisioning", "working", "gating", "fixing", "reviewing", "shipping",
+                "pr_ready": 3, "landed": 3, "waiting_quota": 1,
+                "planning": 0, "waiting_agy": 0}
+_ACTIVE = {"planning", "provisioning", "working", "gating", "fixing", "reviewing", "shipping",
           "ci-watching"}
-_NEEDS_YOU = {"pr_ready", "needs_human"}
+_NEEDS_YOU = {"pr_ready", "needs_human", "waiting_agy"}
 # Terminal, resolved states eligible for silent age-based archiving — never
 # pr_ready/needs_human, those always need a human look regardless of age.
 _ARCHIVABLE = store.ARCHIVABLE
@@ -125,6 +126,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "archivable": t["state"] in _MANUAL_ARCHIVABLE,
             "archived": bool(t.get("archived_at")),
             "resumable": bool(t.get("session_id")),
+            "agy_cmd": f"agy-next {t['id']}" if t["state"] == "waiting_agy" else None,
             # Deploy button shows on a landed task whose repo has a deploy command.
             "approve_auto": levels.setdefault(
                 t["repo"], registry.merge_level(t["repo"])) == "proposed",
@@ -165,6 +167,18 @@ async def api_events(req: Request) -> JSONResponse:
     return JSONResponse({"events": [
         {"kind": e["kind"], "data": e["data"], "ts": e["ts"]}
         for e in store.events(tid)][-60:]})
+
+
+async def api_task_plan(req: Request) -> JSONResponse:
+    """Read-only: the Claude plan for an agy-handoff task (the human's own script reads it)."""
+    tid = req.path_params["tid"]
+    t = store.get_task(tid)
+    if t is None or t.get("lane") != "agy-handoff":
+        return JSONResponse({"error": "no such agy-handoff task"}, status_code=404)
+    evs = [e for e in store.events(tid) if e["kind"] == "plan"]
+    return JSONResponse({"task_id": tid, "repo": t["repo"],
+                         "branch": f"coxd-agy/{tid}", "base_sha": t.get("base_sha"),
+                         "round": len(evs), "plan_md": t.get("plan_md")})
 
 
 async def api_task_retry(req: Request) -> JSONResponse:
@@ -560,6 +574,7 @@ app = Starlette(middleware=[Middleware(_GuardMiddleware)], routes=[
     Route("/api/repos", api_repos),
     Route("/api/issues", api_issues),
     Route("/api/dispatch", api_dispatch, methods=["POST"]),
+    Route("/api/task/{tid}/plan", api_task_plan),
     Route("/api/task/{tid}/retry", api_task_retry, methods=["POST"]),
     Route("/api/task/{tid}/stop", api_task_stop, methods=["POST"]),
     Route("/api/task/{tid}/resume", api_task_resume, methods=["POST"]),
@@ -644,7 +659,7 @@ const STAGE_TIP=[
  'REVIEW — one pass from a second model (model shown on the chip) against the full diff since the branch point. Checks correctness/security/contract; verdict is approve, fix (resumes the worker once), or reject (stops for you).',
  'MERGE — pushes the branch, opens the PR, then watches its CI checks: known flakes get auto-retried (up to 2x), a real-looking failure or one touching e2e/test files stops for you. Passing CI still waits for YOUR merge click — that\\'s the one standing human gate.',
 ];
-const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed'],waiting_quota:['b-warn','waiting quota']};
+const BADGE={queued:['b-work','queued'],provisioning:['b-work','provisioning'],working:['b-work','working'],gating:['b-work','gating'],fixing:['b-work','fixing'],reviewing:['b-work','reviewing'],shipping:['b-work','shipping'],'ci-watching':['b-work','watching CI'],pr_ready:['b-warn','ready to merge'],needs_human:['b-warn','needs you'],landed:['b-ok','landed'],waiting_quota:['b-warn','waiting quota'],planning:['b-work','planning'],waiting_agy:['b-warn','needs you']};
 function pipe(st,models){models=models||{};let h='<div class=pipe>';for(let k=0;k<STAGES.length;k++){let c,ic;if(k<st.i){c='done';ic='✓'}else if(k===st.i){c=st.status==='done'?'done':st.status==='error'?'error':'active';ic=st.status==='error'?'✕':(c==='done'?'✓':k+1)}else{c='';ic=k+1}
 h+='<div class="step '+c+'" data-stage="'+k+'" title="'+esc(STAGE_TIP[k])+'"><span class=dot>'+ic+'</span>'+STAGES[k]+(models[k]?'<span class=mdl>'+esc(models[k])+'</span>':'')+'</div>';if(k<STAGES.length-1)h+='<span class="seg'+(k<st.i?' on':'')+'"></span>'}return h+'</div>'}
 function fmtTime(ts){if(!ts)return'--:--:--';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
@@ -701,6 +716,7 @@ const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
 h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
 '<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
+(t.agy_cmd?'<div class=retryrow>Run on your Mac: <code class=agycmd style="user-select:all">'+esc(t.agy_cmd)+'</code> <button class=agyb data-cmd="'+esc(t.agy_cmd)+'">Copy</button></div>':'')+
 (t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
 (t.state==='needs_human'?'<div class=retryrow>'+
  '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
@@ -721,6 +737,7 @@ const depb=c.querySelector('.depb'),depmsg=c.querySelector('.depmsg');
 if(depb)depb.onclick=async()=>{if(!confirm('Deploy '+depb.dataset.repo+' at current main to the NAS?\\n\\nThis builds images, recreates containers, and runs migrations — coxd runs the repo\\'s deploy script on the NAS.'))return;depb.disabled=true;depb.textContent='deploying…';depmsg.textContent='';try{const r=await(await fetch('/api/task/'+id+'/deploy',{method:'POST'})).json();if(r.error){depmsg.textContent='✗ '+r.error;depb.disabled=false;depb.textContent='Deploy ▸'}else{depmsg.textContent='building on the NAS — watch Events; you\\'ll get a ping when done';open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}}catch(e){depmsg.textContent='✗ '+e;depb.disabled=false;depb.textContent='Deploy ▸'}};
 c.querySelectorAll('.step').forEach(stepEl=>{stepEl.onclick=()=>{const s=parseInt(stepEl.dataset.stage,10);
 feedFilter.set(id,feedFilter.get(id)===s?undefined:s);open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}});
+const agyb=c.querySelector('.agyb');if(agyb)agyb.onclick=()=>{navigator.clipboard.writeText(agyb.dataset.cmd);agyb.textContent='copied'};
 const spb=c.querySelector('.spb');if(spb)spb.onclick=async()=>{if(!confirm('Stop this task now? Whatever is already committed is kept — it lands at needs_human and you can Resume w/ note to pick it back up.'))return;spb.disabled=true;spb.textContent='stopping…';try{const r=await(await fetch('/api/task/'+id+'/stop',{method:'POST'})).json();if(r.error){alert(r.error);spb.disabled=false;spb.textContent='Stop'}else{sig=null}}catch(e){alert(e)}};
 const rtb=c.querySelector('.rtb');if(rtb)rtb.onclick=async()=>{const warn=rtb.dataset.pr?'This task already has an open PR — Retry fresh starts a SECOND implementation from scratch and will likely open a duplicate PR. Merge or close the existing PR first, or use Resume w/ note instead. Continue anyway?':'Retry fresh discards this session\\'s context and starts over from the original brief. Continue?';if(!confirm(warn))return;rtb.disabled=true;rtb.textContent='retrying…';try{const r=await(await fetch('/api/task/'+id+'/retry',{method:'POST'})).json();if(r.error){alert(r.error);rtb.disabled=false;rtb.textContent='Retry fresh'}else{sig=null}}catch(e){alert(e)}};
 const rsb=c.querySelector('.rsb'),rsnote=c.querySelector('.rsnote'),rsgo=c.querySelector('.rsgo'),rsmsg=c.querySelector('.rsmsg');
