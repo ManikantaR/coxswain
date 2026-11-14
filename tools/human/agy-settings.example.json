@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "command(git add)",
+      "command(git commit)",
+      "command(git status)",
+      "command(git diff)",
+      "command(regex:^(npm (ci|run (build|test|lint))|pytest( .*)?|ruff check( .*)?|python -m pytest( .*)?)$)",
+      "write_file(.)"
+    ],
+    "deny": [
+      "command(git push)",
+      "command(regex:^curl)",
+      "command(regex:^rm -rf)"
+    ]
+  }
+}

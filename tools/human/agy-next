@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# agy-next <task_id> — run by the HUMAN on their own machine. coxd never calls this.
+# Fetches the plan from the coxd board, runs `agy` in a local worktree, and (after
+# confirmation) publishes branch coxd-agy/<task_id> to origin.
+set -euo pipefail
+
+[ $# -eq 1 ] || { echo "usage: agy-next <task_id>" >&2; exit 2; }
+tid=$1
+case $tid in
+  ''|*[!A-Za-z0-9._-]*|.*) echo "agy-next: invalid task id" >&2; exit 2 ;;
+esac
+
+if [ -z "${COXD_URL:-}" ]; then
+  echo "agy-next: COXD_URL is not set (e.g. export COXD_URL=http://host:port in your shell profile)" >&2
+  exit 2
+fi
+command -v python3 >/dev/null || { echo "agy-next: python3 required" >&2; exit 2; }
+
+REPO_ROOT=${AGY_REPO_ROOT:-$HOME/repo}
+LOG=${AGY_NEXT_LOG:-$HOME/.local/state/agy-next.log}
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/agy-next.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+curl -fsS "${COXD_URL%/}/api/task/$tid/plan" -o "$tmp/plan.json" \
+  || { echo "agy-next: could not fetch plan for $tid" >&2; exit 1; }
+
+field() { python3 -c '
+import json, sys
+v = json.load(open(sys.argv[1])).get(sys.argv[2])
+print("" if v is None else v)' "$tmp/plan.json" "$1"; }
+
+repo=$(field repo)
+base=$(field base_sha)
+round=$(field round)
+branch="coxd-agy/$tid"
+field plan_md > "$tmp/plan.md"
+case $repo in
+  ''|*[!A-Za-z0-9._-]*|.*) echo "agy-next: bad repo name in plan" >&2; exit 1 ;;
+esac
+case $base in
+  ''|*[!0-9a-f]*) echo "agy-next: plan has no valid base_sha" >&2; exit 1 ;;
+esac
+[ -s "$tmp/plan.md" ] || { echo "agy-next: plan is empty" >&2; exit 1; }
+case $round in *[!0-9]*|'') round=1 ;; esac
+
+main="$REPO_ROOT/$repo"
+wt="$REPO_ROOT/$repo.agy/$tid"
+[ -e "$main/.git" ] || { echo "agy-next: $main is not a git repo" >&2; exit 1; }
+
+git -C "$main" fetch --quiet origin
+if [ ! -e "$wt" ]; then
+  mkdir -p "$REPO_ROOT/$repo.agy"
+  start=$base
+  if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
+    start="origin/$branch"
+  fi
+  git -C "$main" worktree add -B "$branch" "$wt" "$start"
+fi
+
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cd "$wt"
+set +e
+agy -p "$(cat "$tmp/plan.md")" --output-format json --print-timeout 1800 | tee "$tmp/agy.out"
+agy_rc=${PIPESTATUS[0]}
+set -e
+ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+[ "$agy_rc" -eq 0 ] || echo "agy-next: agy exited with status $agy_rc" >&2
+
+if git diff --quiet "$base"..HEAD && [ -z "$(git status --porcelain)" ]; then
+  echo "agy made no changes"
+  exit 1
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+  git add -A
+  git commit -q -m "agy: $tid round $round"
+fi
+git diff --stat "$base"..HEAD
+
+tokens=$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    u = d.get("usage") if isinstance(d, dict) else None
+except Exception:
+    u = None
+print(json.dumps(u if u is not None else {}))' "$tmp/agy.out")
+echo "usage: $tokens"
+mkdir -p "$(dirname "$LOG")"
+python3 -c '
+import json, sys
+t, r, tok, s, e = sys.argv[1:6]
+print(json.dumps({"task_id": t, "round": int(r), "tokens": json.loads(tok), "started": s, "ended": e}))' \
+  "$tid" "$round" "$tokens" "$started" "$ended" >> "$LOG"
+
+printf 'Publish %s to origin? [y/N] ' "$branch"
+read -r ans || ans=n
+case $ans in
+  y|Y|yes|YES) git push origin "$branch" ;;
+  *) echo "not published"; exit 1 ;;
+esac
