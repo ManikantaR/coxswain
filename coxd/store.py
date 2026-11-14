@@ -57,7 +57,8 @@ def _conn() -> sqlite3.Connection:
                      ("review_verdict", "TEXT"), ("review_findings", "TEXT"),
                      ("test_output", "TEXT"), ("archived_at", "REAL"),
                      ("intent", "TEXT"), ("resume_at", "REAL"),
-                     ("greenlight_tier", "TEXT"), ("greenlight_reasons", "TEXT")):
+                     ("greenlight_tier", "TEXT"), ("greenlight_reasons", "TEXT"),
+                     ("lane", "TEXT"), ("plan_md", "TEXT"), ("base_sha", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     backfill_ledger(c)
@@ -110,7 +111,7 @@ def backfill_ledger(c: sqlite3.Connection) -> int:
 
 
 def create_task(task_id: str, repo: str, brief: str, worktree: str,
-                repo_path: str = "", intent: str = "") -> None:
+                repo_path: str = "", intent: str = "", lane: str | None = None) -> None:
     """`brief` is the full implementer prompt (rules block + intent); `intent` is
     the captain's raw one-liner, kept separate so ship.py titles the PR from the
     real intent, not the prepended rules heading."""
@@ -118,9 +119,10 @@ def create_task(task_id: str, repo: str, brief: str, worktree: str,
     with _conn() as c:
         c.execute(
             "INSERT OR REPLACE INTO tasks"
-            "(id,repo,repo_path,brief,intent,state,worktree,created,updated) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (task_id, repo, repo_path, brief, intent or brief, "queued", worktree, now, now),
+            "(id,repo,repo_path,brief,intent,state,worktree,created,updated,lane) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (task_id, repo, repo_path, brief, intent or brief, "queued", worktree, now, now,
+             lane),
         )
     append_event(task_id, "created", {"repo": repo})
 
@@ -146,6 +148,14 @@ def cas_state(task_id: str, expect: str, state: str, reason: str | None = None,
     if ok:
         append_event(task_id, "state", {"state": state, "reason": reason})
     return ok
+
+
+def set_plan(task_id: str, plan_md: str, base_sha: str | None) -> None:
+    """agy-handoff lane: the Claude plan (markdown) and the base SHA the agy branch
+    was cut from."""
+    with _conn() as c:
+        c.execute("UPDATE tasks SET plan_md=?, base_sha=?, updated=? WHERE id=?",
+                  (plan_md, base_sha, time.time(), task_id))
 
 
 def set_pr_url(task_id: str, url: str) -> None:

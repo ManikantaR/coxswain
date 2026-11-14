@@ -1,6 +1,6 @@
 """Per-role model + effort resolution: registry > explicit/env > shipped default.
 
-Roles: worker, review. Env: COXD_WORKER_MODEL / COXD_WORKER_EFFORT /
+Roles: worker, review, planner. Env: COXD_WORKER_MODEL / COXD_WORKER_EFFORT /
 COXD_REVIEW_MODEL / COXD_REVIEW_EFFORT. Registry keys (per repo, optional):
 worker_model, worker_effort, review_model, review_effort. An invalid effort at any
 level is ignored (falls through to the next level) rather than failing a task.
@@ -17,6 +17,9 @@ DEFAULTS = {
     "worker_effort": "medium",
     "review_model": "claude-opus-5-5",
     "review_effort": "medium",
+    # agy-handoff planner: read-only Claude plan step (sonnet-class by default)
+    "planner_model": "claude-sonnet-5-5",
+    "planner_effort": "medium",
 }
 
 

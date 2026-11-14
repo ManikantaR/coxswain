@@ -29,7 +29,10 @@ import store
 READY, WORKING, WAITING = "coxd-ready", "coxd-working", "coxd-waiting"
 UNTRUSTED, PII_BLOCK = "coxd-untrusted", "coxd-pii-block"
 NEEDS_HUMAN = "coxd-needs-human"
+AGY = "coxd-agy"  # agy-handoff lane: Claude plans, the human runs agy on their Mac
+LANE_AGY = "agy-handoff"
 LABELS = {
+    AGY: ("Claude plans, then you run agy locally (agy-next)", "5319e7"),
     READY: ("Queued for coxd pickup", "0e8a16"),
     WORKING: ("coxd is working on this", "1d76db"),
     WAITING: ("Waiting on a dependency issue", "fbca04"),
@@ -101,7 +104,7 @@ def _ensure_labels(slug: str) -> None:
     _labels_ready.add(slug)
 
 
-def _labeller(slug: str, number: int) -> tuple[dict | None, str, list[dict]]:
+def _labeller(slug: str, number: int, label: str = READY) -> tuple[dict | None, str, list[dict]]:
     """(actor, created_at, renamers) of the most recent `labeled coxd-ready` timeline
     event, plus the actors of any `renamed` events after it (a title edit)."""
     pages = _json(["api", f"repos/{slug}/issues/{number}/timeline",
@@ -109,7 +112,7 @@ def _labeller(slug: str, number: int) -> tuple[dict | None, str, list[dict]]:
     events = [e for p in pages for e in (p if isinstance(p, list) else [p])]
     last = None
     for e in events:
-        if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == READY:
+        if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == label:
             last = e
     last = last or {}
     at = str(last.get("created_at") or "")
@@ -176,13 +179,15 @@ def _has_task(url: str) -> bool:
                if not store.is_archived(t))
 
 
-def _process_repo(name: str, path: str) -> int:
+def _process_repo(name: str, path: str, label: str = READY) -> int:
     slug = ci_triage.repo_slug(path)
     if not slug:
         return 0
-    issues = _json(["issue", "list", "-R", slug, "--label", READY, "--state", "open",
+    issues = _json(["issue", "list", "-R", slug, "--label", label, "--state", "open",
                     "--json", "number,title,body,url,createdAt,labels",
                     "--limit", "100"]) or []
+    issues = [i for i in issues  # defence in depth: only issues really carrying `label`
+              if label in {lb.get("name") for lb in i.get("labels") or []}]
     if not issues:
         return 0
     _ensure_labels(slug)
@@ -195,12 +200,12 @@ def _process_repo(name: str, path: str) -> int:
         try:
             if _has_task(url):
                 continue
-            actor, label_at, renamers = _labeller(slug, n)
+            actor, label_at, renamers = _labeller(slug, n, label)
             trusted = _is_trusted(slug, actor)
             if trusted is None:
                 continue
             if not trusted:
-                _relabel(slug, n, add=UNTRUSTED, remove=READY)
+                _relabel(slug, n, add=UNTRUSTED, remove=label)
                 print(f"intake: {name}#{n} untrusted label - blocked")
                 continue
             editor = _edited_after(slug, n, label_at)
@@ -210,7 +215,7 @@ def _process_repo(name: str, path: str) -> int:
             if None in verdicts:
                 continue
             if not all(verdicts):
-                _relabel(slug, n, add=UNTRUSTED, remove=READY)
+                _relabel(slug, n, add=UNTRUSTED, remove=label)
                 print(f"intake: {name}#{n} edited after labelling - blocked")
                 continue
             title, body = clean(it.get("title")), clean(it.get("body"))
@@ -220,13 +225,17 @@ def _process_repo(name: str, path: str) -> int:
                 continue
             hits = pii.scan({"title": title, "body": body}, deny)
             if hits:
-                _relabel(slug, n, add=PII_BLOCK, remove=READY)
+                _relabel(slug, n, add=PII_BLOCK, remove=label)
                 print(f"intake: {name}#{n} pii-block "
                       + ", ".join(f"{h.rule}@{h.location}" for h in hits))
                 continue
-            dispatch.dispatch(path, f"{title}\n\n{body}\n\nGitHub issue: {url}".strip())
+            brief = f"{title}\n\n{body}\n\nGitHub issue: {url}".strip()
+            if label == AGY:
+                dispatch.dispatch(path, brief, lane=LANE_AGY)
+            else:
+                dispatch.dispatch(path, brief)
             taken += 1
-            _relabel(slug, n, add=WORKING, remove=READY)
+            _relabel(slug, n, add=WORKING, remove=label)
             if WAITING in {lb.get("name") for lb in it.get("labels") or []}:
                 _relabel(slug, n, remove=WAITING)
         except Exception as e:  # noqa: BLE001 - one bad issue must not stop the poll
@@ -299,6 +308,7 @@ def poll_once() -> int | None:
         try:
             _reconcile_stuck(r["name"], r["path"])
             taken += _process_repo(r["name"], r["path"])
+            taken += _process_repo(r["name"], r["path"], AGY)
         except Exception as e:  # noqa: BLE001
             print(f"intake: {r['name']} poll failed: {type(e).__name__}")
     _status.update(at=time.time(), taken=taken)

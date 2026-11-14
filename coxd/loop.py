@@ -10,10 +10,12 @@ is a typed retryable state, never cached as a verdict (the Run-B fix).
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 import gate
 import lane
+import notify
 import quota
 import registry
 import roles
@@ -22,6 +24,49 @@ import store
 import worktree
 
 MAX_FIX = 2
+AGY_LANE = "agy-handoff"
+AGY_BRANCH_PREFIX = "coxd-agy/"
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+async def _plan_and_hand_off(task_id: str, t: dict, emit) -> str:
+    """agy-handoff lane: a read-only Claude plan, then a `coxd-agy/<id>` branch on the
+    remote cut from the base SHA, then park at waiting_agy for the human. coxd never
+    runs agy; the only interface is that branch plus the board's plan endpoint."""
+    wt, repo = Path(t["worktree"]), t["repo"]
+    repo_path = Path(t["repo_path"]) if t.get("repo_path") else None
+    store.set_state(task_id, "planning")
+    cfg = roles.resolve(registry.load(repo) or {})
+    emit("config", cfg)
+    base = await asyncio.to_thread(_git, wt, "rev-parse", "HEAD")
+    sha = base.stdout.strip()
+    if base.returncode != 0 or not sha:
+        return _terminal(task_id, "needs_human", "agy-base-error")
+    pr = await lane.plan(t["brief"], cfg["planner_model"], emit,
+                         worktree=wt, effort=cfg["planner_effort"])
+    store.add_cost(task_id, pr.cost)
+    if pr.quota_reset_at:
+        raise quota.QuotaWait(pr.quota_reset_at, "plan")
+    if pr.outcome != "planned" or not pr.plan_md:
+        return _terminal(task_id, "needs_human", "plan-error")
+    branch = f"{AGY_BRANCH_PREFIX}{task_id}"
+    if repo_path is None:
+        return _terminal(task_id, "needs_human", "agy-push-error")
+    # From the main checkout (as ship.py does), a bare SHA -> new remote branch.
+    push = await asyncio.to_thread(_git, repo_path, "push", "origin",
+                                   f"{sha}:refs/heads/{branch}")
+    if push.returncode != 0:
+        emit("agy-error", {"stage": "push", "err": push.stderr[-300:]})
+        return _terminal(task_id, "needs_human", "agy-push-error")
+    store.set_plan(task_id, pr.plan_md, sha)
+    rnd = 1 + sum(1 for e in store.events(task_id) if e["kind"] == "plan")
+    emit("plan", {"plan_md": pr.plan_md, "branch": branch, "base_sha": sha, "round": rnd})
+    store.set_state(task_id, "waiting_agy", f"run agy-next {task_id}")
+    notify.notify_async("coxd · needs you (agy)", f"Run on your Mac: agy-next {task_id}")
+    return "waiting_agy"
 
 
 async def run_task(task_id: str, worker_model: str | None = None,
@@ -35,6 +80,9 @@ async def run_task(task_id: str, worker_model: str | None = None,
 
     def emit(kind: str, data: dict) -> None:
         store.append_event(task_id, kind, data)
+
+    if t.get("lane") == AGY_LANE:  # agy handoff: plan + branch, never implement here
+        return await _plan_and_hand_off(task_id, t, emit)
 
     # --- provision: install deps so the worker + gate run the repo's REAL checks
     store.set_state(task_id, "provisioning")
@@ -300,7 +348,6 @@ async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
 def _terminal(task_id: str, state: str, reason: str | None) -> str:
     store.set_state(task_id, state, reason)
     if state in ("pr_ready", "needs_human"):  # the AFK ping
-        import notify
         t = store.get_task(task_id)
         if state == "pr_ready":
             notify.notify_async("coxd · ready to merge", f"{task_id} ({t['repo']})")
