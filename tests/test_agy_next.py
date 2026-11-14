@@ -61,7 +61,7 @@ def test_no_diff_exit_1_no_publish(tmp_path):
 def test_diff_commits_and_publishes(tmp_path):
     env, bare = setup(
         tmp_path,
-        'echo hi > new.txt\necho \'{"usage":{"input_tokens":3,"output_tokens":4}}\'\n')
+        'echo hi > new.txt\necho \'{"type":"result","usage":{"input_tokens":3,"output_tokens":4}}\'\n')
     r = run(env, "y\n")
     assert r.returncode == 0, r.stderr
     subj = sh("git", "log", "-1", "--format=%s", "coxd-agy/T1", cwd=bare).strip()
@@ -101,6 +101,19 @@ def test_diverged_worktree_refused(tmp_path):
     sh("git", "push", "-q", "origin", "HEAD:coxd-agy/T1", cwd=seed)
     r = run(env, "y\n")
     assert r.returncode == 1 and "diverged" in r.stderr
+
+
+def test_prompt_has_header_and_plan_and_streams(tmp_path):
+    argv = tmp_path / "argv.txt"
+    body = (f'printf "%s" "$2" > {argv}\necho hi > new.txt\n'
+            'echo \'{"type":"assistant","message":{"content":[{"type":"text","text":"working"},'
+            '{"type":"tool_use","name":"run_command","input":{"command":"pytest -q"}}]}}\'\n')
+    env, _ = setup(tmp_path, body)
+    r = run(env, "n\n")
+    prompt = argv.read_text()
+    assert "implementing a planned change" in prompt and "--- PLAN ---" in prompt
+    assert prompt.rstrip().endswith("do it") and "fix round 2" in prompt
+    assert "working" in r.stdout and "> run: pytest -q" in r.stdout
 
 
 def test_decline_does_not_publish(tmp_path):

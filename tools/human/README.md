@@ -6,6 +6,8 @@ and agy is git branches plus the board API (`/api/task/<id>/plan`) that your own
 
 ## agy-next
 
+Install: `ln -sf "$PWD/tools/human/agy-next" ~/.local/bin/agy-next`
+
 `export COXD_URL=http://<board-host>:<port>` in your shell profile (required; exit 2 if unset), then:
 
     agy-next <task_id>
