@@ -95,19 +95,46 @@ HDR
   cat "$tmp/plan.md"
 } > "$tmp/prompt.md"
 
-# Prints assistant text and one line per tool call as they arrive; raw stream -> $1;
-# usage from the final result event -> $2 (JSON object, {} if absent).
+# Live progress from agy's stream-json `step_update` events: one line per tool step
+# ("> edit: web/x.ts", "> run: npm test"), its duration when done, a heartbeat after
+# 30s of silence, and a token total. Raw stream -> $1; summed usage -> $2 (JSON).
 filter() { python3 -u -c '
-import json, sys
+import json, os, sys, threading, time
 raw = open(sys.argv[1], "w")
-usage = {}
-def tool(name, inp):
-    inp = inp if isinstance(inp, dict) else {}
-    arg = inp.get("command") or inp.get("path") or inp.get("file_path") or inp.get("file") or ""
-    verb = {"run_command": "run", "bash": "run", "shell": "run", "write_file": "edit",
-            "edit_file": "edit", "read_file": "read"}.get(name, name)
-    lines = str(arg).splitlines()
-    print("> %s: %s" % (verb, lines[0] if lines else ""), flush=True)
+cwd = os.getcwd().rstrip("/") + "/"
+usage, t0, last = {}, time.time(), [time.time()]
+def stamp():
+    m, s = divmod(int(time.time() - t0), 60)
+    return "[%2d:%02d]" % (m, s)
+def beat():
+    while True:
+        time.sleep(10)
+        if time.time() - last[0] >= 30:
+            print("%s ... still working" % stamp(), flush=True)
+            last[0] = time.time()
+threading.Thread(target=beat, daemon=True).start()
+def info(su):
+    ti = su.get("tool_info")
+    if isinstance(ti, str):
+        try:
+            ti = json.loads(ti)
+        except ValueError:
+            ti = {}
+    p = (ti or {}).get("parameters") or {}
+    arg = p.get("CommandLine") or p.get("Path") or p.get("AbsolutePath") or p.get("Query") or ""
+    return str(arg).replace(cwd, "").splitlines()[0] if arg else ""
+VERB = {"run_command": "run", "edit_file": "edit", "write_file": "write",
+        "create_file": "write", "read_file": "read", "view_file": "read",
+        "list_dir": "list", "grep_search": "search", "find_by_name": "find"}
+def add_usage(u):
+    if isinstance(u, str):
+        try:
+            u = json.loads(u)
+        except ValueError:
+            return
+    for k, v in (u or {}).items():
+        if isinstance(v, (int, float)):
+            usage[k] = usage.get(k, 0) + v
 for line in sys.stdin:
     raw.write(line); raw.flush()
     try:
@@ -116,27 +143,29 @@ for line in sys.stdin:
         print(line.rstrip(), flush=True); continue
     if not isinstance(ev, dict):
         continue
-    t = ev.get("type")
-    if t == "result":
-        if isinstance(ev.get("usage"), dict):
-            usage = ev["usage"]
+    last[0] = time.time()
+    su = ev.get("step_update")
+    if ev.get("event") == "init":
+        print("%s agy started" % stamp(), flush=True); continue
+    if isinstance(su, dict):
+        kind, state = su.get("step_type"), su.get("state")
+        if kind == "tool":
+            name = su.get("tool_name") or "tool"
+            if state == "ACTIVE":
+                print("%s > %s: %s" % (stamp(), VERB.get(name, name), info(su)), flush=True)
+            elif state == "DONE" and (su.get("duration_seconds") or 0) >= 5:
+                print("%s   done in %ds" % (stamp(), su["duration_seconds"]), flush=True)
+            elif state not in ("ACTIVE", "DONE"):
+                print("%s   %s: %s" % (stamp(), name, state), flush=True)
+        elif kind == "agent_response" and state == "DONE":
+            add_usage(su.get("usage"))
+            print("%s   (thinking %ds, %s tokens so far)" % (
+                stamp(), su.get("duration_seconds") or 0, usage.get("total_tokens", 0)), flush=True)
         continue
-    msg = ev.get("message") if isinstance(ev.get("message"), dict) else ev
-    content = msg.get("content")
-    if t in ("tool_use", "tool_call"):
-        tool(ev.get("name", "tool"), ev.get("input") or ev.get("args"))
-    elif t in ("text", "assistant_text") and isinstance(ev.get("text"), str):
-        print(ev["text"], flush=True)
-    elif t == "assistant" and isinstance(content, str):
-        print(content, flush=True)
-    elif t == "assistant" and isinstance(content, list):
-        for c in content:
-            if not isinstance(c, dict):
-                continue
-            if c.get("type") == "text" and c.get("text"):
-                print(c["text"], flush=True)
-            elif c.get("type") == "tool_use":
-                tool(c.get("name", "tool"), c.get("input"))
+    if ev.get("type") == "result" and isinstance(ev.get("usage"), dict):
+        usage = ev["usage"]
+    if ev.get("event") in ("result", "done", "finished") or ev.get("type") == "result":
+        print("%s agy finished" % stamp(), flush=True)
 open(sys.argv[2], "w").write(json.dumps(usage))
 ' "$@"; }
 

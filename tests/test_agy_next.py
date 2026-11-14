@@ -107,14 +107,19 @@ def test_diverged_worktree_refused(tmp_path):
 def test_prompt_has_header_and_plan_and_streams(tmp_path):
     argv = tmp_path / "argv.txt"
     body = (f'printf "%s" "$2" > {argv}\necho hi > new.txt\n'
-            'echo \'{"type":"assistant","message":{"content":[{"type":"text","text":"working"},'
-            '{"type":"tool_use","name":"run_command","input":{"command":"pytest -q"}}]}}\'\n')
+            'echo \'{"event":"init","init":{}}\'\n'
+            'echo \'{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE",'
+            '"tool_name":"run_command","tool_info":"{\\"name\\": \\"run_command\\", '
+            '\\"parameters\\": {\\"CommandLine\\": \\"pytest -q\\"}}"}}\'\n'
+            'echo \'{"event":"step_update","step_update":{"step_type":"agent_response",'
+            '"state":"DONE","usage":{"total_tokens":7}}}\'\n')
     env, _ = setup(tmp_path, body)
     r = run(env, "n\n")
     prompt = argv.read_text()
     assert "implementing a planned change" in prompt and "--- PLAN ---" in prompt
     assert prompt.rstrip().endswith("do it") and "fix round 2" in prompt
-    assert "working" in r.stdout and "> run: pytest -q" in r.stdout
+    assert "agy started" in r.stdout and "> run: pytest -q" in r.stdout
+    assert "7 tokens so far" in r.stdout
 
 
 def test_decline_does_not_publish(tmp_path):
