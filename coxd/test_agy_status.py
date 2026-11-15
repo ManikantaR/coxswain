@@ -61,7 +61,8 @@ check("status shown on the card payload",
 check("agy task in another state -> 400", post("A2").status_code == 400)
 check("claude-lane task -> 404", post("C1").status_code == 404)
 check("unknown task -> 404", post("nope").status_code == 404)
-check("coxd-ready card unchanged", row("C1")["agy_status"] is None and row("C1")["lane"] == "claude")
+check("coxd-ready card unchanged",
+      row("C1")["agy_status"] is None and row("C1")["lane"] == "claude")
 check("no state transition", store.get_task("A1")["state"] == "waiting_agy")
 
 # validation and caps
@@ -82,7 +83,8 @@ for name, body in {
 check("rejects invalid JSON", c.post("/api/task/A1/agy-status", content="{nope",
       headers={"content-type": "application/json"}).status_code == 400)
 check("rejects non-JSON content type", c.post(
-    "/api/task/A1/agy-status", content="{}", headers={"content-type": "text/plain"}).status_code == 415)
+    "/api/task/A1/agy-status", content="{}",
+    headers={"content-type": "text/plain"}).status_code == 415)
 check("rejects oversized body", post("A1", {**OK, "pad": "x" * 5000}).status_code == 413)
 check("rejected posts did not clobber status", row("A1")["agy_status"]["step"] == 3)
 check("action capped at 120", post("A1", {**OK, "action": "y" * 500}).status_code == 200
