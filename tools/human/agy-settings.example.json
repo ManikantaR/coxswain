@@ -6,7 +6,6 @@
       "command(git status)",
       "command(git diff)",
       "command(regex:^(npm (ci|run (build|test|lint))|pytest( .*)?|ruff check( .*)?|python -m pytest( .*)?)$)",
-      "write_file(.)",
       "command(regex:^(cd web && )?node (--test|--experimental-strip-types) [A-Za-z0-9_./* -]+( && node (--test|--experimental-strip-types) [A-Za-z0-9_./* -]+)?$)",
       "command(regex:^(cd [A-Za-z0-9_./-]+ && )?(ls|cat|head|tail|wc|grep|rg|diff|tree|pwd|sed -n|git (log|show|status|diff|grep|ls-files))( [^;&|`$<>\\n~/ .][^;&|`$<>\\n~ ]*| \\.[^;&|`$<>\\n~ ./][^;&|`$<>\\n~ ]*| \\.)*$)",
       "command(regex:^(cd [A-Za-z0-9_./-]+ && )?([A-Za-z0-9_./-]*python3?|uv run) -m (pytest|py_compile)[^;&|`$<>\\n]*$)",

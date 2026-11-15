@@ -40,6 +40,12 @@ denied command can be diagnosed after the run.
 
 ## Permissions
 
+File access is granted per run by agy-next itself (`write_file`/`read_file` for that run's
+worktree, by absolute path, via `agy --settings`); do not add file rules to the global file.
+Also clear any old "always allow" approvals saved by the Antigravity app
+(`~/.gemini/config/config.json` -> `userSettings.globalPermissionGrants`): they are added to
+every run and can be far broader than these lists.
+
 Merge the `permissions` allow/deny lists (read-only commands limited to paths inside the
 worktree, tests/builds, git add/commit; no chaining, redirects or `$()`) from `agy-settings.example.json` into
 `~/.gemini/antigravity-cli/settings.json` (create it if missing; append to existing
