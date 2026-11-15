@@ -81,6 +81,24 @@ def _review_section(verdict: str | None, findings: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _review_counts_section(verdict: str | None, findings: list[dict]) -> str:
+    """Redacted stand-in for _review_section: verdict + a count of findings by severity,
+    never any finding text (that is what may carry a personal name). Verdict/severity are
+    normalised to the known enums so no free text from the reviewer can ride along."""
+    if not verdict:
+        return ""
+    v = verdict if verdict in ("approve", "fix", "reject") else "unknown"
+    counts = {"high": 0, "med": 0, "low": 0, "other": 0}
+    for f in findings:
+        sev = f.get("severity") if isinstance(f, dict) else None
+        counts[sev if sev in counts else "other"] += 1
+    parts = [f"{n} {k}" for k, n in counts.items() if n]
+    lines = [f"**Review verdict:** {v}"]
+    lines.append(f"\nFindings: {', '.join(parts) if parts else 'none'} "
+                 "(details withheld from this PR body by the PII filter; see the task record)")
+    return "\n".join(lines)
+
+
 _SUMMARY_MAX_CHARS = 2000
 
 
@@ -116,7 +134,7 @@ def _greenlight(t: dict, wt: Path) -> tuple[str, str, list[str]]:
         return "", "", []
 
 
-def _build_body(t: dict, wt: Path, gl_header: str = "") -> str:
+def _build_body(t: dict, wt: Path, gl_header: str = "", redact_findings: bool = False) -> str:
     summary = t.get("summary") or "_(worker produced no summary text)_"
     if len(summary) > _SUMMARY_MAX_CHARS:
         summary = summary[:_SUMMARY_MAX_CHARS].rstrip() + "\n\n_(summary truncated)_"
@@ -136,7 +154,8 @@ def _build_body(t: dict, wt: Path, gl_header: str = "") -> str:
     if test_output:
         sections += ["\n<details><summary>Test run output (tail)</summary>\n\n```\n"
                      + test_output + "\n```\n</details>"]
-    review = _review_section(verdict, findings)
+    review = (_review_counts_section(verdict, findings) if redact_findings
+              else _review_section(verdict, findings))
     if review:
         sections += ["\n### Review", review]
     sections += [f"\n---\nDispatched via coxd (`{t['id']}`) · cost ${t['cost'] or 0:.3f} · 🤖 coxd"]
@@ -277,10 +296,19 @@ def _pii_block(task_id: str, reason: str, data: dict) -> str:
     return reason
 
 
+def _redacted_body(t: dict, wt: Path, tier: str, reasons: list[str]) -> str:
+    """The PR body without the review-findings text: summary, gate results, greenlight
+    tier (header rebuilt with NO findings) and a per-severity count of findings."""
+    header = greenlight.header(tier, reasons, []) if tier else ""
+    return _build_body(t, wt, header, redact_findings=True)
+
+
 def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
               ctx: dict | None = None) -> str | None:
     """None if clean, else the block reason ('pii-block' | 'pii-scan-error').
-    Fails closed on ANY error, including building the title/body."""
+    Fails closed on ANY error, including building the title/body. If the only hits are
+    in the PR body (not diff/branch/title/commits), retry once with the review findings
+    dropped from the body; if that scans clean, ship it and emit `pii-body-redacted`."""
     try:
         title = _pr_title(t)
         _tier, gl_header, _reasons = _greenlight(t, wt)
@@ -316,6 +344,17 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
             else:
                 kept.append(h)
         hits = kept
+        if hits and all(h.location == "pr-body" for h in hits):
+            body = _redacted_body(t, wt, _tier, _reasons)
+            again = pii.scan(_pii_items(repo_path, base, sha, title, body, deny), deny)
+            again = [h for h in again if not (
+                h.rule != "secret" and (h.rule, h.location, task_id) in allow)]
+            if not again:
+                if ctx is not None:
+                    ctx["body"] = body
+                store.append_event(task_id, "pii-body-redacted", {
+                    "hits": [{"rule": h.rule, "location": h.location} for h in hits]})
+                hits = []
     except Exception as e:  # noqa: BLE001 — fail closed
         return _pii_block(task_id, "pii-scan-error", {"error": type(e).__name__})
     if hits:
