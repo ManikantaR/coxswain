@@ -558,9 +558,11 @@ def _deploy_bg(t: dict, slug: str, *, manual: bool, sha: str | None = None) -> b
 
 
 def check_and_cleanup_merged() -> None:
-    """One pass: for every pr_ready task, check if its PR merged; if so, clean up."""
+    """One pass: for every pr_ready (or needs_human-with-a-PR) task, check if its PR
+    merged; if so, clean up. A needs_human task whose PR the human merged by hand
+    (after a conflict, ci-checks-unavailable, ...) lands too, without a clean streak."""
     for t in store.list_tasks():
-        if t["state"] != "pr_ready" or not t["pr_url"] or not t["repo_path"]:
+        if t["state"] not in ("pr_ready", "needs_human") or not t["pr_url"] or not t["repo_path"]:
             continue
         slug = ci_triage.repo_slug(t["repo_path"])
         if not slug:
@@ -568,12 +570,17 @@ def check_and_cleanup_merged() -> None:
         merged, _ = _pr_merged(t["pr_url"], slug)
         if not merged:
             continue
-        store.append_event(t["id"], "auto-cleanup", {"pr_url": t["pr_url"]})
+        from_state = t["state"]
+        store.append_event(t["id"], "auto-cleanup",
+                           {"pr_url": t["pr_url"], "from": from_state})
         _close_issue_if_open(t["brief"], slug, t["pr_url"])
-        _record_streak(t, slug)
-        branch = f"coxd/{t['id']}"
+        if from_state == "pr_ready":  # a human rescue is not a clean auto-merge streak
+            _record_streak(t, slug)
+        branch = f"coxd/{t['id']}"  # local worktree branch (same name in every lane)
+        # agy-handoff PRs live on coxd-agy/<id> on the remote (see ship.py)
+        remote_branch = (f"coxd-agy/{t['id']}" if t.get("lane") == "agy-handoff" else branch)
         worktree.remove(Path(t["repo_path"]), Path(t["worktree"]), branch)
-        _run(["git", "push", "origin", "--delete", branch], cwd=t["repo_path"])
+        _run(["git", "push", "origin", "--delete", remote_branch], cwd=t["repo_path"])
         pr_number = t["pr_url"].rstrip("/").rsplit("/", 1)[-1]
         store.set_state(t["id"], "landed", f"merged as PR #{pr_number}")
         try:
