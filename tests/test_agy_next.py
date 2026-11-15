@@ -37,7 +37,8 @@ def setup(tmp_path, agy_body):
     (bin_ / "agy").chmod(0o755)
     env.update(PATH=f"{bin_}:{os.environ['PATH']}", COXD_URL=f"file://{tmp_path}/web",
                AGY_REPO_ROOT=str(root), AGY_NEXT_LOG=str(tmp_path / "log/agy.log"),
-               AGY_NEXT_RUNS=str(tmp_path / "runs"))
+               AGY_NEXT_RUNS=str(tmp_path / "runs"),
+               AGY_APP_CONFIG=str(tmp_path / "no-app-config.json"))
     return env, bare
 
 
@@ -210,3 +211,14 @@ def test_header_forbids_leaving_worktree(tmp_path):
     run(env)
     p = argv.read_text()
     assert "never ask to bypass the sandbox" in p and "do not search for one elsewhere" in p
+
+
+def test_refuses_when_app_has_saved_grants(tmp_path):
+    env, bare = setup(tmp_path, "echo hi > new.txt\n")
+    cfg = tmp_path / "app.json"
+    grants = {"globalPermissionGrants": {"allow": ["command(gh)"]}}
+    cfg.write_text(json.dumps({"userSettings": grants}))
+    env["AGY_APP_CONFIG"] = str(cfg)
+    r = run(env, "y\n")
+    assert r.returncode == 2 and "command(gh)" in r.stderr
+    assert "coxd-agy/T1" not in sh("git", "branch", cwd=bare)

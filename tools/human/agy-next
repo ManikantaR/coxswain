@@ -29,6 +29,24 @@ if [ -z "${COXD_URL:-}" ]; then
 fi
 command -v python3 >/dev/null || { echo "agy-next: python3 required" >&2; exit 2; }
 
+# Refuse to run while the Antigravity app holds saved "always allow" approvals: agy adds
+# them to every run and they can be far broader than our allow-list (e.g. command(gh)).
+grants=$(python3 - "${AGY_APP_CONFIG:-$HOME/.gemini/config/config.json}" <<'PY'
+import json, sys
+try:
+    g = (json.load(open(sys.argv[1])).get("userSettings") or {}).get("globalPermissionGrants") or {}
+except (OSError, ValueError):
+    g = {}
+print("\n".join("%s %s" % (k, r) for k, v in g.items() if isinstance(v, list) for r in v))
+PY
+)
+if [ -n "$grants" ]; then
+  echo "agy-next: the Antigravity app has saved 'always allow' approvals that would apply to this run:" >&2
+  echo "$grants" | sed 's/^/  /' >&2
+  echo "Remove them (Antigravity Settings, or userSettings.globalPermissionGrants in ~/.gemini/config/config.json) and re-run." >&2
+  exit 2
+fi
+
 REPO_ROOT=${AGY_REPO_ROOT:-$HOME/repo}
 LOG=${AGY_NEXT_LOG:-$HOME/.local/state/agy-next.log}
 
