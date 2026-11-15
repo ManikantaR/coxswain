@@ -36,7 +36,8 @@ def setup(tmp_path, agy_body):
     (bin_ / "agy").write_text("#!/bin/sh\n" + agy_body)
     (bin_ / "agy").chmod(0o755)
     env.update(PATH=f"{bin_}:{os.environ['PATH']}", COXD_URL=f"file://{tmp_path}/web",
-               AGY_REPO_ROOT=str(root), AGY_NEXT_LOG=str(tmp_path / "log/agy.log"))
+               AGY_REPO_ROOT=str(root), AGY_NEXT_LOG=str(tmp_path / "log/agy.log"),
+               AGY_NEXT_RUNS=str(tmp_path / "runs"))
     return env, bare
 
 
