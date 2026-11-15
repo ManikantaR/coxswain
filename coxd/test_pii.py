@@ -187,11 +187,12 @@ def hunk(path: str, line: str) -> str:
     return f"diff --git a/{path} b/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+{line}\n"
 
 
+_real_build_body = ship._build_body
 ship._pii_items = fake_items
 ship._git_text = lambda *a: "abc123\n"  # pinned sha for the stubbed integration
 ship.subprocess.run = fake_run
 ship._greenlight = lambda t, wt: ("", "", [])
-ship._build_body = lambda t, wt, h="": "body"
+ship._build_body = lambda t, wt, h="", **kw: "body"
 
 
 def pushed() -> bool:
@@ -271,7 +272,56 @@ q = 'diff --git a/x b/x\n+++ "b/we\\tird.txt"\n@@ -0,0 +1 @@\n+hi\n'
 check("quoted header path unquoted", "we\\tird.txt" in ship._added_lines(q))
 pushes = [c for c in calls if c[:2] == ["git", "push"]]
 check("push pins the scanned sha", bool(pushes) and pushes[-1][-1] == "abc123:refs/heads/coxd/t1")
-ship._build_body = lambda t, wt, h="": 1 / 0
+# --- name in a review finding: body-only hit → findings dropped, PR opens
+import lane  # noqa: E402
+
+check("reviewer prompt has the no-names rule", "Never write people's names" in lane._CRITERIA)
+check("planner prompt has the no-names rule", "Never write people's names" in lane._PLAN_PROMPT)
+
+ship._build_body = _real_build_body
+ship._test_evidence = lambda wt: "evidence"
+store.create_task("t2", "repo", "brief", "/wt", repo_path="/repo/x")
+FINDINGS = [{"severity": "med", "pillar": "advisory", "file": "a.py", "line": 3,
+             "summary": "docs mention Zorblax by name"},
+            {"severity": "low", "summary": "nit"}]
+store.set_review("t2", "approve", FINDINGS)
+state["diff"] = ""
+calls.clear()
+out, url = ship.ship("t2")
+create = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+body = create[-1][create[-1].index("--body") + 1] if create else ""
+ev = evs("t2")
+check("name in finding: PR still opens", out == "pr" and url and bool(create))
+check("body dropped the finding text", "zorblax" not in body.lower() and "nit" not in body)
+check("body keeps verdict + severity counts + gate section",
+      "approve" in body and "1 med, 1 low" in body and "### Gate results" in body)
+check("pii-body-redacted event, rule+location only, no name",
+      "pii-body-redacted" in ev and "pr-body" in ev and "pii-block" not in ev
+      and "orblax" not in ev)
+
+# name also in the diff → still blocks (even though the body is redactable)
+state["diff"] = hunk("f.py", "hi Zorblax")
+calls.clear()
+store.create_task("t3", "repo", "brief", "/wt", repo_path="/repo/x")
+store.set_review("t3", "approve", FINDINGS)
+out, _ = ship.ship("t3")
+check("diff hit still blocks", out == "pii-block" and not pushed())
+check("diff hit: no redaction event", "pii-body-redacted" not in evs("t3"))
+state["diff"] = ""
+
+# name in the summary (kept part of the body) → redaction can't help → block as today
+store.create_task("t4", "repo", "brief", "/wt", repo_path="/repo/x")
+store.set_review("t4", "approve", FINDINGS)
+with store._conn() as c:
+    c.execute("UPDATE tasks SET summary=? WHERE id=?", ("done for Zorblax", "t4"))
+calls.clear()
+out, _ = ship.ship("t4")
+check("hit survives redaction → pii-block", out == "pii-block" and not pushed()
+      and "pii-body-redacted" not in evs("t4"))
+
+ship._build_body = lambda t, wt, h="", **kw: "body"
+
+ship._build_body = lambda t, wt, h="", **kw: 1 / 0
 calls.clear()
 out, _ = ship.ship("t1")
 check("body-build error blocks as pii-scan-error", out == "pii-scan-error" and not pushed())
