@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 UNKNOWN = "unknown"
 # state in force when a result event lands -> phase
-_PHASE = {"provisioning": "implement", "working": "implement", "fixing": "fix",
+_PHASE = {"planning": "plan", "provisioning": "implement", "working": "implement", "fixing": "fix",
           "reviewing": "review"}
 PHASES = ("implement", "fix", "review")
 _NEW = re.compile(r"^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?:\[.*\])?$")
@@ -91,7 +91,7 @@ def aggregate(events_by_task: list[list[dict]], since: float) -> dict:
             for m, c in result_costs(e["data"]).items():
                 name = short_name(m)
                 by_model[name] = by_model.get(name, 0.0) + c
-                by_phase[phase] += c
+                by_phase[phase] = by_phase.get(phase, 0.0) + c  # `plan` only when used
                 total += c
     return {"total": total, "by_model": by_model, "by_phase": by_phase}
 

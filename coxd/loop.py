@@ -70,6 +70,30 @@ async def _plan_and_hand_off(task_id: str, t: dict, emit) -> str:
     return "waiting_agy"
 
 
+PLAN_BRIEF_NOTE = (
+    "\n\n# Plan\nA planner read the repo and wrote this plan. Follow this plan; deviate "
+    "only if it is wrong, and say why.\n\n{plan}\n")
+
+
+def _with_plan(brief: str, plan_md: str | None) -> str:
+    return brief if not plan_md else brief + PLAN_BRIEF_NOTE.format(plan=plan_md)
+
+
+async def _plan_first(task_id: str, wt: Path, brief: str, cfg: dict, emit) -> str | None:
+    """Read-only planner pass (the agy-lane `lane.plan`) before the worker. Its cost goes
+    to the ledger and a `plan` event; a failed plan is not fatal — the worker just runs
+    without one. A usage-limit cut-off parks the task like any other stage."""
+    pr = await lane.plan(brief, cfg["planner_model"], emit, worktree=wt,
+                         effort=cfg["planner_effort"])
+    store.add_cost(task_id, pr.cost)
+    if pr.quota_reset_at:
+        raise quota.QuotaWait(pr.quota_reset_at, "plan")
+    if pr.outcome != "planned" or not pr.plan_md:
+        return None
+    emit("plan", {"plan_md": pr.plan_md, "cost": pr.cost or 0.0, "phase": "plan"})
+    return pr.plan_md
+
+
 async def run_task(task_id: str, worker_model: str | None = None,
                    review_model: str | None = None,
                    worker_effort: str | None = None,
@@ -92,14 +116,23 @@ async def run_task(task_id: str, worker_model: str | None = None,
     prov = await asyncio.to_thread(worktree.provision, wt)  # off the event loop
     emit("provision", prov)
 
-    # --- implement ---------------------------------------------------------
-    store.set_state(task_id, "working")
+    # --- plan first (opt-in per repo: registry `plan_first: true`) ---------
     reg = registry.load(repo) or {}
     cfg = roles.resolve(reg, worker_model=worker_model, review_model=review_model,
                         worker_effort=worker_effort, review_effort=review_effort)
+    plan_md = None
+    if reg.get("plan_first") is True:
+        store.set_state(task_id, "planning")
+        emit("config", cfg)
+        plan_md = await _plan_first(task_id, wt, brief, cfg, emit)
+
+    # --- implement ---------------------------------------------------------
+    store.set_state(task_id, "working")
     worker_model, review_model = cfg["worker_model"], cfg["review_model"]
-    emit("config", cfg)
-    wr = await lane.run_worker(wt, registry.data_guard_brief(reg, brief), worker_model, emit,
+    if plan_md is None:
+        emit("config", cfg)
+    wr = await lane.run_worker(wt, registry.data_guard_brief(reg, _with_plan(brief, plan_md)),
+                               worker_model, emit,
                                effort=cfg["worker_effort"])
     store.set_session(task_id, wr.session_id)
     store.add_cost(task_id, wr.cost)
