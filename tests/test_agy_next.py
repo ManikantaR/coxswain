@@ -184,3 +184,29 @@ def test_raw_stream_kept_after_run(tmp_path):
     assert run(env).returncode == 1  # no changes
     kept = list((tmp_path / "runs").glob("T1-*.jsonl"))
     assert len(kept) == 1 and '"init"' in kept[0].read_text()
+
+
+def test_session_settings_scope_files_to_worktree(tmp_path):
+    out = tmp_path / "session.json"
+    body = ('while [ $# -gt 0 ]; do [ "$1" = --settings ] && cp "$2" '
+            + str(out) + '; shift; done\necho hi > new.txt\n')
+    env, _ = setup(tmp_path, body)
+    cfg = tmp_path / "agy-settings.json"
+    cfg.write_text(json.dumps({"permissions": {"allow": ["command(git add)", "write_file(.)",
+                                                         "read_file(/elsewhere)"],
+                                               "deny": ["command(git push)"]}}))
+    env["AGY_SETTINGS"] = str(cfg)
+    assert run(env, "y\n").returncode == 0
+    perms = json.loads(out.read_text())["permissions"]
+    wt = str(tmp_path / "repo/proj.agy/T1")
+    assert f"write_file({wt})" in perms["allow"] and f"read_file({wt})" in perms["allow"]
+    assert "write_file(.)" not in perms["allow"] and "read_file(/elsewhere)" not in perms["allow"]
+    assert "command(git add)" in perms["allow"] and perms["deny"] == ["command(git push)"]
+
+
+def test_header_forbids_leaving_worktree(tmp_path):
+    argv = tmp_path / "argv.txt"
+    env, _ = setup(tmp_path, f'printf "%s" "$2" > {argv}\n')
+    run(env)
+    p = argv.read_text()
+    assert "never ask to bypass the sandbox" in p and "do not search for one elsewhere" in p
