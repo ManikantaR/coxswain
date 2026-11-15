@@ -4,13 +4,15 @@
 # confirmation) publishes branch coxd-agy/<task_id> to origin.
 set -euo pipefail
 
-usage() { echo "usage: agy-next <task_id> [--model <agy-model-id>]   (default \$AGY_MODEL or gemini-4-argon-high; list: agy models)" >&2; exit 2; }
+usage() { echo "usage: agy-next <task_id> [--model <agy-model-id>] [--no-sandbox]   (model default \$AGY_MODEL or gemini-4-argon-high; list: agy models)" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 tid=$1; shift
 model=${AGY_MODEL:-gemini-4-argon-high}
+sandbox=1  # agy --sandbox (terminal restrictions) unless --no-sandbox
 while [ $# -gt 0 ]; do
   case $1 in
     --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
+    --no-sandbox) sandbox=0; shift ;;
     *) usage ;;
   esac
 done
@@ -31,7 +33,14 @@ REPO_ROOT=${AGY_REPO_ROOT:-$HOME/repo}
 LOG=${AGY_NEXT_LOG:-$HOME/.local/state/agy-next.log}
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/agy-next.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+# Keep agy's raw stream of every run (for "why was it denied?"); newest 20 kept.
+RUNS=${AGY_NEXT_RUNS:-$HOME/.local/state/agy-next/runs}
+keep_stream() {
+  [ -s "$tmp/agy.out" ] || return 0
+  mkdir -p "$RUNS" && cp "$tmp/agy.out" "$RUNS/$tid-$(date +%Y%m%d-%H%M%S).jsonl" 2>/dev/null || true
+  ls -t "$RUNS"/*.jsonl 2>/dev/null | tail -n +21 | while read -r f; do rm -f "$f"; done
+}
+trap 'keep_stream; rm -rf "$tmp"' EXIT
 
 curl -fsS "${COXD_URL%/}/api/task/$tid/plan" -o "$tmp/plan.json" \
   || { echo "agy-next: could not fetch plan for $tid" >&2; exit 1; }
@@ -224,7 +233,9 @@ run_t0=$SECONDS
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
 echo "agy-next: model $model"
-agy -p "$(cat "$tmp/prompt.md")" --model "$model" --output-format stream-json --print-timeout 30m \
+sbx=(); [ "$sandbox" = 1 ] && sbx=(--sandbox)
+echo "agy-next: sandbox $([ "$sandbox" = 1 ] && echo on || echo OFF)"
+agy -p "$(cat "$tmp/prompt.md")" ${sbx[@]+"${sbx[@]}"} --model "$model" --output-format stream-json --print-timeout 30m \
   | filter "$tmp/agy.out" "$tmp/usage.json" "$tmp/steps"
 agy_rc=${PIPESTATUS[0]}
 set -e

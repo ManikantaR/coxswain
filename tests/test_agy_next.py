@@ -165,3 +165,21 @@ def test_bad_model_rejected(tmp_path):
     env, _ = setup(tmp_path, "exit 0\n")
     assert run_args(env, "--model", "x; rm -rf /").returncode == 2
     assert run_args(env, "--bogus").returncode == 2
+
+
+def test_sandbox_on_by_default_and_flag_disables(tmp_path):
+    argv = tmp_path / "argv.txt"
+    env, _ = setup(tmp_path, f'printf "%s\\n" "$@" > {argv}\necho hi > new.txt\n')
+    assert run(env, "y\n").returncode == 0
+    assert "--sandbox" in argv.read_text().splitlines()
+    (tmp_path / "bin/agy").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {argv}\n')
+    run_args(env, "--no-sandbox", stdin="n\n")
+    assert "--sandbox" not in argv.read_text().splitlines()
+
+
+def test_raw_stream_kept_after_run(tmp_path):
+    env, _ = setup(tmp_path, 'echo \'{"event":"init","init":{}}\'\n')
+    env["AGY_NEXT_RUNS"] = str(tmp_path / "runs")
+    assert run(env).returncode == 1  # no changes
+    kept = list((tmp_path / "runs").glob("T1-*.jsonl"))
+    assert len(kept) == 1 and '"init"' in kept[0].read_text()
