@@ -110,8 +110,27 @@ HDR
 # ("> edit: web/x.ts", "> run: npm test"), its duration when done, a heartbeat after
 # 30s of silence, and a token total. Raw stream -> $1; summed usage -> $2 (JSON).
 filter() { python3 -u -c '
-import json, os, sys, threading, time
+import json, os, subprocess, sys, threading, time
 raw = open(sys.argv[1], "w")
+url = os.environ.get("AGY_STATUS_URL", "")
+steps, last_post = [0], [0.0]
+def tokens():
+    return int(usage.get("total_tokens") or (usage.get("input_tokens", 0) + usage.get("output_tokens", 0)))
+def post(action):
+    # Best effort, at most every 5s, never blocks the stream or raises.
+    if not url or time.time() - last_post[0] < 5:
+        return
+    last_post[0] = time.time()
+    body = json.dumps({"step": steps[0], "action": "".join(c if c.isprintable() else " " for c in action)[:120],
+                       "elapsed_s": int(time.time() - t0), "tokens": tokens()})
+    def go():
+        try:
+            subprocess.run(["curl", "-m", "2", "-s", "-X", "POST", "-H", "Content-Type: application/json",
+                            "--data-binary", body, "-o", "/dev/null", url],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        except Exception:
+            pass
+    threading.Thread(target=go, daemon=True).start()
 cwd = os.getcwd().rstrip("/") + "/"
 usage, t0, last = {}, time.time(), [time.time()]
 def stamp():
@@ -163,7 +182,10 @@ for line in sys.stdin:
         if kind == "tool":
             name = su.get("tool_name") or "tool"
             if state == "ACTIVE":
-                print("%s > %s: %s" % (stamp(), VERB.get(name, name), info(su)), flush=True)
+                steps[0] += 1
+                line = "%s: %s" % (VERB.get(name, name), info(su))
+                print("%s > %s" % (stamp(), line), flush=True)
+                post(line)
             elif state == "DONE" and (su.get("duration_seconds") or 0) >= 5:
                 print("%s   done in %ds" % (stamp(), su["duration_seconds"]), flush=True)
             elif state not in ("ACTIVE", "DONE"):
@@ -178,19 +200,39 @@ for line in sys.stdin:
     if ev.get("event") in ("result", "done", "finished") or ev.get("type") == "result":
         print("%s agy finished" % stamp(), flush=True)
 open(sys.argv[2], "w").write(json.dumps(usage))
+open(sys.argv[3], "w").write(str(steps[0]))
 ' "$@"; }
 
+# Best-effort progress for the board card; every failure is ignored.
+export AGY_STATUS_URL="${COXD_URL%/}/api/task/$tid/agy-status"
+final_status() { # <action> - one last post, never fails the run
+  python3 -c '
+import json, sys
+try:
+    step = int(open(sys.argv[2]).read() or 0)
+    u = json.load(open(sys.argv[3]))
+    tok = int(u.get("total_tokens") or (u.get("input_tokens", 0) + u.get("output_tokens", 0)))
+except Exception:
+    step, tok = 0, 0
+print(json.dumps({"step": step, "action": sys.argv[1], "elapsed_s": int(sys.argv[4]), "tokens": tok}))' \
+    "$1" "$tmp/steps" "$tmp/usage.json" "$((SECONDS - run_t0))" 2>/dev/null \
+    | curl -m 2 -s -X POST -H 'Content-Type: application/json' --data-binary @- \
+        -o /dev/null "$AGY_STATUS_URL" >/dev/null 2>&1 || true
+}
+
+run_t0=$SECONDS
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
 echo "agy-next: model $model"
 agy -p "$(cat "$tmp/prompt.md")" --model "$model" --output-format stream-json --print-timeout 30m \
-  | filter "$tmp/agy.out" "$tmp/usage.json"
+  | filter "$tmp/agy.out" "$tmp/usage.json" "$tmp/steps"
 agy_rc=${PIPESTATUS[0]}
 set -e
 ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 [ "$agy_rc" -eq 0 ] || echo "agy-next: agy exited with status $agy_rc" >&2
 
 if git diff --quiet "$pre"..HEAD && [ -z "$(git status --porcelain)" ]; then
+  final_status "no changes"
   echo "agy made no changes"
   exit 1
 fi
@@ -200,6 +242,7 @@ if [ -n "$(git status --porcelain)" ]; then
   git commit -q -m "agy: $tid round $round"
 fi
 git diff --stat "$base"..HEAD
+final_status "finished, publishing"
 
 tokens=$(cat "$tmp/usage.json" 2>/dev/null || true)
 [ -n "$tokens" ] || tokens='{}'
