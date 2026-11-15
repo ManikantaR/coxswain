@@ -29,9 +29,25 @@ branch `coxd-agy/<task_id>` is pushed to origin. Token usage is printed and appe
 
 Env overrides: `AGY_REPO_ROOT` (default `~/repo`), `AGY_NEXT_LOG`.
 
+## Sandbox and safety
+
+agy runs with `--sandbox` (terminal restrictions) by default; `--no-sandbox` turns it off
+for one run. Tests and builds execute repo code as you, so the allow-list is a guard rail,
+not isolation: watch the run, and keep the y/N publish step.
+
+The raw agy stream of each run is kept in `~/.local/state/agy-next/runs/` (newest 20) so a
+denied command can be diagnosed after the run.
+
 ## Permissions
 
-Merge the `permissions` allow/deny lists from `agy-settings.example.json` into
+File access is granted per run by agy-next itself (`write_file`/`read_file` for that run's
+worktree, by absolute path, via `agy --settings`); do not add file rules to the global file.
+Also clear any old "always allow" approvals saved by the Antigravity app
+(`~/.gemini/config/config.json` -> `userSettings.globalPermissionGrants`): they are added to
+every run and can be far broader than these lists.
+
+Merge the `permissions` allow/deny lists (read-only commands limited to paths inside the
+worktree, tests/builds, git add/commit; no chaining, redirects or `$()`) from `agy-settings.example.json` into
 `~/.gemini/antigravity-cli/settings.json` (create it if missing; append to existing
 arrays rather than replacing them).
 

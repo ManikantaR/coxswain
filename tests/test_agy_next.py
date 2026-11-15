@@ -36,7 +36,9 @@ def setup(tmp_path, agy_body):
     (bin_ / "agy").write_text("#!/bin/sh\n" + agy_body)
     (bin_ / "agy").chmod(0o755)
     env.update(PATH=f"{bin_}:{os.environ['PATH']}", COXD_URL=f"file://{tmp_path}/web",
-               AGY_REPO_ROOT=str(root), AGY_NEXT_LOG=str(tmp_path / "log/agy.log"))
+               AGY_REPO_ROOT=str(root), AGY_NEXT_LOG=str(tmp_path / "log/agy.log"),
+               AGY_NEXT_RUNS=str(tmp_path / "runs"),
+               AGY_APP_CONFIG=str(tmp_path / "no-app-config.json"))
     return env, bare
 
 
@@ -165,3 +167,58 @@ def test_bad_model_rejected(tmp_path):
     env, _ = setup(tmp_path, "exit 0\n")
     assert run_args(env, "--model", "x; rm -rf /").returncode == 2
     assert run_args(env, "--bogus").returncode == 2
+
+
+def test_sandbox_on_by_default_and_flag_disables(tmp_path):
+    argv = tmp_path / "argv.txt"
+    env, _ = setup(tmp_path, f'printf "%s\\n" "$@" > {argv}\necho hi > new.txt\n')
+    assert run(env, "y\n").returncode == 0
+    assert "--sandbox" in argv.read_text().splitlines()
+    (tmp_path / "bin/agy").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {argv}\n')
+    run_args(env, "--no-sandbox", stdin="n\n")
+    assert "--sandbox" not in argv.read_text().splitlines()
+
+
+def test_raw_stream_kept_after_run(tmp_path):
+    env, _ = setup(tmp_path, 'echo \'{"event":"init","init":{}}\'\n')
+    env["AGY_NEXT_RUNS"] = str(tmp_path / "runs")
+    assert run(env).returncode == 1  # no changes
+    kept = list((tmp_path / "runs").glob("T1-*.jsonl"))
+    assert len(kept) == 1 and '"init"' in kept[0].read_text()
+
+
+def test_session_settings_scope_files_to_worktree(tmp_path):
+    out = tmp_path / "session.json"
+    body = ('while [ $# -gt 0 ]; do [ "$1" = --settings ] && cp "$2" '
+            + str(out) + '; shift; done\necho hi > new.txt\n')
+    env, _ = setup(tmp_path, body)
+    cfg = tmp_path / "agy-settings.json"
+    cfg.write_text(json.dumps({"permissions": {"allow": ["command(git add)", "write_file(.)",
+                                                         "read_file(/elsewhere)"],
+                                               "deny": ["command(git push)"]}}))
+    env["AGY_SETTINGS"] = str(cfg)
+    assert run(env, "y\n").returncode == 0
+    perms = json.loads(out.read_text())["permissions"]
+    wt = str(tmp_path / "repo/proj.agy/T1")
+    assert f"write_file({wt})" in perms["allow"] and f"read_file({wt})" in perms["allow"]
+    assert "write_file(.)" not in perms["allow"] and "read_file(/elsewhere)" not in perms["allow"]
+    assert "command(git add)" in perms["allow"] and perms["deny"] == ["command(git push)"]
+
+
+def test_header_forbids_leaving_worktree(tmp_path):
+    argv = tmp_path / "argv.txt"
+    env, _ = setup(tmp_path, f'printf "%s" "$2" > {argv}\n')
+    run(env)
+    p = argv.read_text()
+    assert "never ask to bypass the sandbox" in p and "do not search for one elsewhere" in p
+
+
+def test_refuses_when_app_has_saved_grants(tmp_path):
+    env, bare = setup(tmp_path, "echo hi > new.txt\n")
+    cfg = tmp_path / "app.json"
+    grants = {"globalPermissionGrants": {"allow": ["command(gh)"]}}
+    cfg.write_text(json.dumps({"userSettings": grants}))
+    env["AGY_APP_CONFIG"] = str(cfg)
+    r = run(env, "y\n")
+    assert r.returncode == 2 and "command(gh)" in r.stderr
+    assert "coxd-agy/T1" not in sh("git", "branch", cwd=bare)
