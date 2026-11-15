@@ -177,6 +177,16 @@ def _choice_payload(t: dict, evs: list[dict]) -> dict:
             "claude_cost": _last_claude_fix_cost(evs)}
 
 
+def _agy_status_view(t: dict, info: dict | None) -> dict | None:
+    """Latest script-reported status, only while waiting_agy and from this round."""
+    st = _AGY_STATUS.get(t["id"])
+    if not info or t["state"] != "waiting_agy" or not st:
+        return None
+    if st["ts"] < (info.get("waiting_since") or 0):
+        return None  # left over from an earlier round
+    return st
+
+
 def _tasks_payload(show_archived: bool = False) -> dict:
     rows = []
     archived_count = 0
@@ -211,6 +221,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "agy_cmd": f"agy-next {t['id']}" if t["state"] == "waiting_agy" else None,
             "agy_round": (sum(1 for e in evs if e["kind"] == "plan")
                           if is_agy else None),
+            "agy_status": _agy_status_view(t, info),
             "choice": _choice_payload(t, evs) if t["state"] == "needs_choice" else None,
             "quota_wait_at": agy_handoff.quota_wait_at(t) if t.get("lane") == "agy-handoff" else None,
             # Deploy button shows on a landed task whose repo has a deploy command.
@@ -266,6 +277,61 @@ async def api_task_plan(req: Request) -> JSONResponse:
     return JSONResponse({"task_id": tid, "repo": t["repo"],
                          "branch": f"coxd-agy/{tid}", "base_sha": t.get("base_sha"),
                          "round": len(evs), "plan_md": t.get("plan_md")})
+
+
+# Live agy progress, posted by the human's own `agy-next` script. Display only: held in
+# memory (lost on restart — the next post refills it), never used for a state transition.
+_AGY_STATUS: dict[str, dict] = {}
+_AGY_EVENT_AT: dict[str, float] = {}
+AGY_EVENT_EVERY_S = 60
+_AGY_STATUS_MAX_BODY = 4096
+_AGY_ACTION_MAX = 120
+_AGY_INT_MAX = {"step": 1_000_000, "elapsed_s": 7 * 86400, "tokens": 10_000_000_000}
+
+
+def _agy_status_clean(body) -> tuple[dict | None, str]:
+    if not isinstance(body, dict):
+        return None, "body must be a JSON object"
+    out: dict = {}
+    for k, hi in _AGY_INT_MAX.items():
+        v = body.get(k)
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= hi:
+            return None, f"{k} must be an integer in 0..{hi}"
+        out[k] = v
+    a = body.get("action")
+    if not isinstance(a, str) or not a.strip() or not a.isprintable():
+        return None, "action must be a non-empty printable string"
+    out["action"] = a.strip()[:_AGY_ACTION_MAX]
+    return out, ""
+
+
+async def api_task_agy_status(req: Request) -> JSONResponse:
+    """The human's agy-next script reports one short progress line for the card."""
+    tid = req.path_params["tid"]
+    t = store.get_task(tid)
+    if t is None or t.get("lane") != "agy-handoff":
+        return JSONResponse({"error": "no such agy-handoff task"}, status_code=404)
+    if t["state"] != "waiting_agy":
+        return JSONResponse({"error": f"task is '{t['state']}', not waiting_agy"}, status_code=400)
+    if req.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        return JSONResponse({"error": "content-type must be application/json"}, status_code=415)
+    raw = await req.body()
+    if len(raw) > _AGY_STATUS_MAX_BODY:
+        return JSONResponse({"error": "body too large"}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    st, err = _agy_status_clean(body)
+    if st is None:
+        return JSONResponse({"error": err}, status_code=400)
+    now = time.time()
+    st["ts"] = now
+    _AGY_STATUS[tid] = st
+    if now - _AGY_EVENT_AT.get(tid, 0.0) >= AGY_EVENT_EVERY_S:
+        _AGY_EVENT_AT[tid] = now
+        store.append_event(tid, "agy-status", {k: st[k] for k in ("step", "action", "elapsed_s", "tokens")})
+    return JSONResponse({"ok": True})
 
 
 async def api_task_choice(req: Request) -> JSONResponse:
@@ -679,6 +745,7 @@ app = Starlette(middleware=[Middleware(_GuardMiddleware)], routes=[
     Route("/api/task/{tid}/plan", api_task_plan),
     Route("/api/task/{tid}/retry", api_task_retry, methods=["POST"]),
     Route("/api/task/{tid}/agy-choice", api_task_choice, methods=["POST"]),
+    Route("/api/task/{tid}/agy-status", api_task_agy_status, methods=["POST"]),
     Route("/api/task/{tid}/stop", api_task_stop, methods=["POST"]),
     Route("/api/task/{tid}/resume", api_task_resume, methods=["POST"]),
     Route("/api/task/{tid}/deploy", api_task_deploy, methods=["POST"]),
@@ -776,8 +843,10 @@ const hd=ln.match(/^#{1,6}\\s+(.*)$/);if(hd){out.push('<h4>'+inl(hd[1])+'</h4>')
 if(ln.trim())out.push('<p>'+inl(ln)+'</p>')}
 if(code)out.push('</pre>');if(list)out.push('</ul>');return out.join('')}
 function usd(n){return '$'+(n||0).toFixed(2)}
+function agyLiveHtml(a){const age=Math.max(0,Math.floor(Date.now()/1000-a.ts));if(age>=120)return '<div class="meta agylive">agy idle</div>';const m=Math.floor(a.elapsed_s/60);return '<div class="meta agylive">agy: '+esc(a.action)+' · step '+a.step+' · '+m+'m · '+Math.round(a.tokens/1000)+'k tokens · updated '+age+'s ago</div>'}
 function agyCardHtml(t){let h='';const sp=t.claude_split;
 if(t.state==='waiting_agy'&&t.agy_cmd){h+='<div class=agybox><b>Your turn: run on your Mac</b><code>'+esc(t.agy_cmd)+'</code><button class=agyb data-cmd="'+esc(t.agy_cmd)+'">Copy</button> <button class=planb>View plan</button><div class=agyplan hidden>'+mdHtml(t.plan_md)+'</div></div>'}
+if(t.state==='waiting_agy'&&t.agy_status)h+=agyLiveHtml(t.agy_status);
 if(t.agy_pickup)h+='<div class=meta>picked up your push '+esc(t.agy_pickup.sha)+' at '+new Date(t.agy_pickup.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ})+(t.agy_round?' · round '+t.agy_round:'')+'</div>';
 if(sp)h+='<div class=meta>Claude '+usd(sp.plan+sp.review)+' (plan '+usd(sp.plan)+' + review '+usd(sp.review)+')'+(t.agy_tokens!=null?' · agy '+t.agy_tokens+' tokens':'')+'</div>';
 if(t.waiting_since&&t.state==='waiting_agy')h+='<div class=meta>waiting on you '+Math.max(0,Math.floor((Date.now()/1000-t.waiting_since)/60))+'m</div>';
@@ -830,7 +899,7 @@ function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getEle
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow><button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button><button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+'</div>'}
 function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.waiting_since&&Math.floor(Date.now()/60000),t.state,t.reason,t.cost,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.cost,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
