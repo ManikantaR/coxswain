@@ -10,7 +10,11 @@ Install: `ln -sf "$PWD/tools/human/agy-next" ~/.local/bin/agy-next`
 
 `export COXD_URL=http://<board-host>:<port>` in your shell profile (required; exit 2 if unset), then:
 
-    agy-next <task_id>
+    agy-next <task_id> [--model <agy-model-id>]
+
+Model: `--model`, else `$AGY_MODEL`, else `gemini-4-argon-high`. See `agy models` for ids
+(Gemini models use the Gemini quota; Claude/GPT models inside Antigravity use a separate,
+smaller allowance). The model is printed and recorded in the log.
 
 It fetches the plan, fetches `~/repo/<repo>`, creates/reuses a worktree at
 `~/repo/<repo>.agy/<task_id>` on branch `coxd-agy/<task_id>`, writes the plan to a temp
