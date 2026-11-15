@@ -65,7 +65,7 @@ git(root, "clone", str(origin), str(human))
 
 pings: list = []
 notify.notify_async = lambda title, msg, priority="default": pings.append((title, msg))
-registry.save("widgets", {})
+registry.save("widgets", {"agy_send_enabled": True})  # today's paths; default is off
 ci_triage.repo_slug = lambda p: None  # no CI watch
 n = [0]
 
@@ -249,6 +249,119 @@ check("t3 pr_ready from agy branch", store.get_task(t3)["state"] == "pr_ready"
 check("claude commit on the agy branch",
       git(origin, "log", "--format=%s", "-1", f"refs/heads/coxd-agy/{t3}").strip() == "claude fix")
 check("claude-fix cost on card data", board._last_claude_fix_cost(store.events(t3)) == 0.5)
+
+# ---- agy_send_enabled OFF (the default): fixes always go to Claude ------------------------
+check("default (no key, no env) is off", agy_handoff.send_enabled("nosuchrepo") is False)
+registry.save("widgets", {})
+check("empty registry entry is off", agy_handoff.send_enabled("widgets") is False)
+registry.save("widgets", {"agy_send_enabled": "false"})
+check("string false is off", agy_handoff.send_enabled("widgets") is False)
+registry.save("widgets", {"agy_send_enabled": True})
+check("registry true is on", agy_handoff.send_enabled("widgets") is True)
+
+# needs_choice card (e.g. from before the flag flipped): no send button, send -> 400
+verdict[0] = lane.ReviewOutcome("reviewed", "fix", FINDINGS, 0.02)
+gate_result[0] = GREEN
+t5 = new_agy_task()
+human_push(t5, "o = 1\n")
+agy_handoff.scan()
+store.set_state(t5, "working")
+asyncio.run(loop.run_task(t5))
+check("flag on: t5 needs_choice", store.get_task(t5)["state"] == "needs_choice")
+row = next(x for x in c.get("/api/tasks").json()["tasks"] if x["id"] == t5)
+check("flag on: send button offered", row["choice"]["send_enabled"] is True)
+registry.save("widgets", {})
+row = next(x for x in c.get("/api/tasks").json()["tasks"] if x["id"] == t5)
+check("flag off: send button absent in payload", row["choice"]["send_enabled"] is False)
+r = c.post(f"/api/task/{t5}/agy-choice", json={"choice": "send"})
+check("flag off: send -> 400 disabled by owner", r.status_code == 400
+      and "disabled by owner" in r.json()["error"]
+      and store.get_task(t5)["state"] == "needs_choice")
+
+# red gate after an agy push -> Claude fix round (no waiting_agy), counted against the cap
+worker_calls.clear()
+gate_calls.clear()
+verdict[0] = lane.ReviewOutcome("reviewed", "approve", [], 0.02)
+gate_results = [RED, GREEN]  # red after the agy push, green after Claude's fix
+
+
+def seq_gate(wt, entry, path="full"):
+    gate_calls.append(wt)
+    return gate_results.pop(0) if len(gate_results) > 1 else gate_results[0]
+
+
+gate.run_gate = seq_gate
+t6 = new_agy_task()
+human_push(t6, "r = 1\n")
+agy_handoff.scan()
+store.set_state(t6, "working")
+gh_calls.clear()
+ship.subprocess.run = fake_run
+asyncio.run(loop.run_task(t6))
+ship.subprocess.run = real_run
+evs6 = store.events(t6)
+check("gate-red -> Claude worker, fresh session, gate text in prompt",
+      len(worker_calls) == 1 and worker_calls[0][0] is None
+      and "test_thing" in worker_calls[0][1])
+check("gate-red: no agy round opened", sum(1 for e in evs6 if e["kind"] == "plan") == 1
+      and store.get_task(t6)["state"] == "pr_ready")
+check("gate-red round counted against cap", agy_handoff.rounds_used(t6) == 1
+      and [e["data"] for e in evs6 if e["kind"] == "fix-round"]
+      == [{"via": "claude", "source": "gate"}])
+
+# round cap still applies when already at the cap
+gate.run_gate = lambda wt, entry, path="full": RED
+t7 = new_agy_task()
+for _ in range(agy_handoff.MAX_FIX_ROUNDS):
+    agy_handoff.record_claude_round(t7, "gate")
+human_push(t7, "s = 1\n")
+agy_handoff.scan()
+store.set_state(t7, "working")
+worker_calls.clear()
+asyncio.run(loop.run_task(t7))
+check("cap: red gate -> needs_human, no Claude round", not worker_calls
+      and store.get_task(t7)["state"] == "needs_human"
+      and store.get_task(t7)["reason"] == "gate-red")
+
+# review findings (verdict fix) -> straight to Claude, no needs_choice
+gate.run_gate = fake_gate
+gate_result[0] = GREEN
+verdicts = [lane.ReviewOutcome("reviewed", "fix", FINDINGS, 0.02),
+            lane.ReviewOutcome("reviewed", "approve", [], 0.02)]
+
+
+async def seq_review(diff, model, emit, effort="medium", *, worktree):
+    return verdicts.pop(0) if len(verdicts) > 1 else verdicts[0]
+
+
+lane.review = seq_review
+t8 = new_agy_task()
+human_push(t8, "u = 1\n")
+agy_handoff.scan()
+store.set_state(t8, "working")
+worker_calls.clear()
+ship.subprocess.run = fake_run
+asyncio.run(loop.run_task(t8))
+ship.subprocess.run = real_run
+check("review-fix -> Claude worker with findings, never needs_choice",
+      len(worker_calls) == 1 and "no input check" in worker_calls[0][1]
+      and store.get_task(t8)["state"] == "pr_ready")
+check("review-fix round counted", agy_handoff.rounds_used(t8) == 1)
+
+# review findings at the cap -> needs_human
+verdicts[:] = [lane.ReviewOutcome("reviewed", "fix", FINDINGS, 0.02)]
+t9 = new_agy_task()
+for _ in range(agy_handoff.MAX_FIX_ROUNDS):
+    agy_handoff.record_claude_round(t9, "review")
+human_push(t9, "v = 1\n")
+agy_handoff.scan()
+store.set_state(t9, "working")
+worker_calls.clear()
+asyncio.run(loop.run_task(t9))
+check("cap: review-fix -> needs_human", not worker_calls
+      and store.get_task(t9)["state"] == "needs_human")
+
+registry.save("widgets", {"agy_send_enabled": True})
 
 # ---- quota: review waits, never falls back -----------------------------------------------
 t4 = new_agy_task()

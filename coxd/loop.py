@@ -247,6 +247,12 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
         if agy_handoff.rounds_used(task_id) >= agy_handoff.MAX_FIX_ROUNDS:
             return _terminal(task_id, "needs_human", "gate-red")
         plan = f"The gate failed at {g['failing']}:\n{g.get('reason', '')}\n"
+        if not agy_handoff.send_enabled(repo):  # fixes always go to Claude, never back to agy
+            agy_handoff.record_claude_round(task_id, "gate")
+            return await _agy_claude_fix(
+                task_id, t, wt, cfg, emit, source="gate",
+                feedback="Fix this gate failure, then re-run tests and commit "
+                         "(do not push):\n" + plan)
         agy_handoff.next_round(task_id, plan, "agy", "gate")
         return "waiting_agy"
     store.set_gate_steps(task_id, g.get("steps"), g.get("test_output"))
@@ -266,6 +272,9 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
     if r.verdict == "fix" and r.findings:
         if agy_handoff.rounds_used(task_id) >= agy_handoff.MAX_FIX_ROUNDS:
             return _terminal(task_id, "needs_human", "review-findings")
+        if not agy_handoff.send_enabled(repo):  # no needs_choice stop: straight to Claude
+            agy_handoff.record_claude_round(task_id, "review")
+            return await _agy_claude_fix(task_id, t, wt, cfg, emit, source="review")
         store.set_state(task_id, "needs_choice", "review-findings")
         notify.notify_async("coxd · needs your choice (agy)",
                             f"{task_id}: review has findings — Send to agy or Let Claude fix",
@@ -274,7 +283,8 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
     return _terminal(task_id, "needs_human", "review-findings")
 
 
-async def _agy_claude_fix(task_id: str, t: dict, wt: Path, cfg: dict, emit) -> str:
+async def _agy_claude_fix(task_id: str, t: dict, wt: Path, cfg: dict, emit,
+                          source: str = "review", feedback: str | None = None) -> str:
     """"Let Claude fix": a fresh worker session on the worktree (already at the agy
     head), then the normal gate -> review -> ship tail. Pushes land on coxd-agy/<id>."""
     store.append_event(task_id, "agy-claude-fix-start", {})
@@ -282,9 +292,10 @@ async def _agy_claude_fix(task_id: str, t: dict, wt: Path, cfg: dict, emit) -> s
     sha = await asyncio.to_thread(agy_handoff.fetch_into_worktree, t)
     if not sha:
         return _terminal(task_id, "needs_human", "agy-fetch-error")
-    feedback = ("Address these review findings, then re-run tests and commit "
-                "(do not push):\n" + str(store.findings_of(store.get_task(task_id))))
-    emit("fix-trigger", {"source": "review", "feedback": feedback})
+    if feedback is None:
+        feedback = ("Address these review findings, then re-run tests and commit "
+                    "(do not push):\n" + str(store.findings_of(store.get_task(task_id))))
+    emit("fix-trigger", {"source": source, "feedback": feedback})
     wr = await lane.run_worker(wt, feedback, cfg["worker_model"], emit, resume=None,
                                effort=cfg["worker_effort"])
     store.set_session(task_id, wr.session_id)

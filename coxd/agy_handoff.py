@@ -5,12 +5,14 @@ signals or wraps agy; the only interface is the git branch and the board API.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
 from pathlib import Path
 
 import notify
+import registry
 import sandbox
 import store
 
@@ -19,6 +21,23 @@ AGY_PICKUP = "agy-pickup"  # queued reason: a new head was found on the agy bran
 MAX_FIX_ROUNDS = 2         # any mix of Send-to-agy / Let-Claude-fix / red-gate rounds
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEV = ("high", "med", "low")  # the review schema: shown as critical / major / minor
+
+
+_TRUE, _FALSE = ("1", "true", "yes", "on"), ("0", "false", "no", "off", "")
+
+
+def send_enabled(repo: str) -> bool:
+    """Owner decision (2026-11-15): agy only ever receives the human-reviewed plan, so
+    "Send to agy" (AI-written follow-ups routed back to agy) is OFF by default. Per-repo
+    registry key `agy_send_enabled` > env COXD_AGY_SEND_ENABLED > False. Anything that is
+    not an explicit true value (bool or true/1/yes/on string) counts as off."""
+    for cand in ((registry.load(repo) or {}).get("agy_send_enabled"),
+                 os.environ.get("COXD_AGY_SEND_ENABLED")):
+        if isinstance(cand, bool):
+            return cand
+        if isinstance(cand, str) and cand.strip().lower() in _TRUE + _FALSE[:-1]:
+            return cand.strip().lower() in _TRUE
+    return False
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -112,6 +131,11 @@ def next_round(task_id: str, plan_md: str, via: str, source: str) -> None:
     notify.notify_async("coxd · needs you (agy)", f"Run on your Mac: agy-next {task_id}")
 
 
+def record_claude_round(task_id: str, source: str) -> None:
+    """Count an automatic Claude fix round against the same cap as agy rounds."""
+    store.append_event(task_id, "fix-round", {"via": "claude", "source": source})
+
+
 def choose(task_id: str, choice: str) -> tuple[bool, str]:
     """Board buttons on a needs_choice task. Returns (ok, error)."""
     t = store.get_task(task_id)
@@ -124,6 +148,8 @@ def choose(task_id: str, choice: str) -> tuple[bool, str]:
     if rounds_used(task_id) >= MAX_FIX_ROUNDS:
         return False, "round cap reached"
     if choice == "send":
+        if not send_enabled(t["repo"]):
+            return False, "Send to agy is disabled by owner"
         findings = store.findings_of(t)
         if not store.cas_state(task_id, "needs_choice", "planning"):  # claim vs double click
             return False, "already chosen"
