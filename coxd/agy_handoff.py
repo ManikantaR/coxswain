@@ -21,6 +21,47 @@ AGY_PICKUP = "agy-pickup"  # queued reason: a new head was found on the agy bran
 MAX_FIX_ROUNDS = 2         # any mix of Send-to-agy / Let-Claude-fix / red-gate rounds
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEV = ("high", "med", "low")  # the review schema: shown as critical / major / minor
+_ISSUE_RE = re.compile(r"^GitHub issue:\s+\S+/issues/(\d+)\s*$", re.MULTILINE)
+
+
+def issue_and_deps(brief: str | None) -> tuple[int | None, list[int | str]]:
+    """Extract (issue_number, depends_on) from a task brief.
+
+    Same-repo `Depends on #N` targets are stored as ints; cross-repo URL targets
+    are stored as `"owner/repo#N"` so they never collide with local issue numbers.
+    """
+    if not brief:
+        return None, []
+    import intake  # lazy: avoids import coupling/cycles between intake and loop/agy_handoff
+    m = _ISSUE_RE.search(brief)
+    issue = int(m.group(1)) if m else None
+    deps: list[int | str] = []
+    seen: set[int | str] = set()
+    for dm in intake._DEP_RE.finditer(brief):
+        dep: int | str = int(dm.group(1)) if dm.group(1) else f"{dm.group(2)}#{int(dm.group(3))}"
+        if dep not in seen:
+            seen.add(dep)
+            deps.append(dep)
+    return issue, deps
+
+
+def plan_files(task: dict | str) -> set[str]:
+    """Return the planned files from the latest `plan` event for `task` (or task id)."""
+    t = store.get_task(task) if isinstance(task, str) else task
+    if not t:
+        return set()
+    evs = [e for e in store.events(t["id"]) if e["kind"] == "plan"]
+    if not evs:
+        return set()
+    latest = max(
+        enumerate(evs),
+        key=lambda ie: ((ie[1].get("data") or {}).get("round") or 0, ie[0]),
+    )[1]
+    data = latest.get("data") if isinstance(latest.get("data"), dict) else {}
+    if "files" in data and data["files"] is not None:
+        return {f for f in data["files"] if isinstance(f, str) and f}
+    import lane  # lazy: avoids pulling claude_agent_sdk into board/status imports
+    return set(lane.extract_plan_files(data.get("plan_md") or ""))
 
 
 _TRUE, _FALSE = ("1", "true", "yes", "on"), ("0", "false", "no", "off", "")
@@ -122,11 +163,19 @@ def format_findings(findings: list[dict]) -> str:
 def next_round(task_id: str, plan_md: str, via: str, source: str) -> None:
     """Record a fix round and park at waiting_agy with `plan_md` as the next plan."""
     t = store.get_task(task_id)
+    files = sorted(plan_files(t)) if t else []
+    issue, depends_on = issue_and_deps(t.get("brief") if t else None)
     store.set_plan(task_id, plan_md, t.get("base_sha"))
     rnd = 1 + sum(1 for e in store.events(task_id) if e["kind"] == "plan")
     store.append_event(task_id, "fix-round", {"via": via, "source": source})
-    store.append_event(task_id, "plan", {"plan_md": plan_md, "round": rnd,
-                                         "branch": f"{BRANCH_PREFIX}{task_id}"})
+    store.append_event(task_id, "plan", {
+        "plan_md": plan_md,
+        "round": rnd,
+        "branch": f"{BRANCH_PREFIX}{task_id}",
+        "files": files,
+        "issue": issue,
+        "depends_on": depends_on,
+    })
     store.set_state(task_id, "waiting_agy", f"run agy-next {task_id}")
     notify.notify_async("coxd · needs you (agy)", f"Run on your Mac: agy-next {task_id}")
 

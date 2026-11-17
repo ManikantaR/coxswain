@@ -64,7 +64,16 @@ async def _plan_and_hand_off(task_id: str, t: dict, emit) -> str:
         return _terminal(task_id, "needs_human", "agy-push-error")
     store.set_plan(task_id, pr.plan_md, sha)
     rnd = 1 + sum(1 for e in store.events(task_id) if e["kind"] == "plan")
-    emit("plan", {"plan_md": pr.plan_md, "branch": branch, "base_sha": sha, "round": rnd})
+    issue, depends_on = agy_handoff.issue_and_deps(t.get("brief"))
+    emit("plan", {
+        "plan_md": pr.plan_md,
+        "branch": branch,
+        "base_sha": sha,
+        "round": rnd,
+        "files": pr.files,
+        "issue": issue,
+        "depends_on": depends_on,
+    })
     store.set_state(task_id, "waiting_agy", f"run agy-next {task_id}")
     notify.notify_async("coxd · needs you (agy)", f"Run on your Mac: agy-next {task_id}")
     return "waiting_agy"
@@ -90,7 +99,16 @@ async def _plan_first(task_id: str, wt: Path, brief: str, cfg: dict, emit) -> st
         raise quota.QuotaWait(pr.quota_reset_at, "plan")
     if pr.outcome != "planned" or not pr.plan_md:
         return None
-    emit("plan", {"plan_md": pr.plan_md, "cost": pr.cost or 0.0, "phase": "plan"})
+    t = store.get_task(task_id)
+    issue, depends_on = agy_handoff.issue_and_deps(t.get("brief") if t else brief)
+    emit("plan", {
+        "plan_md": pr.plan_md,
+        "cost": pr.cost or 0.0,
+        "phase": "plan",
+        "files": pr.files,
+        "issue": issue,
+        "depends_on": depends_on,
+    })
     return pr.plan_md
 
 
