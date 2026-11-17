@@ -59,7 +59,8 @@ assert r["plan_md"] is None and r["lane"] == "claude", r
 assert r["models"] == {"0": "Opus 4.7"}, r["models"]  # config fallback, no result yet
 
 store.append_event("pl1", "result", {"model": "claude-sonnet-5-5", "cost": 0.12})
-store.append_event("pl1", "plan", {"plan_md": "# Plan\n<script>x</script>", "cost": 0.12, "phase": "plan"})
+store.append_event("pl1", "plan", {"plan_md": "# Plan\n<script>x</script>",
+                              "cost": 0.12, "phase": "plan"})
 r = _row("pl1")
 assert r["stage"] == {"i": 0, "status": "active"} and r["plan_cost"] == 0.12, r
 assert r["models"]["0"] == "Sonnet 5.5", r["models"]
@@ -90,7 +91,8 @@ ev = lambda k, d: {"kind": k, "data": d, "ts": 1.0}  # noqa: E731
 assert board._plan_info([], "working") is None
 i = board._plan_info([ev("plan", {"plan_md": "x", "cost": True})], "working")
 assert i["plan_cost"] == 0.0 and i["plan_model"] is None, i
-assert board._plan_info([ev("plan", {"plan_md": "x", "cost": "n/a"})], "working")["plan_cost"] == 0.0
+i = board._plan_info([ev("plan", {"plan_md": "x", "cost": "n/a"})], "working")
+assert i["plan_cost"] == 0.0, i
 i = board._plan_info([ev("config", {"planner_model": "claude-sonnet-5-5"}),
                       ev("plan", {"plan_md": "x"})], "working")
 assert i["plan_model"] == "Sonnet 5.5", i
