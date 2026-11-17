@@ -41,3 +41,64 @@ assert "function timingLine" in board._HTML and "data-run=" in board._HTML
 assert "waiting_quota:['b-warn'" in board._HTML
 assert "t.timing" in board._HTML.split("const k=JSON.stringify")[1][:400]
 print("ok test_board factory/offline")
+
+# --- Claude-lane PLAN step (plan_first) --------------------------------------
+PLAN5 = ["plan", "implement", "gate", "review", "merge"]
+
+
+def _row(tid):
+    return next(r for r in board._tasks_payload()["tasks"] if r["id"] == tid)
+
+
+store.create_task("pl1", "aura-tutor", "brief", "/wt", repo_path="/repo/aura-tutor")
+store.set_state("pl1", "planning")
+store.append_event("pl1", "config", {"planner_model": "claude-opus-4-7"})
+r = _row("pl1")
+assert r["stages"] == PLAN5 and r["stage"] == {"i": 0, "status": "active"}, r
+assert r["plan_md"] is None and r["lane"] == "claude", r
+assert r["models"] == {"0": "Opus 4.7"}, r["models"]  # config fallback, no result yet
+
+store.append_event("pl1", "result", {"model": "claude-sonnet-5-5", "cost": 0.12})
+store.append_event("pl1", "plan", {"plan_md": "# Plan\n<script>x</script>",
+                              "cost": 0.12, "phase": "plan"})
+r = _row("pl1")
+assert r["stage"] == {"i": 0, "status": "active"} and r["plan_cost"] == 0.12, r
+assert r["models"]["0"] == "Sonnet 5.5", r["models"]
+store.set_state("pl1", "working")
+store.append_event("pl1", "result", {"model": "claude-opus-4-7", "cost": 0.5})
+r = _row("pl1")
+assert r["stages"] == PLAN5 and r["stage"] == {"i": 1, "status": "active"}, r
+assert r["models"] == {"0": "Sonnet 5.5", "1": "Opus 4.7"}, r["models"]
+assert r["plan_md"] == "# Plan\n<script>x</script>" and r["plan_cost"] == 0.12, r
+assert r["lane"] == "claude"
+store.set_state("pl1", "reviewing")
+store.append_event("pl1", "result", {"model": "claude-sonnet-5-5", "cost": 0.1})
+assert _row("pl1")["stage"]["i"] == 3 and _row("pl1")["models"]["3"] == "Sonnet 5.5"
+store.set_state("pl1", "landed", "merged")
+assert _row("pl1")["stage"] == {"i": 4, "status": "done"}
+
+# No plan: today's 4 stages, untouched payload shape.
+store.create_task("np1", "aura-tutor", "brief", "/wt", repo_path="/repo/aura-tutor")
+store.set_state("np1", "working")
+store.append_event("np1", "result", {"model": "claude-opus-4-7", "cost": 0.5})
+r = _row("np1")
+assert r["stages"] is None and r["plan_md"] is None and r["plan_cost"] is None, r
+assert r["stage"] == board._stage("working", None)
+assert r["models"] == {"0": "Opus 4.7"}, r["models"]
+
+# _plan_info edge cases
+ev = lambda k, d: {"kind": k, "data": d, "ts": 1.0}  # noqa: E731
+assert board._plan_info([], "working") is None
+i = board._plan_info([ev("plan", {"plan_md": "x", "cost": True})], "working")
+assert i["plan_cost"] == 0.0 and i["plan_model"] is None, i
+i = board._plan_info([ev("plan", {"plan_md": "x", "cost": "n/a"})], "working")
+assert i["plan_cost"] == 0.0, i
+i = board._plan_info([ev("config", {"planner_model": "claude-sonnet-5-5"}),
+                      ev("plan", {"plan_md": "x"})], "working")
+assert i["plan_model"] == "Sonnet 5.5", i
+
+# front end: escaped markdown only, cost format, plan step
+assert "function planCardHtml" in board._HTML and "mdHtml(t.plan_md)" in board._HTML
+assert "(plan $" in board._HTML and "PLAN_TIP" in board._HTML
+assert "t.plan_cost" in board._HTML.split("const k=JSON.stringify")[1][:400]
+print("ok test_board plan step")
