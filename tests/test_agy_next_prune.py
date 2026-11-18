@@ -149,7 +149,8 @@ def test_merged_clean_removed(tmp_path):
     branches = sh("git", "-C", str(root / "repo/proj"), "branch")
     assert branch not in branches
     calls = [json.loads(x) for x in (root / "gh_calls.jsonl").read_text().splitlines()]
-    assert ["--head", branch, "--state", "all", "--json", "state,number,headRefOid,isCrossRepository"] == calls[0][-6:]
+    fields = "state,number,headRefOid,isCrossRepository"
+    assert ["--head", branch, "--state", "all", "--json", fields] == calls[0][-6:]
 
 
 def test_merged_dirty_kept(tmp_path):
@@ -365,7 +366,8 @@ def test_prune_cli_validation_and_skips_grants(tmp_path):
 def commit_in(wt, env, name="extra.txt"):
     (wt / name).write_text("work\n")
     sh("git", "-C", str(wt), "add", name, env=env)
-    sh("git", "-C", str(wt), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "wip", env=env)
+    sh("git", "-C", str(wt), "-c", "user.name=t", "-c", "user.email=t@t",
+       "commit", "-q", "-m", "wip", env=env)
     return sh("git", "-C", str(wt), "rev-parse", "HEAD", env=env).strip()
 
 
