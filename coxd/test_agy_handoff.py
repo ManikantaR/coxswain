@@ -148,7 +148,8 @@ check("board needs_you + cmd", row["needs_you"] and row["agy_cmd"] == f"agy-next
 check("board agy lane + stages + plan_md + split",
       row["lane"] == "agy" and row["stages"] == ["plan", "agy", "gate", "review", "pr"]
       and row["stage"]["i"] == 1 and row["plan_md"] == t["plan_md"]
-      and set(row["claude_split"]) == {"plan", "review"} and row["plan_cost"] is None)
+      and set(row["claude_split"]) == {"plan", "implement", "fix", "review"}
+      and row["plan_cost"] is None)
 rrow = next(x for x in c.get("/api/tasks").json()["tasks"] if x["id"] == ready["id"])
 check("ready row stays claude lane", rrow["lane"] == "claude" and rrow["stages"] is None
       and rrow["plan_md"] is None and rrow["claude_split"] is None)
