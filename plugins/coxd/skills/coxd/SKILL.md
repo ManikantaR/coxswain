@@ -67,6 +67,18 @@ If the board has owner login on (`COXD_OWNER_USER` set), local POSTs get 403 unl
 - On restart, coxd flags in-flight tasks `needs_human` (orphaned) — they need a **manual Resume-w/-note**.
 - **Do not add coxd surface** until `DESIGN-V35.md §3` (≤1-unstick backlog) is recorded met (§4 freeze).
 
+## agy queue: lead ordering rules
+When queuing issues for the `coxd-agy` (`agy-handoff`) lane, follow these lead-only ordering and triage rules:
+- **Order `size:S` before `size:M`.** Queue small tasks ahead of medium tasks.
+- **Never queue complex work for agy.** There is no `size:L` label; complex work stays on the Claude lane.
+- **Never queue repos outside the agy allow-list.**
+- **Model sizing:** Hydrogen takes `size:S`; Argon takes `size:M`.
+- **Keep 2-3 agy plans queued at a time.**
+- **Prefer non-overlapping areas across queued issues.**
+- **Dependencies:** Add the `coxd-agy` label to an issue containing `Depends on #N` only after #N has merged.
+- **Hard rule:** coxd never starts, signals, schedules, waits on, or parses `agy`. Only the human's `tools/human/agy-next` runs it.
+- **Label provisioning:** `size:S` and `size:M` are created automatically by intake `_ensure_labels` (`coxd/intake.py`).
+
 ## Where things stand (keep current; see the captain's memory / DECISIONS.md)
 - coxd is proven task-by-task but **not hands-off**; the plan is: prove **≤1-unstick** on a real
   backlog → record §3 → then build the hands-off bundle (crash auto-resume, auto-greenlight review

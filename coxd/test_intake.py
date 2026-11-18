@@ -116,6 +116,9 @@ registry.save("widgets", {"intake": True})
 # trusted label: dispatched once, labels swap, second poll no-op
 add(1)
 check("poll takes 1", intake.poll_once() == 1)
+check("size labels created",
+      any(c[:3] == ["label", "create", "size:S"] for c in calls)
+      and any(c[:3] == ["label", "create", "size:M"] for c in calls))
 check("dispatched once w/ issue url", len(dispatched) == 1 and URL + "1" in dispatched[0])
 check("labels swapped", names(1) == ["coxd-working"])
 check("board status", intake.status()["taken"] == 1 and intake.status()["at"])

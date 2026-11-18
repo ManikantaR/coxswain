@@ -39,6 +39,8 @@ LABELS = {
     UNTRUSTED: ("coxd-ready was added by an untrusted user", "b60205"),
     PII_BLOCK: ("coxd blocked: possible sensitive data", "b60205"),
     NEEDS_HUMAN: ("coxd task needs a human look", "d93f0b"),
+    "size:S": ("agy queue: small task (Hydrogen)", "c5def5"),
+    "size:M": ("agy queue: medium task (Argon)", "bfd4f2"),
 }
 MAX_PER_REPO = 3
 _TRUSTED_PERMS = {"write", "maintain", "admin"}
