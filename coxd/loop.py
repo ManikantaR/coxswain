@@ -172,6 +172,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
     """The tail shared by a fresh implement (run_task) and a human-resumed retry
     (resume_task): gate (+ resumed fix loop) -> one review pass -> ship -> CI watch."""
     fixes = 0
+    mode = registry.fix_mode(entry)
+    fresh = mode == "fresh"
     while True:
         store.set_state(task_id, "gating")
         g = await asyncio.to_thread(gate.run_gate, wt, entry)
@@ -185,8 +187,10 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         feedback = (f"The gate failed at {g['failing']}:\n{g.get('reason', '')}\n"
                    "Fix it minimally, re-run the check, and commit. Do not push.")
         emit("fix-trigger", {"source": "gate", "failing": g["failing"],
-                             "reason": g.get("reason", ""), "feedback": feedback})
-        if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort):
+                             "reason": g.get("reason", ""), "feedback": feedback,
+                             "fix-mode": mode})
+        if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort,
+                             fresh=fresh):
             # The worker changed nothing twice. That can be right (the gate was
             # flaky), so re-run the gate once before paging a person.
             store.set_state(task_id, "gating")
@@ -216,8 +220,10 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
             return _terminal(task_id, "needs_human", "review-findings")
         feedback = ("Address these review findings, then re-run tests and commit "
                    "(do not push):\n" + str(r.findings))
-        emit("fix-trigger", {"source": "review", "findings": r.findings, "feedback": feedback})
-        if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort):
+        emit("fix-trigger", {"source": "review", "findings": r.findings, "feedback": feedback,
+                             "fix-mode": mode})
+        if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort,
+                             fresh=fresh):
             return _terminal(task_id, "needs_human", "worker-stalled")
         g = await asyncio.to_thread(gate.run_gate, wt, entry)
         emit("gate", g)
@@ -442,9 +448,38 @@ def _fresh_prompt(task_id: str, wt: Path, feedback: str) -> str:
             "Do not push.")
 
 
+MAX_BRIEF_DIFF_CHARS = 60_000
+
+
+def _fix_brief(task_id: str, wt: Path, feedback: str) -> str:
+    """Compact brief for a `fix_mode=fresh` round: intent + the branch's current diff +
+    the feedback, so a new session needs no replay of the implement conversation."""
+    t = store.get_task(task_id)
+    reg = registry.load(t["repo"]) or {}
+    intent = registry.data_guard_brief(reg, t["brief"])  # keep the synthetic-only rule
+    base = gate._base_ref(wt)
+    try:  # three-dot: changes on this branch since the merge-base, as gate.diff does
+        stat = sandbox.run_in_worktree(["git", "diff", f"{base}...HEAD", "--stat"], wt).stdout
+    except Exception:
+        stat = ""
+    try:
+        full = gate.diff(wt) or ""
+    except Exception:
+        full = ""
+    if len(full) > MAX_BRIEF_DIFF_CHARS:
+        full = (full[:MAX_BRIEF_DIFF_CHARS] + f"\n[truncated at {MAX_BRIEF_DIFF_CHARS} chars; "
+                f"run `git diff {base}...HEAD` for the rest]")
+    return (f"Task brief (the original intent):\n{intent}\n\n"
+            "Work so far: this branch already contains these changes "
+            f"(vs {base}).\n\nDiff stat:\n{stat.strip() or '(unavailable)'}\n\n"
+            f"Full diff:\n{full.strip() or '(unavailable)'}\n\n"
+            f"Feedback to address in this round:\n{feedback}\n\n"
+            "Fix minimally, re-run the checks and commit. Do not push.")
+
+
 async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
                       effort: str = "medium", stall_is_terminal: bool = True,
-                      detect_stall: bool = True) -> bool:
+                      detect_stall: bool = True, fresh: bool = False) -> bool:
     """Run one fix round on the resumed session. Returns True when the worker is
     stalled (caller decides: gate path re-runs the gate once, review path stops
     with needs_human/worker-stalled).
@@ -455,11 +490,17 @@ async def _resume_fix(task_id: str, wt: Path, model: str, emit, feedback: str,
     task). If that also makes no change (or the cap is spent) the round is stalled,
     unless `stall_is_terminal=False` (human note: "no change needed" is valid, so
     return False and follow the normal path). `detect_stall=False` skips stall
-    handling entirely (automatic resumes)."""
+    handling entirely (automatic resumes).
+
+    `fresh=True` (per-repo `fix_mode: fresh`) starts a NEW session with a compact brief
+    (`_fix_brief`) instead of resuming the full implement history."""
     store.set_state(task_id, "fixing")
-    sid = store.get_task(task_id)["session_id"]  # resume the SAME session (cheap)
+    if fresh:
+        sid, prompt = None, _fix_brief(task_id, wt, feedback)
+    else:
+        sid, prompt = store.get_task(task_id)["session_id"], feedback  # resume the SAME session
     before = _snapshot(wt)
-    wr = await lane.run_worker(wt, feedback, model, emit, resume=sid, effort=effort)
+    wr = await lane.run_worker(wt, prompt, model, emit, resume=sid, effort=effort)
     store.add_cost(task_id, wr.cost)
     store.set_summary(task_id, wr.summary)
     if wr.session_id:

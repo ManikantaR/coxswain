@@ -929,7 +929,7 @@ if(e.kind==='gate'){const g=e.data||{};if(g.passed)return t+'  ✓ gate passed'+
 return t+'  ✕ gate FAILED at '+g.failing+(g.reason?'\\n      reason: '+String(g.reason).slice(0,600).split('\\n').join('\\n      '):'')}
 if(e.kind==='review'){const r=e.data||{};return t+'  review — outcome:'+r.outcome+' verdict:'+r.verdict+'\\n'+fmtFindings(r.findings)}
 if(e.kind==='result'){const r=e.data||{};return t+'    ['+(r.model||'unknown')+'] $'+(typeof r.cost==='number'?r.cost.toFixed(3):'?')+' · '+(r.num_turns==null?'?':r.num_turns)+' turns'}
-if(e.kind==='fix-trigger'){const f=e.data||{};return t+'  → sending back to fix (source: '+f.source+')\\n'+
+if(e.kind==='fix-trigger'){const f=e.data||{};return t+'  → sending back to fix (source: '+f.source+(f['fix-mode']?', fix-mode: '+f['fix-mode']:'')+')\\n'+
   (f.source==='gate'?'    '+f.failing+': '+String(f.reason||'').slice(0,400).split('\\n').join('\\n    '):fmtFindings(f.findings))}
 return t+'    '+e.kind+' '+JSON.stringify(e.data).slice(0,90)}
 const prevState=new Map();
