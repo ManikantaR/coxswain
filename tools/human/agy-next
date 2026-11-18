@@ -4,30 +4,272 @@
 # confirmation) publishes branch coxd-agy/<task_id> to origin.
 set -euo pipefail
 
-usage() { echo "usage: agy-next <task_id> [--model <agy-model-id>] [--no-sandbox]   (model default \$AGY_MODEL or gemini-4-argon-high; list: agy models)" >&2; exit 2; }
+usage() {
+  echo "usage: agy-next <task_id> [--model <agy-model-id>] [--no-sandbox]   (model default \$AGY_MODEL or gemini-4-argon-high; list: agy models)" >&2
+  echo "       agy-next --prune [--dry-run]" >&2
+  exit 2
+}
 [ $# -ge 1 ] || usage
-tid=$1; shift
-model=${AGY_MODEL:-gemini-4-argon-high}
-sandbox=1  # agy --sandbox (terminal restrictions) unless --no-sandbox
-while [ $# -gt 0 ]; do
+prune=0
+dry=0
+tid=""
+if [ "$1" = "--prune" ]; then
+  prune=1
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --dry-run) [ "$dry" = 0 ] || usage; dry=1; shift ;;
+      *) usage ;;
+    esac
+  done
+else
   case $1 in
-    --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
-    --no-sandbox) sandbox=0; shift ;;
-    *) usage ;;
+    -*) usage ;;
   esac
-done
-case $model in
-  ''|*[!A-Za-z0-9._-]*) echo "agy-next: invalid model id '$model'" >&2; exit 2 ;;
-esac
-case $tid in
-  ''|*[!A-Za-z0-9._-]*|.*) echo "agy-next: invalid task id" >&2; exit 2 ;;
-esac
+  tid=$1; shift
+  model=${AGY_MODEL:-gemini-4-argon-high}
+  sandbox=1  # agy --sandbox (terminal restrictions) unless --no-sandbox
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
+      --no-sandbox) sandbox=0; shift ;;
+      *) usage ;;
+    esac
+  done
+  case $model in
+    ''|*[!A-Za-z0-9._-]*) echo "agy-next: invalid model id '$model'" >&2; exit 2 ;;
+  esac
+  case $tid in
+    ''|*[!A-Za-z0-9._-]*|.*) echo "agy-next: invalid task id" >&2; exit 2 ;;
+  esac
+fi
 
 if [ -z "${COXD_URL:-}" ]; then
   echo "agy-next: COXD_URL is not set (e.g. export COXD_URL=http://host:port in your shell profile)" >&2
   exit 2
 fi
 command -v python3 >/dev/null || { echo "agy-next: python3 required" >&2; exit 2; }
+
+REPO_ROOT=${AGY_REPO_ROOT:-$HOME/repo}
+LOG=${AGY_NEXT_LOG:-$HOME/.local/state/agy-next.log}
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/agy-next.XXXXXX")
+# Keep agy's raw stream of every run (for "why was it denied?"); newest 20 kept.
+RUNS=${AGY_NEXT_RUNS:-$HOME/.local/state/agy-next/runs}
+keep_stream() {
+  [ -s "$tmp/agy.out" ] || return 0
+  mkdir -p "$RUNS" && cp "$tmp/agy.out" "$RUNS/${tid:-unknown}-$(date +%Y%m%d-%H%M%S).jsonl" 2>/dev/null || true
+  ls -t "$RUNS"/*.jsonl 2>/dev/null | tail -n +21 | while read -r f; do rm -f "$f"; done
+}
+trap 'keep_stream; rm -rf "$tmp"' EXIT
+
+prune_all() { # <quiet|loud> <dry|nodry> [exclude_tid]
+  local mode=$1 dry_mode=$2 exclude_tid=${3:-}
+  (
+    set +e
+    if [ "$mode" = "quiet" ]; then
+      exec 2>/dev/null
+    fi
+    local dry_run=0
+    [ "$dry_mode" = "dry" ] && dry_run=1
+
+    # Board tasks (all=1 includes archived); fetch failure -> empty set (never remove on unknown).
+    : > "$tmp/tasks.json"
+    curl -fsS -m 15 --connect-timeout 5 "${COXD_URL%/}/api/tasks?all=1" -o "$tmp/tasks.json" || : > "$tmp/tasks.json"
+    python3 - "$tmp/tasks.json" > "$tmp/landed_ids.txt" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    data = {}
+tasks = data.get("tasks") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+for t in tasks or []:
+    if isinstance(t, dict) and t.get("id") and (t.get("state") == "landed" or bool(t.get("archived"))):
+        print(str(t["id"]))
+PY
+
+    ${AGY_PS:-ps -eo pid,args} > "$tmp/ps.txt" || : > "$tmp/ps.txt"
+
+    local removed=0 remote_deleted=0
+    local kept=()
+    local agy_dir repo_name main wt wt_id branch pr_json pr_merged merged_oids board_landed dirty
+    local gh_timeout=()
+    command -v timeout >/dev/null 2>&1 && gh_timeout=(timeout "${AGY_GH_TIMEOUT:-20}")
+
+    # True if origin has $branch and its tip is a merged PR head (never delete newer pushed work).
+    remote_is_merged_head() {
+      local rsha m
+      rsha=$(git -C "$main" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null | cut -f1) || return 1
+      [ -n "$rsha" ] || return 1
+      while read -r m; do
+        [ "${m#MERGED }" = "$rsha" ] && return 0
+      done <<< "$merged_oids"
+      return 1
+    }
+
+    for agy_dir in "$REPO_ROOT"/*.agy; do
+      [ -d "$agy_dir" ] || continue
+      repo_name=${agy_dir##*/}
+      repo_name=${repo_name%.agy}
+      main="$REPO_ROOT/$repo_name"
+      [ -e "$main/.git" ] || continue
+
+      for wt in "$agy_dir"/*; do
+        [ -d "$wt" ] || continue
+        wt_id=${wt##*/}
+        case $wt_id in
+          ''|*[!A-Za-z0-9._-]*|.*) continue ;;
+        esac
+        if [ -n "$exclude_tid" ] && [ "$wt_id" = "$exclude_tid" ]; then
+          continue
+        fi
+        branch="coxd-agy/$wt_id"
+
+        # Merged same-repo PRs for this head branch (fork PRs that reuse the branch name are
+        # ignored). merged_oids = "MERGED <head sha>" lines for those PRs.
+        pr_merged=0
+        merged_oids=""
+        if command -v gh >/dev/null 2>&1; then
+          pr_json=$(cd "$main" && ${gh_timeout[@]+"${gh_timeout[@]}"} gh pr list --head "$branch" --state all \
+            --json state,number,headRefOid,isCrossRepository) || pr_json=""
+          merged_oids=$(python3 - "$pr_json" <<'PY'
+import json, sys
+try:
+    prs = json.loads(sys.argv[1])
+except Exception:
+    prs = []
+found = False
+for p in prs or []:
+    if isinstance(p, dict) and p.get("state") == "MERGED" and not p.get("isCrossRepository"):
+        found = True
+        print("MERGED " + str(p.get("headRefOid") or ""))
+sys.exit(0 if found else 1)
+PY
+          ) && pr_merged=1
+        fi
+
+        board_landed=0
+        if grep -Fxq -- "$wt_id" "$tmp/landed_ids.txt" 2>/dev/null; then
+          board_landed=1
+        fi
+
+        if [ "$pr_merged" -eq 0 ] && [ "$board_landed" -eq 0 ]; then
+          kept+=("$wt_id: pr open/unknown")
+          continue
+        fi
+
+        if [ ! -e "$wt/.git" ]; then
+          kept+=("$wt_id: not a git worktree")
+          continue
+        fi
+        dirty=$(git -C "$wt" status --porcelain) || dirty="err"
+        if [ -n "$dirty" ]; then
+          kept+=("$wt_id: uncommitted changes")
+          continue
+        fi
+
+        # Unpushed work: commits on the branch / worktree HEAD that are neither on an origin
+        # remote ref nor contained in a merged PR's head are lost by remove + branch -D.
+        # Fail closed on any git error.
+        local unpushed=0 ref_sha ahead covered line oid
+        for ref_sha in "$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)" \
+                       "$(git -C "$main" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"; do
+          [ -n "$ref_sha" ] || continue
+          ahead=$(git -C "$main" rev-list "$ref_sha" --not --remotes=origin 2>/dev/null) || { unpushed=1; break; }
+          [ -n "$ahead" ] || continue
+          covered=0
+          while read -r line; do
+            oid=${line#MERGED }
+            { [ -n "$oid" ] && [ "$oid" != "MERGED" ]; } || continue
+            if git -C "$main" merge-base --is-ancestor "$ref_sha" "$oid" >/dev/null 2>&1; then
+              covered=1
+              break
+            fi
+          done <<< "$merged_oids"
+          [ "$covered" -eq 1 ] || { unpushed=1; break; }
+        done
+        if [ "$unpushed" -eq 1 ]; then
+          kept+=("$wt_id: unpushed commits")
+          continue
+        fi
+
+        if python3 - "$tmp/ps.txt" "$$" "$wt_id" "$repo_name" <<'PY'
+import re, sys
+ps_file, my_pid, wt_id, repo = sys.argv[1:5]
+try:
+    lines = open(ps_file).read().splitlines()
+except OSError:
+    lines = []
+agy_re = re.compile(r"(?:^|[\s/])agy(?:-next)?(?=$|\s)")
+id_re = re.compile(r"(?<![A-Za-z0-9._/-])" + re.escape(wt_id) + r"(?![A-Za-z0-9._/-])")
+path_re = re.compile(r"(?<![A-Za-z0-9._-])" + re.escape(f"{repo}.agy/{wt_id}") + r"(?![A-Za-z0-9._-])")
+pid_line_re = re.compile(r"^\s*(\d+)\s+(.*)$")
+for line in lines:
+    m = pid_line_re.match(line)
+    if m:
+        if m.group(1) == my_pid:
+            continue
+        args = m.group(2)
+    else:
+        args = line
+    if agy_re.search(args) and (id_re.search(args) or path_re.search(args)):
+        sys.exit(0)
+sys.exit(1)
+PY
+        then
+          kept+=("$wt_id: active run")
+          continue
+        fi
+
+        if [ "$dry_run" -eq 1 ]; then
+          echo "would remove $wt_id ($wt)"
+          removed=$((removed + 1))
+          if [ "$pr_merged" -eq 1 ] && remote_is_merged_head; then
+            echo "would delete remote $branch"
+          fi
+        else
+          if git -C "$main" worktree remove --force "$wt"; then
+            if git -C "$main" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1; then
+              git -C "$main" branch -D "$branch" >/dev/null 2>&1 || true
+            fi
+            removed=$((removed + 1))
+            if [ "$pr_merged" -eq 1 ] && remote_is_merged_head; then
+              echo "deleting remote $branch"
+              if [ "$mode" = "quiet" ]; then
+                git -C "$main" push origin --delete "$branch" >/dev/null 2>&1 && remote_deleted=$((remote_deleted + 1))
+              else
+                git -C "$main" push origin --delete "$branch" && remote_deleted=$((remote_deleted + 1))
+              fi
+            fi
+          else
+            kept+=("$wt_id: remove failed")
+          fi
+        fi
+      done
+
+      if [ "$dry_run" -eq 0 ]; then
+        git -C "$main" worktree prune >/dev/null 2>&1 || true
+      fi
+    done
+
+    local kept_count=${#kept[@]} verb=removed
+    [ "$dry_run" -eq 1 ] && verb="would remove"
+    if [ "$mode" = "loud" ] || [ "$removed" -gt 0 ] || [ "$remote_deleted" -gt 0 ]; then
+      if [ "$kept_count" -gt 0 ]; then
+        local reasons
+        reasons=$(python3 -c 'import sys; print("; ".join(sys.argv[1:]))' "${kept[@]}")
+        echo "agy-next prune: $verb $removed, kept $kept_count ($reasons)"
+      else
+        echo "agy-next prune: $verb $removed, kept 0"
+      fi
+    fi
+  ) || true
+}
+
+if [ "$prune" = 1 ]; then
+  prune_all loud "$([ "$dry" = 1 ] && echo dry || echo nodry)"
+  exit 0
+fi
 
 # Refuse to run while the Antigravity app holds saved "always allow" approvals: agy adds
 # them to every run and they can be far broader than our allow-list (e.g. command(gh)).
@@ -46,19 +288,6 @@ if [ -n "$grants" ]; then
   echo "Remove them (Antigravity Settings, or userSettings.globalPermissionGrants in ~/.gemini/config/config.json) and re-run." >&2
   exit 2
 fi
-
-REPO_ROOT=${AGY_REPO_ROOT:-$HOME/repo}
-LOG=${AGY_NEXT_LOG:-$HOME/.local/state/agy-next.log}
-
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/agy-next.XXXXXX")
-# Keep agy's raw stream of every run (for "why was it denied?"); newest 20 kept.
-RUNS=${AGY_NEXT_RUNS:-$HOME/.local/state/agy-next/runs}
-keep_stream() {
-  [ -s "$tmp/agy.out" ] || return 0
-  mkdir -p "$RUNS" && cp "$tmp/agy.out" "$RUNS/$tid-$(date +%Y%m%d-%H%M%S).jsonl" 2>/dev/null || true
-  ls -t "$RUNS"/*.jsonl 2>/dev/null | tail -n +21 | while read -r f; do rm -f "$f"; done
-}
-trap 'keep_stream; rm -rf "$tmp"' EXIT
 
 curl -fsS "${COXD_URL%/}/api/task/$tid/plan" -o "$tmp/plan.json" \
   || { echo "agy-next: could not fetch plan for $tid" >&2; exit 1; }
@@ -87,6 +316,9 @@ wt="$REPO_ROOT/$repo.agy/$tid"
 [ -e "$main/.git" ] || { echo "agy-next: $main is not a git repo" >&2; exit 1; }
 
 git -C "$main" fetch --quiet origin
+if [ "${AGY_NEXT_PRUNE:-1}" != "0" ]; then
+  prune_all quiet nodry "$tid" || true
+fi
 start=$base
 if git -C "$main" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
   start="origin/$branch"
