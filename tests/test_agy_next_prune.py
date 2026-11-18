@@ -149,7 +149,7 @@ def test_merged_clean_removed(tmp_path):
     branches = sh("git", "-C", str(root / "repo/proj"), "branch")
     assert branch not in branches
     calls = [json.loads(x) for x in (root / "gh_calls.jsonl").read_text().splitlines()]
-    assert ["--head", branch, "--state", "all", "--json", "state,number"] == calls[0][-6:]
+    assert ["--head", branch, "--state", "all", "--json", "state,number,headRefOid,isCrossRepository"] == calls[0][-6:]
 
 
 def test_merged_dirty_kept(tmp_path):
@@ -244,11 +244,13 @@ def test_board_landed_or_archived_without_gh_removed(tmp_path):
 def test_dry_run_leaves_everything_unchanged(tmp_path):
     env, bare, root = setup_prune(tmp_path)
     wt, branch = add_worktree(root, env, "T1", push_origin=True)
-    set_gh_pr(root, branch, [{"number": 9, "state": "MERGED"}])
+    head = sh("git", "-C", str(wt), "rev-parse", "HEAD", env=env).strip()
+    set_gh_pr(root, branch, [{"number": 9, "state": "MERGED", "headRefOid": head}])
 
     r = run_prune(env, "--dry-run")
     assert r.returncode == 0, r.stderr
     assert "would remove" in r.stdout
+    assert "would remove 1, kept 0" in r.stdout
     assert f"would delete remote {branch}" in r.stdout
     assert wt.exists()
     assert branch in sh("git", "-C", str(root / "repo/proj"), "branch")
@@ -266,7 +268,8 @@ def test_remote_branch_deleted_once(tmp_path):
     git_wrap.chmod(0o755)
 
     wt, branch = add_worktree(root, env, "T1", push_origin=True)
-    set_gh_pr(root, branch, [{"number": 11, "state": "MERGED"}])
+    head = sh("git", "-C", str(wt), "rev-parse", "HEAD", env=env).strip()
+    set_gh_pr(root, branch, [{"number": 11, "state": "MERGED", "headRefOid": head}])
     git_log.write_text("")
 
     r1 = run_prune(env)
@@ -357,3 +360,52 @@ def test_prune_cli_validation_and_skips_grants(tmp_path):
     cfg.write_text(json.dumps({"userSettings": {"globalPermissionGrants": {"allow": ["x"]}}}))
     env["AGY_APP_CONFIG"] = str(cfg)
     assert run_prune(env).returncode == 0
+
+
+def commit_in(wt, env, name="extra.txt"):
+    (wt / name).write_text("work\n")
+    sh("git", "-C", str(wt), "add", name, env=env)
+    sh("git", "-C", str(wt), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "wip", env=env)
+    return sh("git", "-C", str(wt), "rev-parse", "HEAD", env=env).strip()
+
+
+def test_unpushed_commits_kept(tmp_path):
+    env, _, root = setup_prune(tmp_path)
+    wt, branch = add_worktree(root, env, "T1")
+    commit_in(wt, env)
+    set_gh_pr(root, branch, [{"number": 1, "state": "MERGED", "headRefOid": "0" * 40}])
+    set_board_tasks(root, [{"id": "T1", "state": "landed", "archived": True}])
+
+    r = run_prune(env)
+    assert r.returncode == 0, r.stderr
+    assert wt.exists()
+    assert "T1: unpushed commits" in r.stdout
+    assert branch in sh("git", "-C", str(root / "repo/proj"), "branch")
+
+
+def test_commits_after_merged_head_kept_but_merged_head_removed(tmp_path):
+    env, _, root = setup_prune(tmp_path)
+    wt1, b1 = add_worktree(root, env, "T1")
+    merged = commit_in(wt1, env)  # head of the merged PR (not on any remote ref: squash-merged)
+    set_gh_pr(root, b1, [{"number": 1, "state": "MERGED", "headRefOid": merged}])
+    wt2, b2 = add_worktree(root, env, "T2")
+    m2 = commit_in(wt2, env)
+    commit_in(wt2, env, "round2.txt")  # round-2 work after the merge
+    set_gh_pr(root, b2, [{"number": 2, "state": "MERGED", "headRefOid": m2}])
+
+    r = run_prune(env)
+    assert r.returncode == 0, r.stderr
+    assert not wt1.exists()
+    assert wt2.exists()
+    assert "T2: unpushed commits" in r.stdout
+
+
+def test_fork_pr_with_same_branch_name_ignored(tmp_path):
+    env, _, root = setup_prune(tmp_path)
+    wt, branch = add_worktree(root, env, "T1")
+    set_gh_pr(root, branch, [{"number": 1, "state": "MERGED", "isCrossRepository": True}])
+
+    r = run_prune(env)
+    assert r.returncode == 0, r.stderr
+    assert wt.exists()
+    assert "T1: pr open/unknown" in r.stdout

@@ -75,7 +75,7 @@ prune_all() { # <quiet|loud> <dry|nodry> [exclude_tid]
 
     # Board tasks (all=1 includes archived); fetch failure -> empty set (never remove on unknown).
     : > "$tmp/tasks.json"
-    curl -fsS "${COXD_URL%/}/api/tasks?all=1" -o "$tmp/tasks.json" || : > "$tmp/tasks.json"
+    curl -fsS -m 15 --connect-timeout 5 "${COXD_URL%/}/api/tasks?all=1" -o "$tmp/tasks.json" || : > "$tmp/tasks.json"
     python3 - "$tmp/tasks.json" > "$tmp/landed_ids.txt" <<'PY'
 import json, sys
 try:
@@ -92,7 +92,20 @@ PY
 
     local removed=0 remote_deleted=0
     local kept=()
-    local agy_dir repo_name main wt wt_id branch pr_json pr_merged board_landed dirty
+    local agy_dir repo_name main wt wt_id branch pr_json pr_merged merged_oids board_landed dirty
+    local gh_timeout=()
+    command -v timeout >/dev/null 2>&1 && gh_timeout=(timeout "${AGY_GH_TIMEOUT:-20}")
+
+    # True if origin has $branch and its tip is a merged PR head (never delete newer pushed work).
+    remote_is_merged_head() {
+      local rsha m
+      rsha=$(git -C "$main" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null | cut -f1) || return 1
+      [ -n "$rsha" ] || return 1
+      while read -r m; do
+        [ "${m#MERGED }" = "$rsha" ] && return 0
+      done <<< "$merged_oids"
+      return 1
+    }
 
     for agy_dir in "$REPO_ROOT"/*.agy; do
       [ -d "$agy_dir" ] || continue
@@ -112,20 +125,27 @@ PY
         fi
         branch="coxd-agy/$wt_id"
 
+        # Merged same-repo PRs for this head branch (fork PRs that reuse the branch name are
+        # ignored). merged_oids = "MERGED <head sha>" lines for those PRs.
         pr_merged=0
+        merged_oids=""
         if command -v gh >/dev/null 2>&1; then
-          pr_json=$(cd "$main" && gh pr list --head "$branch" --state all --json state,number) || pr_json=""
-          if python3 - "$pr_json" <<'PY'
+          pr_json=$(cd "$main" && ${gh_timeout[@]+"${gh_timeout[@]}"} gh pr list --head "$branch" --state all \
+            --json state,number,headRefOid,isCrossRepository) || pr_json=""
+          merged_oids=$(python3 - "$pr_json" <<'PY'
 import json, sys
 try:
     prs = json.loads(sys.argv[1])
 except Exception:
     prs = []
-sys.exit(0 if any(isinstance(p, dict) and p.get("state") == "MERGED" for p in (prs or [])) else 1)
+found = False
+for p in prs or []:
+    if isinstance(p, dict) and p.get("state") == "MERGED" and not p.get("isCrossRepository"):
+        found = True
+        print("MERGED " + str(p.get("headRefOid") or ""))
+sys.exit(0 if found else 1)
 PY
-          then
-            pr_merged=1
-          fi
+          ) && pr_merged=1
         fi
 
         board_landed=0
@@ -145,6 +165,31 @@ PY
         dirty=$(git -C "$wt" status --porcelain) || dirty="err"
         if [ -n "$dirty" ]; then
           kept+=("$wt_id: uncommitted changes")
+          continue
+        fi
+
+        # Unpushed work: commits on the branch / worktree HEAD that are neither on an origin
+        # remote ref nor contained in a merged PR's head are lost by remove + branch -D.
+        # Fail closed on any git error.
+        local unpushed=0 ref_sha ahead covered line oid
+        for ref_sha in "$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)" \
+                       "$(git -C "$main" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)"; do
+          [ -n "$ref_sha" ] || continue
+          ahead=$(git -C "$main" rev-list "$ref_sha" --not --remotes=origin 2>/dev/null) || { unpushed=1; break; }
+          [ -n "$ahead" ] || continue
+          covered=0
+          while read -r line; do
+            oid=${line#MERGED }
+            { [ -n "$oid" ] && [ "$oid" != "MERGED" ]; } || continue
+            if git -C "$main" merge-base --is-ancestor "$ref_sha" "$oid" >/dev/null 2>&1; then
+              covered=1
+              break
+            fi
+          done <<< "$merged_oids"
+          [ "$covered" -eq 1 ] || { unpushed=1; break; }
+        done
+        if [ "$unpushed" -eq 1 ]; then
+          kept+=("$wt_id: unpushed commits")
           continue
         fi
 
@@ -179,7 +224,7 @@ PY
         if [ "$dry_run" -eq 1 ]; then
           echo "would remove $wt_id ($wt)"
           removed=$((removed + 1))
-          if [ "$pr_merged" -eq 1 ] && git -C "$main" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+          if [ "$pr_merged" -eq 1 ] && remote_is_merged_head; then
             echo "would delete remote $branch"
           fi
         else
@@ -188,7 +233,7 @@ PY
               git -C "$main" branch -D "$branch" >/dev/null 2>&1 || true
             fi
             removed=$((removed + 1))
-            if [ "$pr_merged" -eq 1 ] && git -C "$main" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            if [ "$pr_merged" -eq 1 ] && remote_is_merged_head; then
               echo "deleting remote $branch"
               if [ "$mode" = "quiet" ]; then
                 git -C "$main" push origin --delete "$branch" >/dev/null 2>&1 && remote_deleted=$((remote_deleted + 1))
@@ -207,14 +252,15 @@ PY
       fi
     done
 
-    local kept_count=${#kept[@]}
+    local kept_count=${#kept[@]} verb=removed
+    [ "$dry_run" -eq 1 ] && verb="would remove"
     if [ "$mode" = "loud" ] || [ "$removed" -gt 0 ] || [ "$remote_deleted" -gt 0 ]; then
       if [ "$kept_count" -gt 0 ]; then
         local reasons
         reasons=$(python3 -c 'import sys; print("; ".join(sys.argv[1:]))' "${kept[@]}")
-        echo "agy-next prune: removed $removed, kept $kept_count ($reasons)"
+        echo "agy-next prune: $verb $removed, kept $kept_count ($reasons)"
       else
-        echo "agy-next prune: removed $removed, kept 0"
+        echo "agy-next prune: $verb $removed, kept 0"
       fi
     fi
   ) || true
