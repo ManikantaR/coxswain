@@ -173,6 +173,10 @@ store.append_event("agy-plan", "plan", {"plan_md": "# Plan 2"})
 check("after fix-round followed by new plan -> i == 1",
       row_of("agy-plan")["stage"]["i"] == 1)
 
+store.append_event("agy-plan", "fix-round", {"via": "claude", "source": "review"})
+check("after Claude fix-round (no new plan written) -> stays i == 1",
+      row_of("agy-plan")["stage"]["i"] == 1)
+
 
 # --- 5. TestClient check: /api/tasks + / HTML free of raw dict fragments -----
 store.create_task("agy-queued", "widgets", "brief", "/tmp/wt", lane="agy-handoff")

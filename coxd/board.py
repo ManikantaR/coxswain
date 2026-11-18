@@ -95,14 +95,17 @@ _AGY_SHIFT = {0: 1, 1: 2, 2: 3, 3: 4}  # claude-lane stage index -> agy-lane ind
 
 
 def _has_current_plan(evs: list[dict]) -> bool:
-    """True when a `plan` event exists after the last `fix-round` (or any `plan`
-    when there is no `fix-round`)."""
+    """True when a `plan` event exists after the last agy `fix-round` (or any `plan`
+    when there is none). Claude fix rounds (via != agy) write no new plan, so they
+    don't reset it."""
     for e in reversed(evs):
         kind = e.get("kind")
         if kind == "plan":
             return True
         if kind == "fix-round":
-            return False
+            d = e.get("data") if isinstance(e.get("data"), dict) else {}
+            if d.get("via") == "agy":
+                return False
     return False
 
 
