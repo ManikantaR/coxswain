@@ -4,6 +4,9 @@ These are run by **you, on your own machine**. coxd never calls, spawns, schedul
 wraps them, and never touches `agy` or its credentials. The only interface between coxd
 and agy is git branches plus the board API (`/api/task/<id>/plan`) that your own script reads.
 
+For lead queue-ordering and model-sizing rules (`size:S` / `size:M`), see
+`plugins/coxd/skills/coxd/SKILL.md` ("agy queue: lead ordering rules").
+
 ## agy-next
 
 Install: `ln -sf "$PWD/tools/human/agy-next" ~/.local/bin/agy-next`
