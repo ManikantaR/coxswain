@@ -96,6 +96,19 @@ def daily_cost_cap(repo_name: str) -> float | None:
     return float(cap)
 
 
+FIX_MODES = ("resume", "fresh")
+
+
+def fix_mode(repo_or_entry: str | dict | None) -> str:
+    """How review-/gate-triggered fix rounds run: `resume` (default: the original worker
+    session, full history re-sent each turn) or `fresh` (a new session with a compact
+    brief). Anything but exactly "fresh" is `resume`."""
+    entry = repo_or_entry if isinstance(repo_or_entry, dict) else (
+        load(repo_or_entry) if isinstance(repo_or_entry, str) else None)
+    mode = (entry or {}).get("fix_mode")
+    return "fresh" if isinstance(mode, str) and mode == "fresh" else "resume"
+
+
 DATA_GUARD_NOTE = ("\n\n---\nDATA GUARD: this is a document repo. Use synthetic fixtures only; "
                    "never open data folders or real documents. New files matching {globs} "
                    "may only be added under `{fixture}`.")
