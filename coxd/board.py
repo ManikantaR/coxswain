@@ -336,6 +336,16 @@ async def api_task_plan(req: Request) -> JSONResponse:
                          "round": len(evs), "plan_md": t.get("plan_md")})
 
 
+async def api_agy_queue(_: Request) -> JSONResponse:
+    """Read-only: ordered agy-handoff queue with file-overlap blocking status."""
+    tasks, events, open_pr_files, issue_labels = await asyncio.to_thread(
+        agy_handoff.queue_inputs)
+    rows = agy_handoff.queue(tasks, events, open_pr_files, issue_labels)
+    n_ready = sum(1 for r in rows if r["status"] == "ready")
+    n_blocked = len(rows) - n_ready
+    return JSONResponse({"queue": rows, "ready": n_ready, "blocked": n_blocked})
+
+
 # Live agy progress, posted by the human's own `agy-next` script. Display only: held in
 # memory (lost on restart — the next post refills it), never used for a state transition.
 _AGY_STATUS: dict[str, dict] = {}
@@ -800,6 +810,7 @@ app = Starlette(middleware=[Middleware(_GuardMiddleware)], routes=[
     Route("/api/issues", api_issues),
     Route("/api/dispatch", api_dispatch, methods=["POST"]),
     Route("/api/task/{tid}/plan", api_task_plan),
+    Route("/api/agy/queue", api_agy_queue),
     Route("/api/task/{tid}/retry", api_task_retry, methods=["POST"]),
     Route("/api/task/{tid}/agy-choice", api_task_choice, methods=["POST"]),
     Route("/api/task/{tid}/agy-status", api_task_agy_status, methods=["POST"]),
