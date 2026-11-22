@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-board-")
@@ -102,3 +103,44 @@ assert "function planCardHtml" in board._HTML and "mdHtml(t.plan_md)" in board._
 assert "(plan $" in board._HTML and "PLAN_TIP" in board._HTML
 assert "t.plan_cost" in board._HTML.split("const k=JSON.stringify")[1][:400]
 print("ok test_board plan step")
+
+# --- Archived cards: badge, needs_you count, and action gating ----------------
+store.create_task("ar1", "aura-tutor", "brief", "/wt", repo_path="/repo/aura-tutor")
+store.set_state("ar1", "needs_human", "review-findings")
+store.create_task("ar2", "aura-tutor", "brief", "/wt", repo_path="/repo/aura-tutor")
+store.set_state("ar2", "needs_human", "gate-red")
+store.archive_task("ar1")
+
+def_payload = board._tasks_payload()
+assert not any(r["id"] == "ar1" for r in def_payload["tasks"]), def_payload
+assert any(r["id"] == "ar2" for r in def_payload["tasks"]), def_payload
+assert def_payload["needs_you"] == 1, def_payload
+
+all_payload = board._tasks_payload(show_archived=True)
+ar1_row = next(r for r in all_payload["tasks"] if r["id"] == "ar1")
+assert ar1_row["archived"] is True, ar1_row
+assert ar1_row["needs_you"] is False and ar1_row["active"] is False, ar1_row
+assert all_payload["needs_you"] == 1, all_payload
+
+assert "ARCHIVED" in board._HTML and "b-arch" in board._HTML
+assert "was: " in board._HTML
+retry_seg = board._HTML.split("Stop</button>")[1].split("Approve auto-merge")[0]
+assert "!t.archived&&t.state==='needs_human'" in retry_seg
+assert "Retry fresh" in retry_seg and "Resume w/ note" in retry_seg
+assert "!t.archived&&t.state==='pr_ready'" in retry_seg
+assert "!t.archived&&t.active" in board._HTML
+assert "!t.archived&&t.approve_auto" in board._HTML
+assert "!t.archived&&t.deployable" in board._HTML
+assert "t.archived" in board._HTML.split("const k=JSON.stringify")[1][:400]
+
+# Age-archived landed task: no archived_at, updated older than ARCHIVE_DAYS
+store.create_task("ar-age", "aura-tutor", "brief", "/wt", repo_path="/repo/aura-tutor")
+store.set_state("ar-age", "landed", "merged")
+old_ts = time.time() - (store.ARCHIVE_DAYS + 2) * 86400
+with store._conn() as c:
+    c.execute("UPDATE tasks SET updated=? WHERE id=?", (old_ts, "ar-age"))
+age_payload = board._tasks_payload(show_archived=True)
+age_row = next(r for r in age_payload["tasks"] if r["id"] == "ar-age")
+assert age_row["archived"] is True and age_row["needs_you"] is False, age_row
+assert age_row["active"] is False, age_row
+print("ok test_board archived")
