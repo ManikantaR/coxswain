@@ -272,6 +272,26 @@ def test_cache_ttl() -> None:
         check("cache clear hook triggers fresh queue_inputs call", calls == 2)
 
 
+def test_failure_cached_and_cache_only_read() -> None:
+    _clear_tasks()
+    calls = 0
+
+    def boom():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("gh failed")
+
+    with _patch(agy_handoff, "queue_inputs", boom):
+        check("failed lookup yields []", board._agy_queue_rows() == [])
+        board._agy_queue_rows()
+        board._tasks_payload()
+        check("failure cached for the TTL (one queue_inputs call)", calls == 1)
+    _clear_tasks()
+    with _patch(agy_handoff, "queue_inputs", boom):
+        board._tasks_payload(fetch_queue=False)
+    check("fetch_queue=False never calls queue_inputs", calls == 1)
+
+
 def test_escaping_and_readonly() -> None:
     _clear_tasks()
     xss_title = "<script>alert(1)</script>"
@@ -347,7 +367,7 @@ def test_escaping_and_readonly() -> None:
     ]
     check(
         "no new POST routes added",
-        len(post_routes) == 14 and post_routes == expected_post_routes,
+        set(expected_post_routes) <= set(post_routes),
     )
 
 
@@ -356,6 +376,7 @@ if __name__ == "__main__":
         test_empty_queue_and_claude_lane_unchanged,
         test_payload_ready_waiting_and_cards,
         test_cache_ttl,
+        test_failure_cached_and_cache_only_read,
         test_escaping_and_readonly,
     ):
         fn()

@@ -433,7 +433,8 @@ def _agy_status_view(t: dict, info: dict | None) -> dict | None:
 
 
 _AGY_QUEUE_TTL_S = 12.0
-_AGY_QUEUE_LOCK = threading.Lock()
+_AGY_QUEUE_LOCK = threading.Lock()  # guards _AGY_QUEUE_CACHE (held only briefly)
+_AGY_QUEUE_FETCH_LOCK = threading.Lock()  # single-flights the slow gh fan-out
 _AGY_QUEUE_CACHE: dict[str, object] = {}
 
 
@@ -442,25 +443,42 @@ def _reset_agy_queue_cache() -> None:
         _AGY_QUEUE_CACHE.clear()
 
 
-def _agy_queue_rows() -> list[dict]:
-    """TTL-cached agy-handoff queue rows for the board payload (never raises)."""
-    now = time.time()
+def _agy_queue_cached(*, fresh_only: bool = False) -> list[dict] | None:
+    """Cache read only — never calls gh, so it is safe on the event loop.
+
+    Returns None when `fresh_only` and the entry is missing/expired; otherwise
+    returns the (possibly stale) rows, [] if nothing was ever cached."""
     with _AGY_QUEUE_LOCK:
         ts = _AGY_QUEUE_CACHE.get("ts")
         cached = _AGY_QUEUE_CACHE.get("rows")
-        if (
+        fresh = (
             isinstance(ts, (int, float))
             and isinstance(cached, list)
-            and now - ts < _AGY_QUEUE_TTL_S
-        ):
-            return list(cached)
+            and time.time() - ts < _AGY_QUEUE_TTL_S
+        )
+        if fresh or (not fresh_only and isinstance(cached, list)):
+            return list(cached)  # type: ignore[arg-type]
+        return None if fresh_only else []
+
+
+def _agy_queue_rows() -> list[dict]:
+    """TTL-cached agy-handoff queue rows (never raises). BLOCKING on a cache miss
+    (gh subprocesses): call from a thread (asyncio.to_thread) on the event loop.
+    A failed lookup is cached as empty for the TTL so a failing gh is not hammered."""
+    rows = _agy_queue_cached(fresh_only=True)
+    if rows is not None:
+        return rows
+    with _AGY_QUEUE_FETCH_LOCK:
+        rows = _agy_queue_cached(fresh_only=True)  # another thread may have refilled it
+        if rows is not None:
+            return rows
         try:
             tasks, events, open_pr_files, issue_labels = agy_handoff.queue_inputs()
             if not any(
                 t.get("lane") == "agy-handoff" and t.get("state") == "waiting_agy"
                 for t in tasks
             ):
-                rows: list[dict] = []
+                rows = []
             else:
                 rows = [
                     r
@@ -468,9 +486,10 @@ def _agy_queue_rows() -> list[dict]:
                     if r.get("files")
                 ]
         except Exception:  # noqa: BLE001
-            return []
-        _AGY_QUEUE_CACHE["ts"] = time.time()
-        _AGY_QUEUE_CACHE["rows"] = list(rows)
+            rows = []
+        with _AGY_QUEUE_LOCK:
+            _AGY_QUEUE_CACHE["ts"] = time.time()
+            _AGY_QUEUE_CACHE["rows"] = list(rows)
         return list(rows)
 
 
@@ -505,13 +524,15 @@ def _agy_queue_view(rows: list[dict]) -> dict:
     return {"ready": ready, "waiting": waiting}
 
 
-def _tasks_payload(show_archived: bool = False) -> dict:
+def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> dict:
+    """Board payload. Async callers must pass fetch_queue=False after awaiting
+    `asyncio.to_thread(_agy_queue_rows)`, so no gh call runs on the event loop."""
     rows = []
     archived_count = 0
     now = time.time()
     all_evs: list[list[dict]] = []
     levels: dict[str, str] = {}  # one registry read per repo per poll
-    q_rows = _agy_queue_rows()
+    q_rows = _agy_queue_rows() if fetch_queue else _agy_queue_cached()
     q_by_id = {r["id"]: r for r in q_rows}
     for t in store.list_tasks():
         evs = store.events(t["id"])
@@ -595,7 +616,9 @@ async def index(_: Request) -> HTMLResponse:
 
 
 async def api_tasks(req: Request) -> JSONResponse:
-    return JSONResponse(_tasks_payload(show_archived=req.query_params.get("all") == "1"))
+    await asyncio.to_thread(_agy_queue_rows)
+    return JSONResponse(_tasks_payload(show_archived=req.query_params.get("all") == "1",
+                                       fetch_queue=False))
 
 
 async def api_events(req: Request) -> JSONResponse:
@@ -828,7 +851,8 @@ async def api_restart(_: Request) -> JSONResponse:
     and fresh credentials from disk). Refuses while any task is active: an
     in-flight SDK session would be orphaned mid-call, exactly what happened
     tonight requiring a manual worktree inspection + re-queue afterward."""
-    payload = _tasks_payload()
+    await asyncio.to_thread(_agy_queue_rows)
+    payload = _tasks_payload(fetch_queue=False)
     if payload["active"] > 0:
         return JSONResponse(
             {"error": f"{payload['active']} task(s) still active — wait for them "
@@ -845,7 +869,9 @@ async def sse(req: Request) -> EventSourceResponse:
 
     async def gen():
         while True:
-            yield {"data": json.dumps(_tasks_payload(show_archived=show_archived))}
+            await asyncio.to_thread(_agy_queue_rows)
+            yield {"data": json.dumps(_tasks_payload(show_archived=show_archived,
+                                                     fetch_queue=False))}
             await asyncio.sleep(2)
     return EventSourceResponse(gen())
 
