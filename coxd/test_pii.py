@@ -277,6 +277,8 @@ import lane  # noqa: E402
 
 check("reviewer prompt has the no-names rule", "Never write people's names" in lane._CRITERIA)
 check("planner prompt has the no-names rule", "Never write people's names" in lane._PLAN_PROMPT)
+check("planner prompt has the invented-identifiers rule",
+      "Never copy an id, email or name" in lane._PLAN_PROMPT)
 
 ship._build_body = _real_build_body
 ship._test_evidence = lambda wt: "evidence"
