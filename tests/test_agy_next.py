@@ -212,6 +212,8 @@ def test_header_forbids_leaving_worktree(tmp_path):
     p = argv.read_text()
     assert "never ask to bypass the sandbox" in p and "do not search for one elsewhere" in p
     assert "Never write real people's names" in p
+    assert "use invented values for names AND identifiers" in p
+    assert "Never copy an id, email or name from existing code, config or data into new tests" in p
 
 
 def test_refuses_when_app_has_saved_grants(tmp_path):

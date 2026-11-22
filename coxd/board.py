@@ -537,7 +537,8 @@ def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> 
     for t in store.list_tasks():
         evs = store.events(t["id"])
         all_evs.append(evs)  # month spend counts every task, archived or not
-        if _is_archived(t):
+        arch = _is_archived(t)
+        if arch:
             archived_count += 1
             if not show_archived:
                 continue
@@ -569,10 +570,10 @@ def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> 
             "agy_tokens": info["agy_tokens"] if info else None,
             "agy_pickup": info["pickup"] if info else None,
             "waiting_since": info["waiting_since"] if info else None,
-            "active": t["state"] in _ACTIVE, "needs_you": t["state"] in _NEEDS_YOU,
+            "active": not arch and t["state"] in _ACTIVE, "needs_you": not arch and t["state"] in _NEEDS_YOU,
             "issue_url": issue_match.group(0) if issue_match else None,
             "archivable": t["state"] in _MANUAL_ARCHIVABLE,
-            "archived": bool(t.get("archived_at")),
+            "archived": arch,
             "resumable": bool(t.get("session_id")),
             "agy_cmd": agy_cmd,
             "agy_wait": agy_wait,
@@ -1151,7 +1152,7 @@ h1{font-size:15px;margin:0}.pill{font-size:12px;color:var(--dim);background:var(
 .pill b{color:var(--fg)}.spacer{flex:1}#conn{color:var(--dim)}main{padding:16px;max-width:820px;margin:0 auto;display:grid;gap:12px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}.card.needs{border-color:#5a4310}
 .row{display:flex;gap:10px;align-items:center}.badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;text-transform:uppercase}
-.b-work{background:#10233b;color:#6cb6ff}.b-warn{background:#2a2110;color:var(--warn)}.b-ok{background:#0f2417;color:var(--ok)}.b-bad{background:#2b1213;color:var(--bad)}
+.b-work{background:#10233b;color:#6cb6ff}.b-warn{background:#2a2110;color:var(--warn)}.b-ok{background:#0f2417;color:var(--ok)}.b-bad{background:#2b1213;color:var(--bad)}.b-arch{background:#222;color:#888}.was{font-size:11px;color:var(--dim)}
 .tid{font-weight:600;word-break:break-all}.meta{color:var(--dim);font-size:12px;margin-top:2px}.last{font-size:12.5px;margin-top:6px;color:var(--fg);opacity:.85}
 .agychoice ul{margin:6px 0;padding-left:18px}.chip{border-radius:8px;padding:1px 7px;font-size:11px;color:#fff;background:#888}.chip.sev-critical{background:#c0392b}.chip.sev-major{background:#d68910}.chip.sev-minor{background:#7f8c8d}.lane{border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;color:#fff;background:#555}.lane.agy{background:#138d90}.agybox{border:2px solid #138d90;border-radius:8px;padding:10px;margin:8px 0}.agybox code{display:block;font-family:ui-monospace,monospace;font-size:14px;padding:6px;background:#0006;margin:6px 0;user-select:all}.agyplan{white-space:normal;max-height:300px;overflow:auto;padding:6px;border:1px solid #444;margin-top:6px;font-size:12px}.agyplan pre{background:#0006;padding:6px;overflow:auto}.agyc{font-size:15px;padding:10px 16px;flex:1}.agyc small{font-size:11px;opacity:.8}
 .retryrow{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}.retryrow button{margin-top:0}.retryrow input{flex:1;min-width:160px;padding:5px 8px}.rsmsg{font-size:12px;color:var(--dim)}
@@ -1281,26 +1282,26 @@ function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getEle
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow>'+(c.send_enabled?'<button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button>':'')+'<button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+(c.send_enabled?'':'<div class=meta>agy gets only the reviewed plan; fixes are done by Claude</div>')+'</div>'}
 function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);renderNextUp(s.agy_queue);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.cost,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)],t.agy_cmd,t.agy_wait,s.agy_queue]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.archived,t.cost,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)],t.agy_cmd,t.agy_wait,s.agy_queue]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
-const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
+const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=t.archived?['b-arch','ARCHIVED']:(BADGE[t.state]||['b-work',t.state]);
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
-h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="lane '+(t.lane==='agy'?'agy':'')+'">'+(t.lane==='agy'?'AGY':'CLAUDE')+'</span><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
+h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="lane '+(t.lane==='agy'?'agy':'')+'">'+(t.lane==='agy'?'AGY':'CLAUDE')+'</span><span class="badge '+cls+'">'+lab+'</span>'+(t.archived?'<span class=was>was: '+esc(t.state)+(t.reason?', '+esc(t.reason):'')+'</span>':'')+'<span class=tid>'+esc(t.id)+'</span>'+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
 '<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3)+(t.plan_cost!=null?' (plan $'+t.plan_cost.toFixed(3)+')':''):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models,t.stages,t.agy_round?{1:'round '+t.agy_round}:null,t.lane==='claude'&&!!t.stages)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
 (t.lane==='agy'?agyCardHtml(t):planCardHtml(t))+
 (t.quota_wait_at?'<div class=meta>Review waits for Claude reset at '+esc(new Date(t.quota_wait_at*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ}))+'</div>':'')+
 (t.choice?agyChoiceHtml(t.choice):'')+
-(t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
-(t.state==='needs_human'?'<div class=retryrow>'+
+(!t.archived&&t.active?'<div class=retryrow><button class=spb data-pr="'+(t.pr_url?'1':'')+'" title="Cancel this task in place. Whatever is already committed is kept — lands at needs_human, same as any other stall, and Resume w/ note picks it back up.">Stop</button></div>':'')+
+(!t.archived&&t.state==='needs_human'?'<div class=retryrow>'+
  '<button class=rtb data-pr="'+(t.pr_url?'1':'')+'" title="Starts over from the original brief in a fresh worker call — discards this session\\'s context. Safe when nothing was committed yet (e.g. an auth/infra error before any real work happened).">Retry fresh</button>'+
  '<button class=rsb title="Keeps the existing session and any commits already made, and gives it your note as the next instruction. Cheaper and more targeted than Retry when real work already landed.">Resume w/ note</button>'+
  '<input class=rsnote hidden placeholder="what should it try differently?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':
- t.state==='pr_ready'&&t.resumable?'<div class=retryrow>'+
+ !t.archived&&t.state==='pr_ready'&&t.resumable?'<div class=retryrow>'+
  '<button class=rsb title="Review found something? Sends your note to the same session; the fix is gated, re-reviewed and pushed to this same PR.">Send fixes w/ note</button>'+
  '<input class=rsnote hidden placeholder="what needs fixing?"><button class=rsgo hidden>Go</button><span class=rsmsg></span></div>':'')+
-(t.approve_auto?'<div class=retryrow><button class=aab data-repo="'+esc(t.repo)+'" title="This repo earned a clean-merge streak. Approving lets coxd merge its PRs without you — only this button enables it.">Approve auto-merge</button><span class=aamsg></span></div>':'')+
-(t.deployable?'<div class=retryrow><button class=depb data-repo="'+esc(t.repo)+'" title="Build + recreate this repo\\'s containers on the NAS at current main, then run migrations. Human-gated — coxd does the work; watch Events for progress.">Deploy ▸</button><span class=depmsg></span></div>':'')+
+(!t.archived&&t.approve_auto?'<div class=retryrow><button class=aab data-repo="'+esc(t.repo)+'" title="This repo earned a clean-merge streak. Approving lets coxd merge its PRs without you — only this button enables it.">Approve auto-merge</button><span class=aamsg></span></div>':'')+
+(!t.archived&&t.deployable?'<div class=retryrow><button class=depb data-repo="'+esc(t.repo)+'" title="Build + recreate this repo\\'s containers on the NAS at current main, then run migrations. Human-gated — coxd does the work; watch Events for progress.">Deploy ▸</button><span class=depmsg></span></div>':'')+
 (t.archived?'<button class=arb data-mode=unarchive title="Bring this task back into the normal board view.">Unarchive</button>':t.archivable?'<button class=arb data-mode=archive title="Hide this completed task from the board now — same as it aging out on its own, just immediate.">Archive</button>':'')+
 '<button class=fb>'+(open.has(t.id)?'Hide':'Events')+'</button><div class="feed'+(open.has(t.id)?' open':'')+'"></div></div>'}
 b.innerHTML=h;for(const c of b.querySelectorAll('.card')){const id=c.dataset.id,f=c.querySelector('.feed');if(open.has(id))loadFeed(id,f);

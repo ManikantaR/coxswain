@@ -203,7 +203,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
 
     # --- one review pass ---------------------------------------------------
     store.set_state(task_id, "reviewing")
-    r = await lane.review(gate.diff(wt), review_model, emit, effort=review_effort,
+    r = await lane.review(gate.review_diff(wt, entry), review_model, emit, effort=review_effort,
                           worktree=wt)
     store.add_cost(task_id, r.cost)
     if r.quota_reset_at:
@@ -234,7 +234,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         # let two PRs land with their own reviewer's blocking finding still
         # open (2026-10). Only a fresh `approve` ships; anything else stops.
         store.set_state(task_id, "reviewing")
-        r = await lane.review(gate.diff(wt), review_model, emit, effort=review_effort,
+        r = await lane.review(gate.review_diff(wt, entry), review_model, emit, effort=review_effort,
                           worktree=wt)
         store.add_cost(task_id, r.cost)
         if r.quota_reset_at:
@@ -314,7 +314,7 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
         return "waiting_agy"
     store.set_gate_steps(task_id, g.get("steps"), g.get("test_output"))
     store.set_state(task_id, "reviewing")
-    r = await lane.review(gate.diff(wt), cfg["review_model"], emit,
+    r = await lane.review(gate.review_diff(wt, entry), cfg["review_model"], emit,
                           effort=cfg["review_effort"], worktree=wt)
     store.add_cost(task_id, r.cost)
     if r.quota_reset_at:  # just wait for the reset (quota.park); never fall back
@@ -463,7 +463,7 @@ def _fix_brief(task_id: str, wt: Path, feedback: str) -> str:
     except Exception:
         stat = ""
     try:
-        full = gate.diff(wt) or ""
+        full = gate.review_diff(wt, reg, budget=MAX_BRIEF_DIFF_CHARS) or ""
     except Exception:
         full = ""
     if len(full) > MAX_BRIEF_DIFF_CHARS:
