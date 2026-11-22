@@ -12,11 +12,14 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import math
 import os
 import re
 import secrets
 import socket
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import agy_handoff
 import factory
@@ -91,47 +94,234 @@ AGY_STAGES = ["plan", "agy", "gate", "review", "pr"]
 _AGY_SHIFT = {0: 1, 1: 2, 2: 3, 3: 4}  # claude-lane stage index -> agy-lane index
 
 
-def _agy_stage(state: str, reason: str | None) -> dict:
+def _has_current_plan(evs: list[dict]) -> bool:
+    """True when a `plan` event exists after the last agy `fix-round` (or any `plan`
+    when there is none). Claude fix rounds (via != agy) write no new plan, so they
+    don't reset it."""
+    for e in reversed(evs):
+        kind = e.get("kind")
+        if kind == "plan":
+            return True
+        if kind == "fix-round":
+            d = e.get("data") if isinstance(e.get("data"), dict) else {}
+            if d.get("via") == "agy":
+                return False
+    return False
+
+
+def _agy_stage(state: str, reason: str | None, has_plan: bool = False) -> dict:
     if state == "planning":
         return {"i": 0, "status": "active"}
     if state == "waiting_agy":
         return {"i": 1, "status": "active"}
     st = _stage(state, reason)
     if state in ("queued", "provisioning", "working"):  # picked up, not yet gating
-        return {"i": 1, "status": "active" if st["status"] != "error" else "error"}
+        i = 1 if has_plan else 0
+        return {"i": i, "status": "active" if st["status"] != "error" else "error"}
     return {"i": _AGY_SHIFT[st["i"]], "status": st["status"]}
 
 
 def _agy_info(evs: list[dict]) -> dict:
     """Card facts for an agy-handoff task, derived from its events (read-only)."""
-    phase, plan_c, review_c, tokens = None, 0.0, 0.0, None
+    cost_split = {"plan": 0.0, "implement": 0.0, "fix": 0.0, "review": 0.0}
+    tokens = None
     models: dict[str, str] = {}
     pickup, waiting_since = None, None
+    norm_evs: list[dict] = []
     for e in evs:
         d = e.get("data") if isinstance(e.get("data"), dict) else {}
-        if e["kind"] == "state":
-            phase = d.get("state")
-            waiting_since = e["ts"] if phase == "waiting_agy" else waiting_since
-            if phase != "waiting_agy":
-                waiting_since = None
-        elif e["kind"] == "result":
-            c = d.get("cost")
-            c = float(c) if isinstance(c, (int, float)) and not isinstance(c, bool) else 0.0
-            m = d.get("model")
-            if phase == "planning":
-                plan_c += c
-                if isinstance(m, str) and m:
-                    models["0"] = stepspend.short_name(m)
-            elif phase == "reviewing":
-                review_c += c
-                if isinstance(m, str) and m:
-                    models["3"] = stepspend.short_name(m)
-        elif e["kind"] == "agy-pickup":
+        kind = e.get("kind")
+        if kind == "state":
+            st = d.get("state")
+            waiting_since = e["ts"] if st == "waiting_agy" else None
+            # stepspend.phased_results maps provisioning/working -> implement;
+            # normalize waiting_agy so any result there counts as implement.
+            norm_evs.append({"kind": "state", "data": {"state": "working"}}
+                            if st == "waiting_agy" else e)
+            continue
+        if kind == "agy-pickup":
             pickup = {"sha": str(d.get("sha") or "")[:7], "ts": e["ts"]}
         if isinstance(d.get("agy_tokens"), int) and not isinstance(d.get("agy_tokens"), bool):
             tokens = d["agy_tokens"]
-    return {"cost_split": {"plan": plan_c, "review": review_c}, "agy_tokens": tokens,
-            "models": models, "pickup": pickup, "waiting_since": waiting_since}
+        norm_evs.append(e)
+    for phase, e in stepspend.phased_results(norm_evs):
+        d = e["data"]
+        c = stepspend._num(d.get("cost"))
+        if phase in cost_split:
+            cost_split[phase] += c
+        m = d.get("model")
+        if isinstance(m, str) and m:
+            if phase == "plan":
+                models["0"] = stepspend.short_name(m)
+            elif phase == "review":
+                models["3"] = stepspend.short_name(m)
+    return {
+        "cost_split": cost_split,
+        "claude_total": sum(cost_split.values()),
+        "agy_tokens": tokens,
+        "models": models,
+        "pickup": pickup,
+        "waiting_since": waiting_since,
+    }
+
+
+_STATE_SENTENCES: dict[str, str] = {
+    "queued": "Queued",
+    "provisioning": "Setting up workspace",
+    "planning": "Writing plan",
+    "waiting_agy": "Waiting for you to run agy",
+    "working": "Implementing changes",
+    "gating": "Running checks",
+    "fixing": "Fixing issues",
+    "reviewing": "Reviewing changes",
+    "needs_choice": "Waiting for your choice",
+    "shipping": "Opening pull request",
+    "ci-watching": "Watching CI checks",
+    "waiting_quota": "Paused: Claude usage limit",
+    "pr_ready": "Ready to merge",
+    "landed": "Merged",
+    "needs_human": "Needs your attention",
+    "failed": "Failed",
+    "running": "Running",
+}
+
+_STATUS_SENTENCES: dict[str, str] = {
+    "agy-pickup": "Checking your push",
+    "agy-head": "Checking your push",
+    "agy-applied": "Loaded your push",
+    "agy-claude-fix": "Queued for Claude to fix",
+    "agy-claude-fix-done": "Claude finished fixing",
+    "plan": "Plan written",
+    "ci-watch": "Watching CI checks",
+    "provision": "Workspace ready",
+    "human-note": "Resuming with your note",
+    "resume-request": "Resume requested",
+    "worker-stalled": "Worker stalled without changes",
+    "fresh-session": "Retrying in a fresh session",
+    "deployed": "Deployed",
+    "deploy-start": "Deploying",
+    "greenlight": "Greenlight check finished",
+    "pii-block": "Blocked by privacy check",
+    "streak": "Merge streak updated",
+}
+
+
+def _fmt_hhmm(ts) -> str | None:
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts):
+        return None
+    tz_name = os.environ.get("COXD_TZ", "America/New_York")
+    try:
+        z = ZoneInfo(tz_name)
+    except Exception:
+        z = ZoneInfo("UTC")
+    try:
+        return datetime.fromtimestamp(ts, z).strftime("%H:%M")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def status_line(kind, data, state=None, *, fix_round: int | None = None) -> str:
+    """Map an event kind + payload to a short plain-language sentence, or ''."""
+    # Silent/internal kinds (rate_limit, created, result, config, tool, say) and
+    # anything unknown or malformed return "".
+    if not isinstance(kind, str) or not isinstance(data, dict):
+        return ""
+    if kind in _STATUS_SENTENCES:
+        return _STATUS_SENTENCES[kind]
+    if kind == "state":
+        s = data.get("state") or state
+        return _STATE_SENTENCES.get(s, "") if isinstance(s, str) else ""
+    if kind == "agy-claude-fix-start":
+        rnd = (fix_round if isinstance(fix_round, int) and not isinstance(fix_round, bool)
+               and fix_round > 0 else data.get("round"))
+        n = rnd if isinstance(rnd, int) and not isinstance(rnd, bool) and rnd > 0 else 1
+        return f"Claude fixing review findings (round {n})"
+    if kind == "waiting-quota":
+        hhmm = _fmt_hhmm(data.get("resume_at"))
+        return f"Paused: Claude usage limit, resumes {hhmm}" if hhmm else "Paused: Claude usage limit"
+    if kind == "review":
+        if data.get("outcome") == "review-error":
+            return "Review error"
+        verdict = data.get("verdict")
+        if verdict == "approve":
+            return "Review approved"
+        if verdict == "fix":
+            return "Review requested fixes"
+        if verdict == "reject":
+            return "Review rejected"
+        return "Review finished"
+    if kind == "ci-triage":
+        outcome = data.get("outcome")
+        if outcome in ("green", "flaky-cleared"):
+            return "CI checks passed"
+        if outcome == "needs_human":
+            return "CI checks failed"
+        return "CI checks finished"
+    if kind == "fix-round":
+        via = data.get("via")
+        if via == "claude":
+            return "Starting Claude fix round"
+        if via == "agy":
+            return "Sending fix round to agy"
+        return "Starting fix round"
+    if kind == "agy-error":
+        return "Failed to push agy branch" if data.get("stage") == "push" else "Agy handoff error"
+    if kind == "agy-status":
+        action = data.get("action")
+        if isinstance(action, str) and action.strip() and "{" not in action:
+            return f"agy: {action.strip()}"
+        return "Running agy"
+    if kind == "gate":
+        passed = data.get("passed")
+        if passed is True:
+            return "Checks passed"
+        if passed is False:
+            failing = data.get("failing")
+            return f"Check failed: {failing}" if isinstance(failing, str) and failing else "Checks failed"
+        return "Checks finished"
+    if kind == "ship":
+        outcome = data.get("outcome")
+        if outcome == "pr":
+            return "Pull request opened"
+        if outcome == "local":
+            return "Changes ready on local branch"
+        if outcome in ("pii-block", "pii-scan-error"):
+            return "Blocked by privacy check"
+        if outcome in ("push-error", "pr-error"):
+            return "Failed to open pull request"
+        return "Shipping finished"
+    if kind == "fix-trigger":
+        src = data.get("source")
+        if src == "gate":
+            return "Fixing failed check"
+        if src == "review":
+            return "Fixing review findings"
+        return "Starting fix"
+    if kind == "error":
+        return "Stopped by user" if data.get("error") == "stopped by user" else "Task failed"
+    if kind == "info":
+        note = str(data.get("note") or "")
+        if "usage window reset" in note:
+            return "Usage window reset — resuming"
+        if "auto-resume" in note:
+            return "Auto-resuming after restart"
+        if "auto-retry" in note:
+            return "Auto-retrying after restart"
+        return ""
+    return ""
+
+
+def _last_status(evs: list[dict], state: str | None = None) -> str:
+    """Most recent non-empty plain-language status across `evs`, or ''."""
+    for idx in range(len(evs) - 1, -1, -1):
+        e = evs[idx]
+        kind = e.get("kind")
+        fix_round = (sum(1 for prev in evs[:idx] if prev.get("kind") == "fix-round")
+                     if kind == "agy-claude-fix-start" else None)
+        line = status_line(kind, e.get("data"), state=state, fix_round=fix_round)
+        if line:
+            return line
+    return ""
 
 
 PLAN_CLAUDE_STAGES = ["plan", "implement", "gate", "review", "merge"]
@@ -260,12 +450,15 @@ def _tasks_payload(show_archived: bool = False) -> dict:
         issue_match = _ISSUE_URL_RE.search(t.get("brief") or "")
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
-            "cost": t["cost"], "pr_url": t["pr_url"], "stage": (_agy_stage if is_agy else _plan_claude_stage if pinfo else _stage)(t["state"], t["reason"]),
+            "cost": t["cost"], "pr_url": t["pr_url"],
+            "stage": (_agy_stage(t["state"], t["reason"], _has_current_plan(evs)) if is_agy
+                      else (_plan_claude_stage if pinfo else _stage)(t["state"], t["reason"])),
             "lane": "agy" if is_agy else "claude",
             "stages": AGY_STAGES if is_agy else PLAN_CLAUDE_STAGES if pinfo else None,
             "plan_md": t.get("plan_md") if is_agy else pinfo["plan_md"] if pinfo else None,
             "plan_cost": pinfo["plan_cost"] if pinfo else None,
             "claude_split": info["cost_split"] if info else None,
+            "claude_total": info["claude_total"] if info else None,
             "agy_tokens": info["agy_tokens"] if info else None,
             "agy_pickup": info["pickup"] if info else None,
             "waiting_since": info["waiting_since"] if info else None,
@@ -284,7 +477,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "approve_auto": levels.setdefault(
                 t["repo"], registry.merge_level(t["repo"])) == "proposed",
             "deployable": t["state"] == "landed" and _repo_has_deploy(t["repo"]),
-            "last": evs[-1]["kind"] + ": " + str(evs[-1]["data"])[:70] if evs else "",
+            "last": _last_status(evs, t["state"]),
             "timing": timeline.derive(t, evs, now),
             "models": (info["models"] if is_agy else
                        _plan_claude_models(evs, pinfo["plan_model"]) if pinfo else
@@ -918,7 +1111,7 @@ function agyCardHtml(t){let h='';const sp=t.claude_split;
 if(t.state==='waiting_agy'&&t.agy_cmd){h+='<div class=agybox><b>Your turn: run on your Mac</b><code>'+esc(t.agy_cmd)+'</code><button class=agyb data-cmd="'+esc(t.agy_cmd)+'">Copy</button> <button class=planb>View plan</button><div class=agyplan hidden>'+mdHtml(t.plan_md)+'</div></div>'}
 if(t.state==='waiting_agy'&&t.agy_status)h+=agyLiveHtml(t.agy_status);
 if(t.agy_pickup)h+='<div class=meta>picked up your push '+esc(t.agy_pickup.sha)+' at '+new Date(t.agy_pickup.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ})+(t.agy_round?' · round '+t.agy_round:'')+'</div>';
-if(sp)h+='<div class=meta>Claude '+usd(sp.plan+sp.review)+' (plan '+usd(sp.plan)+' + review '+usd(sp.review)+')'+(t.agy_tokens!=null?' · agy '+t.agy_tokens+' tokens':'')+'</div>';
+if(sp){const tot=t.claude_total!=null?t.claude_total:(sp.plan||0)+(sp.implement||0)+(sp.fix||0)+(sp.review||0);const parts=[['plan',sp.plan],['agy',sp.implement],['fix',sp.fix],['review',sp.review]].filter(([,v])=>v>0).map(([k,v])=>k+' '+usd(v));h+='<div class=meta>Claude '+usd(tot)+(parts.length?' ('+parts.join(' + ')+')':'')+(t.agy_tokens!=null?' · agy '+t.agy_tokens+' tokens':'')+'</div>'}
 if(t.waiting_since&&t.state==='waiting_agy')h+='<div class=meta>waiting on you '+Math.max(0,Math.floor((Date.now()/1000-t.waiting_since)/60))+'m</div>';
 return h}
 function fmtTime(ts){if(!ts)return'--:--:--';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
@@ -969,7 +1162,7 @@ function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getEle
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow>'+(c.send_enabled?'<button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button>':'')+'<button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+(c.send_enabled?'':'<div class=meta>agy gets only the reviewed plan; fixes are done by Claude</div>')+'</div>'}
 function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.cost,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.cost,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
