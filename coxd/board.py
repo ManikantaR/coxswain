@@ -455,7 +455,9 @@ def _tasks_payload(show_archived: bool = False) -> dict:
         info = _agy_info(evs) if is_agy else None
         pinfo = None if is_agy else _plan_info(evs, t["state"])
         issue_match = _ISSUE_URL_RE.search(t.get("brief") or "")
-        budget = budgets.setdefault(t["repo"], registry.task_budget(t["repo"]))
+        if t["repo"] not in budgets:
+            budgets[t["repo"]] = registry.task_budget(t["repo"])
+        budget = budgets[t["repo"]]
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
             "cost": t["cost"], "budget": budget,
