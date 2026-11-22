@@ -168,16 +168,31 @@ def data_file_hits(added_paths: list[str], data_globs: list[str] | None,
     return hits
 
 
-def scan(items: dict[str, str], denylist: list[str]) -> list[Hit]:
+# Numeric-pattern rules: they false-positive on minified/vendored/generated code.
+NUMERIC_RULES = ("card", "ssn")
+
+
+def matches_any(path: str, globs: list[str] | None) -> bool:
+    """True if `path` (backslashes normalised) matches any gitignore-ish glob."""
+    norm = path.replace("\\", "/")
+    return any(_glob_re(g).match(norm) for g in (globs or [])
+               if isinstance(g, str) and g.strip())
+
+
+def scan(items: dict[str, str], denylist: list[str],
+         skip_numeric: set[str] | None = None) -> list[Hit]:
+    """`skip_numeric`: item locations where the NUMERIC_RULES are not applied.
+    `secret` and `denylist` always run on every location."""
     deny = [re.compile(r"(?<!\w)" + re.escape(t) + r"(?!\w)", re.IGNORECASE)
             for t in denylist if t and t.strip()]
     hits: list[Hit] = []
     for loc, text in items.items():
         if any(r.search(text) for r in _SECRET_RES):
             hits.append(Hit("secret", loc))
-        if _has_card(text):
+        numeric = not (skip_numeric and loc in skip_numeric)
+        if numeric and _has_card(text):
             hits.append(Hit("card", loc))
-        if _SSN_RE.search(text):
+        if numeric and _SSN_RE.search(text):
             hits.append(Hit("ssn", loc))
         if any(r.search(text) for r in deny):
             hits.append(Hit("denylist", loc))
