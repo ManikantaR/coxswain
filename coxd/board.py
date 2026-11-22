@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import socket
+import threading
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -431,12 +432,108 @@ def _agy_status_view(t: dict, info: dict | None) -> dict | None:
     return st
 
 
-def _tasks_payload(show_archived: bool = False) -> dict:
+_AGY_QUEUE_TTL_S = 12.0
+_AGY_QUEUE_LOCK = threading.Lock()  # guards _AGY_QUEUE_CACHE (held only briefly)
+_AGY_QUEUE_FETCH_LOCK = threading.Lock()  # single-flights the slow gh fan-out
+_AGY_QUEUE_CACHE: dict[str, object] = {}
+
+
+def _reset_agy_queue_cache() -> None:
+    with _AGY_QUEUE_LOCK:
+        _AGY_QUEUE_CACHE.clear()
+
+
+def _agy_queue_cached(*, fresh_only: bool = False) -> list[dict] | None:
+    """Cache read only — never calls gh, so it is safe on the event loop.
+
+    Returns None when `fresh_only` and the entry is missing/expired; otherwise
+    returns the (possibly stale) rows, [] if nothing was ever cached."""
+    with _AGY_QUEUE_LOCK:
+        ts = _AGY_QUEUE_CACHE.get("ts")
+        cached = _AGY_QUEUE_CACHE.get("rows")
+        fresh = (
+            isinstance(ts, (int, float))
+            and isinstance(cached, list)
+            and time.time() - ts < _AGY_QUEUE_TTL_S
+        )
+        if fresh or (not fresh_only and isinstance(cached, list)):
+            return list(cached)  # type: ignore[arg-type]
+        return None if fresh_only else []
+
+
+def _agy_queue_rows() -> list[dict]:
+    """TTL-cached agy-handoff queue rows (never raises). BLOCKING on a cache miss
+    (gh subprocesses): call from a thread (asyncio.to_thread) on the event loop.
+    A failed lookup is cached as empty for the TTL so a failing gh is not hammered."""
+    rows = _agy_queue_cached(fresh_only=True)
+    if rows is not None:
+        return rows
+    with _AGY_QUEUE_FETCH_LOCK:
+        rows = _agy_queue_cached(fresh_only=True)  # another thread may have refilled it
+        if rows is not None:
+            return rows
+        try:
+            tasks, events, open_pr_files, issue_labels = agy_handoff.queue_inputs()
+            if not any(
+                t.get("lane") == "agy-handoff" and t.get("state") == "waiting_agy"
+                for t in tasks
+            ):
+                rows = []
+            else:
+                rows = [
+                    r
+                    for r in agy_handoff.queue(tasks, events, open_pr_files, issue_labels)
+                    if r.get("files")
+                ]
+        except Exception:  # noqa: BLE001
+            rows = []
+        with _AGY_QUEUE_LOCK:
+            _AGY_QUEUE_CACHE["ts"] = time.time()
+            _AGY_QUEUE_CACHE["rows"] = list(rows)
+        return list(rows)
+
+
+def _agy_wait_text(blocked_by: list[str] | tuple[str, ...] | None) -> str:
+    items = [str(x) for x in (blocked_by or ()) if x]
+    return f"waits for {', '.join(items)} to merge" if items else "waiting to merge"
+
+
+def _agy_queue_view(rows: list[dict]) -> dict:
+    """Split queue rows into ready and waiting lists for the board Next-Up strip."""
+    ready: list[dict] = []
+    waiting: list[dict] = []
+    for r in rows:
+        if r.get("status") == "ready":
+            ready.append({
+                "id": r["id"],
+                "repo": r.get("repo"),
+                "issue": r.get("issue"),
+                "title": r.get("title") or "",
+                "cmd": r["cmd"],
+                "model": r.get("model"),
+                "files_count": len(r.get("files") or ()),
+            })
+        else:
+            waiting.append({
+                "id": r["id"],
+                "repo": r.get("repo"),
+                "issue": r.get("issue"),
+                "title": r.get("title") or "",
+                "blocked_by": list(r.get("blocked_by") or ()),
+            })
+    return {"ready": ready, "waiting": waiting}
+
+
+def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> dict:
+    """Board payload. Async callers must pass fetch_queue=False after awaiting
+    `asyncio.to_thread(_agy_queue_rows)`, so no gh call runs on the event loop."""
     rows = []
     archived_count = 0
     now = time.time()
     all_evs: list[list[dict]] = []
     levels: dict[str, str] = {}  # one registry read per repo per poll
+    q_rows = _agy_queue_rows() if fetch_queue else _agy_queue_cached()
+    q_by_id = {r["id"]: r for r in q_rows}
     for t in store.list_tasks():
         evs = store.events(t["id"])
         all_evs.append(evs)  # month spend counts every task, archived or not
@@ -449,6 +546,16 @@ def _tasks_payload(show_archived: bool = False) -> dict:
         info = _agy_info(evs) if is_agy else None
         pinfo = None if is_agy else _plan_info(evs, t["state"])
         issue_match = _ISSUE_URL_RE.search(t.get("brief") or "")
+        agy_cmd: str | None = None
+        agy_wait: str | None = None
+        if is_agy and t["state"] == "waiting_agy":
+            qrow = q_by_id.get(t["id"])
+            if qrow is None:
+                agy_cmd = f"agy-next {t['id']}"
+            elif qrow.get("status") == "blocked":
+                agy_wait = _agy_wait_text(qrow.get("blocked_by"))
+            else:
+                agy_cmd = qrow.get("cmd") or f"agy-next {t['id']}"
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
             "cost": t["cost"], "pr_url": t["pr_url"],
@@ -468,7 +575,8 @@ def _tasks_payload(show_archived: bool = False) -> dict:
             "archivable": t["state"] in _MANUAL_ARCHIVABLE,
             "archived": arch,
             "resumable": bool(t.get("session_id")),
-            "agy_cmd": f"agy-next {t['id']}" if t["state"] == "waiting_agy" else None,
+            "agy_cmd": agy_cmd,
+            "agy_wait": agy_wait,
             "agy_round": (sum(1 for e in evs if e["kind"] == "plan")
                           if is_agy else None),
             "agy_status": _agy_status_view(t, info),
@@ -494,6 +602,7 @@ def _tasks_payload(show_archived: bool = False) -> dict:
         del r["_updated"]
     spend_now = spend.status()  # cost_ledger: the one authoritative month total
     return {"tasks": rows, "stages": STAGES,
+            "agy_queue": _agy_queue_view(q_rows),
             "tz": os.environ.get("COXD_TZ", "America/New_York"),
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
@@ -508,7 +617,9 @@ async def index(_: Request) -> HTMLResponse:
 
 
 async def api_tasks(req: Request) -> JSONResponse:
-    return JSONResponse(_tasks_payload(show_archived=req.query_params.get("all") == "1"))
+    await asyncio.to_thread(_agy_queue_rows)
+    return JSONResponse(_tasks_payload(show_archived=req.query_params.get("all") == "1",
+                                       fetch_queue=False))
 
 
 async def api_events(req: Request) -> JSONResponse:
@@ -741,7 +852,8 @@ async def api_restart(_: Request) -> JSONResponse:
     and fresh credentials from disk). Refuses while any task is active: an
     in-flight SDK session would be orphaned mid-call, exactly what happened
     tonight requiring a manual worktree inspection + re-queue afterward."""
-    payload = _tasks_payload()
+    await asyncio.to_thread(_agy_queue_rows)
+    payload = _tasks_payload(fetch_queue=False)
     if payload["active"] > 0:
         return JSONResponse(
             {"error": f"{payload['active']} task(s) still active — wait for them "
@@ -758,7 +870,9 @@ async def sse(req: Request) -> EventSourceResponse:
 
     async def gen():
         while True:
-            yield {"data": json.dumps(_tasks_payload(show_archived=show_archived))}
+            await asyncio.to_thread(_agy_queue_rows)
+            yield {"data": json.dumps(_tasks_payload(show_archived=show_archived,
+                                                     fetch_queue=False))}
             await asyncio.sleep(2)
     return EventSourceResponse(gen())
 
@@ -1065,6 +1179,7 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 #dmsg{font-size:13px;color:var(--dim);align-self:center}
 #foff{background:#b3261e;color:#fff;font-weight:600;text-align:center;padding:6px;letter-spacing:.05em}#foff[hidden]{display:none}
 #fspend{background:#b8860b;color:#fff;font-weight:600;text-align:center;padding:6px}#fspend[hidden]{display:none}
+#nextup{max-width:820px;margin:12px auto 0;padding:0 16px}#nextup[hidden]{display:none}.nup{background:var(--panel);border:2px solid #138d90;border-radius:12px;padding:12px 14px;display:grid;gap:8px}.nuprow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.nuprow code{font-family:ui-monospace,monospace;font-size:13px;padding:4px 8px;background:#0006;border-radius:6px;user-select:all}.nuprow button{margin-top:0}
 .offline{text-align:center;padding:40px 16px}.offline h2{margin:0 0 8px}</style></head><body>
 <div id=fspend hidden></div>
 <div id=foff hidden>⏸ FACTORY OFF — nothing new will start; running tasks finish</div>
@@ -1083,6 +1198,7 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 <div class=row><b>Suggested rules</b><span class=spacer></span><button id=sugtoggle>Hide</button></div>
 <div id=suglist></div>
 </div></section>
+<section id=nextup hidden></section>
 <main id=board><div class=empty>Loading…</div></main>
 <script>
 const open=new Set(),esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));let STAGES=['implement','gate','review','merge'],sig=null;
@@ -1106,10 +1222,13 @@ const hd=ln.match(/^#{1,6}\\s+(.*)$/);if(hd){out.push('<h4>'+inl(hd[1])+'</h4>')
 if(ln.trim())out.push('<p>'+inl(ln)+'</p>')}
 if(code)out.push('</pre>');if(list)out.push('</ul>');return out.join('')}
 function usd(n){return '$'+(n||0).toFixed(2)}
+async function copyCmd(btn){try{await navigator.clipboard.writeText(btn.dataset.cmd);btn.textContent='copied'}catch(e){const code=btn.parentNode&&btn.parentNode.querySelector('code');if(code){const r=document.createRange();r.selectNodeContents(code);const sl=getSelection();sl.removeAllRanges();sl.addRange(r)}btn.textContent='selected — press Ctrl/Cmd+C'}}
+function renderNextUp(q){const el=document.getElementById('nextup');const rdy=(q&&q.ready)||[],wt=(q&&q.waiting)||[];if(!rdy.length&&!wt.length){el.hidden=true;el.innerHTML='';return}el.hidden=false;let h='<div class=nup>';for(const r of rdy){const n=Number(r.files_count)||0;h+='<div class=nuprow><span class="lane agy">AGY</span><b>Ready to run</b><span class=meta>'+esc(r.repo)+(r.issue!=null?' #'+esc(String(r.issue)):'')+(r.title?' · '+esc(r.title):'')+'</span><code>'+esc(r.cmd)+'</code><button class=agyb data-cmd="'+esc(r.cmd)+'">Copy</button><span class=meta>'+esc(r.model)+' · '+n+' files</span></div>'}for(const w of wt){const bl=(w.blocked_by||[]).map(x=>esc(x)).join(', ');h+='<div class=nuprow><span class="lane agy">AGY</span><b>Waiting</b><span class=meta>'+esc(w.repo)+(w.issue!=null?' #'+esc(String(w.issue)):'')+(w.title?' · '+esc(w.title):'')+' · waits for '+bl+' to merge</span></div>'}h+='</div>';el.innerHTML=h;el.querySelectorAll('button[data-cmd]').forEach(b=>b.onclick=()=>copyCmd(b))}
 function agyLiveHtml(a){const age=Math.max(0,Math.floor(Date.now()/1000-a.ts));if(age>=120)return '<div class="meta agylive">agy idle</div>';const m=Math.floor(a.elapsed_s/60);return '<div class="meta agylive">agy: '+esc(a.action)+' · step '+a.step+' · '+m+'m · '+Math.round(a.tokens/1000)+'k tokens · updated '+age+'s ago</div>'}
 function planCardHtml(t){return t.lane==='claude'&&t.plan_md?'<div class=meta><button class=planb>View plan</button><div class=agyplan hidden>'+mdHtml(t.plan_md)+'</div></div>':''}
 function agyCardHtml(t){let h='';const sp=t.claude_split;
 if(t.state==='waiting_agy'&&t.agy_cmd){h+='<div class=agybox><b>Your turn: run on your Mac</b><code>'+esc(t.agy_cmd)+'</code><button class=agyb data-cmd="'+esc(t.agy_cmd)+'">Copy</button> <button class=planb>View plan</button><div class=agyplan hidden>'+mdHtml(t.plan_md)+'</div></div>'}
+else if(t.state==='waiting_agy'&&t.agy_wait){h+='<div class=agybox><div class=meta>'+esc(t.agy_wait)+'</div><button class=planb>View plan</button><div class=agyplan hidden>'+mdHtml(t.plan_md)+'</div></div>'}
 if(t.state==='waiting_agy'&&t.agy_status)h+=agyLiveHtml(t.agy_status);
 if(t.agy_pickup)h+='<div class=meta>picked up your push '+esc(t.agy_pickup.sha)+' at '+new Date(t.agy_pickup.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ})+(t.agy_round?' · round '+t.agy_round:'')+'</div>';
 if(sp){const tot=t.claude_total!=null?t.claude_total:(sp.plan||0)+(sp.implement||0)+(sp.fix||0)+(sp.review||0);const parts=[['plan',sp.plan],['agy',sp.implement],['fix',sp.fix],['review',sp.review]].filter(([,v])=>v>0).map(([k,v])=>k+' '+usd(v));h+='<div class=meta>Claude '+usd(tot)+(parts.length?' ('+parts.join(' + ')+')':'')+(t.agy_tokens!=null?' · agy '+t.agy_tokens+' tokens':'')+'</div>'}
@@ -1161,9 +1280,9 @@ function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch
 function renderSpend(sp){const el=document.getElementById('mspend');if(!sp){el.hidden=true;return}el.hidden=false;const fm=o=>Object.entries(o||{}).map(([k,v])=>esc(k)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+'<div class=meta>by model: '+fm(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;document.getElementById('pcap').textContent=f.concurrency?' / '+f.concurrency:'';if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow>'+(c.send_enabled?'<button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button>':'')+'<button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+(c.send_enabled?'':'<div class=meta>agy gets only the reviewed plan; fixes are done by Claude</div>')+'</div>'}
-function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);renderNextUp(s.agy_queue);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.archived,t.cost,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.archived,t.cost,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)],t.agy_cmd,t.agy_wait,s.agy_queue]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=t.archived?['b-arch','ARCHIVED']:(BADGE[t.state]||['b-work',t.state]);
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
@@ -1194,7 +1313,7 @@ if(depb)depb.onclick=async()=>{if(!confirm('Deploy '+depb.dataset.repo+' at curr
 c.querySelectorAll('.step[data-stage]').forEach(stepEl=>{stepEl.onclick=()=>{const s=parseInt(stepEl.dataset.stage,10);
 feedFilter.set(id,feedFilter.get(id)===s?undefined:s);open.add(id);f.classList.add('open');c.querySelector('.fb').textContent='Hide';loadFeed(id,f)}});
 for(const ab of c.querySelectorAll('.agyc'))ab.onclick=async()=>{for(const x of c.querySelectorAll('.agyc'))x.disabled=true;try{const r=await(await fetch('/api/task/'+id+'/agy-choice',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({choice:ab.dataset.choice})})).json();if(r.error){alert(r.error);for(const x of c.querySelectorAll('.agyc'))x.disabled=false}else{sig=null}}catch(e){alert(e)}};
-const agyb=c.querySelector('.agyb');if(agyb)agyb.onclick=async()=>{try{await navigator.clipboard.writeText(agyb.dataset.cmd);agyb.textContent='copied'}catch(e){const r=document.createRange();r.selectNodeContents(agyb.parentNode.querySelector('code'));const sl=getSelection();sl.removeAllRanges();sl.addRange(r);agyb.textContent='selected — press Ctrl/Cmd+C'}};
+const agyb=c.querySelector('.agyb');if(agyb)agyb.onclick=()=>copyCmd(agyb);
 const planb=c.querySelector('.planb');if(planb)planb.onclick=()=>{const pl=c.querySelector('.agyplan');pl.hidden=!pl.hidden;planb.textContent=pl.hidden?'View plan':'Hide plan'};
 const spb=c.querySelector('.spb');if(spb)spb.onclick=async()=>{if(!confirm('Stop this task now? Whatever is already committed is kept — it lands at needs_human and you can Resume w/ note to pick it back up.'))return;spb.disabled=true;spb.textContent='stopping…';try{const r=await(await fetch('/api/task/'+id+'/stop',{method:'POST'})).json();if(r.error){alert(r.error);spb.disabled=false;spb.textContent='Stop'}else{sig=null}}catch(e){alert(e)}};
 const rtb=c.querySelector('.rtb');if(rtb)rtb.onclick=async()=>{const warn=rtb.dataset.pr?'This task already has an open PR — Retry fresh starts a SECOND implementation from scratch and will likely open a duplicate PR. Merge or close the existing PR first, or use Resume w/ note instead. Continue anyway?':'Retry fresh discards this session\\'s context and starts over from the original brief. Continue?';if(!confirm(warn))return;rtb.disabled=true;rtb.textContent='retrying…';try{const r=await(await fetch('/api/task/'+id+'/retry',{method:'POST'})).json();if(r.error){alert(r.error);rtb.disabled=false;rtb.textContent='Retry fresh'}else{sig=null}}catch(e){alert(e)}};
