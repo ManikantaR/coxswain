@@ -11,6 +11,7 @@ gate "passed" while running zero tests — the gate must not lie).
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from pathlib import Path
@@ -94,6 +95,20 @@ def daily_cost_cap(repo_name: str) -> float | None:
     if isinstance(cap, bool) or not isinstance(cap, (int, float)) or cap <= 0:
         return None
     return float(cap)
+
+
+DEFAULT_TASK_BUDGET_USD = 3.0
+
+
+def task_budget(repo_name: str) -> float:
+    """Optional per-repo per-task USD budget threshold (`budget_usd`); defaults to
+    DEFAULT_TASK_BUDGET_USD. Display-only (drives the board's over-budget chip)."""
+    entry = load(repo_name) or {}
+    raw = entry.get("budget_usd")
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+            or not math.isfinite(raw) or raw <= 0):
+        return DEFAULT_TASK_BUDGET_USD
+    return float(raw)
 
 
 FIX_MODES = ("resume", "fresh")

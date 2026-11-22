@@ -26,6 +26,7 @@ import factory
 import intake
 import pii_health
 import registry
+import scorecard
 import spend
 import stepspend
 import store
@@ -435,11 +436,17 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     rows = []
     archived_count = 0
     now = time.time()
+    all_tasks = store.list_tasks()
     all_evs: list[list[dict]] = []
+    all_lanes: list[str] = []
+    evs_by_id: dict[str, list[dict]] = {}
     levels: dict[str, str] = {}  # one registry read per repo per poll
-    for t in store.list_tasks():
+    budgets: dict[str, float] = {}  # one registry read per repo per poll
+    for t in all_tasks:
         evs = store.events(t["id"])
-        all_evs.append(evs)  # month spend counts every task, archived or not
+        all_evs.append(evs)  # month spend + scorecard count every task, archived or not
+        all_lanes.append(stepspend.normalize_lane(t.get("lane")))
+        evs_by_id[t["id"]] = evs
         if _is_archived(t):
             archived_count += 1
             if not show_archived:
@@ -448,9 +455,12 @@ def _tasks_payload(show_archived: bool = False) -> dict:
         info = _agy_info(evs) if is_agy else None
         pinfo = None if is_agy else _plan_info(evs, t["state"])
         issue_match = _ISSUE_URL_RE.search(t.get("brief") or "")
+        budget = budgets.setdefault(t["repo"], registry.task_budget(t["repo"]))
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
-            "cost": t["cost"], "pr_url": t["pr_url"],
+            "cost": t["cost"], "budget": budget,
+            "over_budget": scorecard.over_budget(t["cost"], budget),
+            "pr_url": t["pr_url"],
             "stage": (_agy_stage(t["state"], t["reason"], _has_current_plan(evs)) if is_agy
                       else (_plan_claude_stage if pinfo else _stage)(t["state"], t["reason"])),
             "lane": "agy" if is_agy else "claude",
@@ -491,14 +501,20 @@ def _tasks_payload(show_archived: bool = False) -> dict:
     rows.sort(key=lambda r: (not r["needs_you"], not r["active"], -r["_updated"]))
     for r in rows:
         del r["_updated"]
+    tz = os.environ.get("COXD_TZ", "America/New_York")
     spend_now = spend.status()  # cost_ledger: the one authoritative month total
     return {"tasks": rows, "stages": STAGES,
-            "tz": os.environ.get("COXD_TZ", "America/New_York"),
+            "tz": tz,
             "needs_you": sum(r["needs_you"] for r in rows),
             "active": sum(r["active"] for r in rows),
             "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
-            "model_spend": stepspend.month_spend(all_evs, os.environ.get("COXD_TZ", "America/New_York"), now,
-                                                  ledger_total=spend_now["mtd"]),
+            "model_spend": stepspend.month_spend(all_evs, tz, now, ledger_total=spend_now["mtd"]),
+            "phase_bars": {
+                "month": stepspend.phase_spend(all_evs, stepspend.month_start(now, tz), lanes=all_lanes),
+                "all_time": stepspend.phase_spend(all_evs, 0.0, lanes=all_lanes),
+            },
+            "scorecard": scorecard.build(all_tasks, evs_by_id, store.streaks()),
+            "cost_trend": scorecard.weekly_cost_per_landed(all_tasks, evs_by_id, now, tz, weeks=8),
             "factory": factory.status(), "intake": intake.status(), "pii": pii_health.pill(), "spend": spend_now}
 
 
@@ -1039,7 +1055,10 @@ h1{font-size:15px;margin:0}.pill{font-size:12px;color:var(--dim);background:var(
 .row{display:flex;gap:10px;align-items:center}.badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;text-transform:uppercase}
 .b-work{background:#10233b;color:#6cb6ff}.b-warn{background:#2a2110;color:var(--warn)}.b-ok{background:#0f2417;color:var(--ok)}.b-bad{background:#2b1213;color:var(--bad)}
 .tid{font-weight:600;word-break:break-all}.meta{color:var(--dim);font-size:12px;margin-top:2px}.last{font-size:12.5px;margin-top:6px;color:var(--fg);opacity:.85}
-.agychoice ul{margin:6px 0;padding-left:18px}.chip{border-radius:8px;padding:1px 7px;font-size:11px;color:#fff;background:#888}.chip.sev-critical{background:#c0392b}.chip.sev-major{background:#d68910}.chip.sev-minor{background:#7f8c8d}.lane{border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;color:#fff;background:#555}.lane.agy{background:#138d90}.agybox{border:2px solid #138d90;border-radius:8px;padding:10px;margin:8px 0}.agybox code{display:block;font-family:ui-monospace,monospace;font-size:14px;padding:6px;background:#0006;margin:6px 0;user-select:all}.agyplan{white-space:normal;max-height:300px;overflow:auto;padding:6px;border:1px solid #444;margin-top:6px;font-size:12px}.agyplan pre{background:#0006;padding:6px;overflow:auto}.agyc{font-size:15px;padding:10px 16px;flex:1}.agyc small{font-size:11px;opacity:.8}
+.agychoice ul{margin:6px 0;padding-left:18px}.chip{border-radius:8px;padding:1px 7px;font-size:11px;color:#fff;background:#888}.chip.sev-critical{background:#c0392b}.chip.sev-major{background:#d68910}.chip.sev-minor{background:#7f8c8d}.chip.budget{background:#b8860b;color:#fff}.lane{border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;color:#fff;background:#555}.lane.agy{background:#138d90}.agybox{border:2px solid #138d90;border-radius:8px;padding:10px;margin:8px 0}.agybox code{display:block;font-family:ui-monospace,monospace;font-size:14px;padding:6px;background:#0006;margin:6px 0;user-select:all}.agyplan{white-space:normal;max-height:300px;overflow:auto;padding:6px;border:1px solid #444;margin-top:6px;font-size:12px}.agyplan pre{background:#0006;padding:6px;overflow:auto}.agyc{font-size:15px;padding:10px 16px;flex:1}.agyc small{font-size:11px;opacity:.8}
+#scwrap{border-bottom:1px solid var(--line);background:var(--panel)}#scorecard summary{cursor:pointer;font-weight:600;user-select:none}
+.sctbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}.sctbl th,.sctbl td{text-align:right;padding:4px 6px;border-bottom:1px solid var(--line)}.sctbl th:first-child,.sctbl td:first-child,.sctbl th:nth-child(2),.sctbl td:nth-child(2){text-align:left}.sctbl tr.sctot td{font-weight:600;border-top:2px solid var(--line)}
+.pbar-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin-top:4px}.pbar-lbl{min-width:130px}.pbar{display:flex;flex:1;height:8px;border-radius:4px;overflow:hidden;background:var(--bg);border:1px solid var(--line);max-width:260px}.pb-plan{background:#8957e5}.pb-implement{background:#3b82f6}.pb-fix{background:#d29922}.pb-review{background:#3fb950}.pbar-leg{display:flex;gap:10px;font-size:11px;color:var(--dim);margin-top:4px}.pbar-leg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle}.spark{display:inline-flex;align-items:center;gap:6px;margin-left:10px;vertical-align:middle}.unk-lbl{border-bottom:1px dotted var(--dim);cursor:help}
 .retryrow{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}.retryrow button{margin-top:0}.retryrow input{flex:1;min-width:160px;padding:5px 8px}.rsmsg{font-size:12px;color:var(--dim)}
 .mdl{display:block;text-transform:none;font-size:10px;color:#8b949e}.pipe{display:flex;align-items:center;margin-top:10px}.step{display:flex;flex-direction:column;align-items:center;flex:0 0 auto;font-size:10px;text-transform:uppercase;color:#6e7681;cursor:pointer;padding:2px 4px;border-radius:6px;transition:background .15s}.step:hover{background:#1c2333}
 .dot{width:22px;height:22px;border-radius:50%;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;margin-bottom:3px;transition:background .3s,border-color .3s,color .3s,transform .3s}
@@ -1078,13 +1097,15 @@ textarea{resize:vertical}.drow{display:flex;gap:8px}.drow input{flex:1}#dgo.go{b
 <div class=drow><button id=dgo class=go>Dispatch</button><span id=dmsg></span></div>
 </div></section>
 <section id=mspend hidden><div class=dform><div id=spendbody></div></div></section>
+<section id=scwrap hidden><div class=dform><details id=scorecard><summary>Since-start scorecard</summary><div id=scbody></div></details></div></section>
 <section id=sug hidden><div class=dform>
 <div class=row><b>Suggested rules</b><span class=spacer></span><button id=sugtoggle>Hide</button></div>
 <div id=suglist></div>
 </div></section>
 <main id=board><div class=empty>Loading…</div></main>
 <script>
-const open=new Set(),esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));let STAGES=['implement','gate','review','merge'],sig=null;
+const open=new Set(),esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));let STAGES=['implement','gate','review','merge'],sig=null,spSig=null,scSig=null;
+const UNK_LABEL='before model tracking',UNK_TIP='older result events have no model data';
 const STAGE_TIP=[
  'IMPLEMENT — the worker (Claude) writes code in an isolated git worktree and commits. It never pushes; the control plane does that later.',
  'GATE — deterministic checks (migrations, tests, lint, build) run against the repo\\'s real toolchain. Must pass before the paid review runs. A failure here resumes the SAME worker session with the exact error to fix, up to 2 rounds.',
@@ -1157,16 +1178,20 @@ for(const e of document.querySelectorAll('.tm[data-run]'))e.textContent=e.textCo
 for(const e of document.querySelectorAll('.tm[data-resume]')){const r=parseFloat(e.dataset.resume)-Date.now()/1000;e.textContent=e.textContent.replace(/ \\(in [^)]*\\)/,r>0?' (in '+dur(r)+')':'')}},1000);
 function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').textContent='offline';const m=document.getElementById('board');m.innerHTML='<div class="empty offline" id=offline-panel><h2>coxd is not running on this machine</h2>'+(HOST?'<div class=meta>host: '+esc(HOST)+'</div>':'')+'<p><button id=retry>Retry</button></p></div>';document.getElementById('retry').onclick=()=>{m.innerHTML='<div class=empty>Loading…</div>';startWatch()}}
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
-function renderSpend(sp){const el=document.getElementById('mspend');if(!sp){el.hidden=true;return}el.hidden=false;const fm=o=>Object.entries(o||{}).map(([k,v])=>esc(k)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+'<div class=meta>by model: '+fm(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'}
+function sparkHtml(tr){if(!Array.isArray(tr)||!tr.length)return '';const vals=tr.filter(v=>typeof v==='number'&&isFinite(v));const tip=tr.map((v,i)=>'W-'+(tr.length-1-i)+': '+(typeof v==='number'&&isFinite(v)?'$'+v.toFixed(2):'—')).join(' · ');if(!vals.length)return '<span class="spark meta" title="'+esc(tip)+'">8w $/landed: —</span>';const mx=Math.max(...vals,0.01),w=88,h=18,bw=8,gap=3;const rects=tr.map((v,i)=>{const x=i*(bw+gap);if(typeof v!=='number'||!isFinite(v))return '<rect x="'+x+'" y="'+(h-2)+'" width="'+bw+'" height="2" fill="#2a3140"/>';const bh=Math.max(2,Math.round((v/mx)*(h-2)));return '<rect x="'+x+'" y="'+(h-bh)+'" width="'+bw+'" height="'+bh+'" rx="1" fill="#3b82f6"/>'}).join('');const last=vals[vals.length-1];return '<span class="spark meta" title="'+esc(tip)+'">8w $/landed <svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" aria-label="8-week Claude cost per landed task">'+rects+'</svg> $'+last.toFixed(2)+'</span>'}
+function phaseBarsHtml(pb){if(!pb||typeof pb!=='object')return '';const PS=['plan','implement','fix','review'];const rows=[];for(const[plab,pd]of[['month',pb.month],['all-time',pb.all_time]]){if(!pd||typeof pd!=='object')continue;for(const ln of['claude','agy']){const d=pd[ln];if(!d||!(d.total>0))continue;const bp=d.by_phase||{};const tip=PS.map(p=>p+' $'+(bp[p]||0).toFixed(2)).join(' · ');const segs=PS.map(p=>{const v=bp[p]||0;return v>0?'<span class="pb-'+p+'" style="width:'+(v/d.total*100).toFixed(1)+'%"></span>':''}).join('');rows.push('<div class=pbar-row title="'+esc(plab+' · '+ln+': '+tip)+'"><span class=pbar-lbl>'+esc(plab+' · '+ln)+' ($'+d.total.toFixed(2)+')</span><span class=pbar>'+segs+'</span></div>')}}if(!rows.length)return '';return rows.join('')+'<div class=pbar-leg>'+PS.map(p=>'<span><i class="pb-'+p+'"></i>'+esc(p)+'</span>').join('')+'</div>'}
+function renderSpend(sp,pb,tr){const el=document.getElementById('mspend');if(!sp){el.hidden=true;spSig=null;return}el.hidden=false;const sk=JSON.stringify([sp,pb,tr]);if(sk===spSig)return;spSig=sk;const tip=sp.unknown_tip||UNK_TIP;const fmod=o=>Object.entries(o||{}).map(([m,v])=>(m===UNK_LABEL?'<span class=unk-lbl title="'+esc(tip)+'">'+esc(m)+'</span>':esc(m))+' $'+v.toFixed(2)).join(' · ')||'—';const fm=o=>Object.entries(o||{}).map(([m,v])=>esc(m)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+sparkHtml(tr)+'<div class=meta>by model: '+fmod(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'+phaseBarsHtml(pb)}
+function renderScorecard(rows){const wrap=document.getElementById('scwrap'),body=document.getElementById('scbody');if(!Array.isArray(rows)||!rows.length){wrap.hidden=true;scSig=null;return}wrap.hidden=false;const sk=JSON.stringify(rows);if(sk===scSig)return;scSig=sk;const pct=(v,p,t)=>v==null?'—':v.toFixed(0)+'%'+(t!=null?' ('+p+'/'+t+')':'');const mon=v=>v==null?'—':'$'+v.toFixed(2);const strk=r=>r.streak_current==null?'—':r.streak_current+'/'+r.streak_best;const trs=rows.map(r=>'<tr'+(r.is_total?' class=sctot':'')+'><td>'+esc(r.repo)+'</td><td>'+esc(r.lane)+'</td><td>'+r.landed+'</td><td>'+r.needs_you+'</td><td>'+esc(pct(r.first_review_pct,r.first_review_passed,r.first_review_total))+'</td><td>'+esc(pct(r.first_gate_pct,r.first_gate_passed,r.first_gate_total))+'</td><td>'+esc(mon(r.median_cost))+'</td><td>'+esc(mon(r.total_cost))+'</td><td>'+esc(strk(r))+'</td></tr>').join('');body.innerHTML='<table class=sctbl><thead><tr><th>Repo</th><th>Lane</th><th>Landed</th><th>Needs you</th><th>1st review</th><th>1st gate</th><th>Median $</th><th>Total $</th><th>Streak</th></tr></thead><tbody>'+trs+'</tbody></table>'}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;document.getElementById('pcap').textContent=f.concurrency?' / '+f.concurrency:'';if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow>'+(c.send_enabled?'<button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button>':'')+'<button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+(c.send_enabled?'':'<div class=meta>agy gets only the reviewed plan; fixes are done by Claude</div>')+'</div>'}
-function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend,s.phase_bars,s.cost_trend);renderScorecard(s.scorecard);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.cost,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.cost,t.over_budget,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)]]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=BADGE[t.state]||['b-work',t.state];
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
 h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="lane '+(t.lane==='agy'?'agy':'')+'">'+(t.lane==='agy'?'AGY':'CLAUDE')+'</span><span class="badge '+cls+'">'+lab+'</span><span class=tid>'+esc(t.id)+'</span>'+
+(t.over_budget?'<span class="chip budget" title="'+esc('Claude cost $'+(t.cost||0).toFixed(2)+' exceeds $'+(t.budget||3).toFixed(2)+' budget')+'">over budget</span>':'')+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
 '<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3)+(t.plan_cost!=null?' (plan $'+t.plan_cost.toFixed(3)+')':''):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models,t.stages,t.agy_round?{1:'round '+t.agy_round}:null,t.lane==='claude'&&!!t.stages)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+
 (t.lane==='agy'?agyCardHtml(t):planCardHtml(t))+

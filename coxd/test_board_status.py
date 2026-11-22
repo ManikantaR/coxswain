@@ -17,6 +17,7 @@ os.environ.pop("COXD_OWNER_USER", None)
 os.environ.pop("COXD_PROXY_SECRET", None)
 
 import board  # noqa: E402
+import registry  # noqa: E402
 import store  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
@@ -197,6 +198,53 @@ check("/ returns 200 and serves board HTML",
       html_resp.status_code == 200 and "agyCardHtml" in html_resp.text)
 check("queued agy task row has no {' or RateLimitInfo",
       "{'" not in json.dumps(q_row) and "RateLimitInfo" not in json.dumps(q_row))
+
+# --- 6. Budget threshold chip, scorecard, cost_trend, phase_bars & HTML ------
+store.create_task("bud-at", "widgets", "brief", "/tmp/wt")
+store.add_cost("bud-at", 3.0)
+store.create_task("bud-over", "widgets", "brief", "/tmp/wt")
+store.add_cost("bud-over", 3.01)
+store.create_task("bud-under", "widgets", "brief", "/tmp/wt")
+store.add_cost("bud-under", 2.99)
+
+registry.save("high-budget", {"budget_usd": 5.0})
+store.create_task("bud-custom-ok", "high-budget", "brief", "/tmp/wt")
+store.add_cost("bud-custom-ok", 4.5)
+store.create_task("bud-custom-eq", "high-budget", "brief", "/tmp/wt")
+store.add_cost("bud-custom-eq", 5.0)
+store.create_task("bud-custom-hi", "high-budget", "brief", "/tmp/wt")
+store.add_cost("bud-custom-hi", 5.01)
+
+check("default $3 budget: 3.01 is over_budget",
+      row_of("bud-over")["over_budget"] is True and row_of("bud-over")["budget"] == 3.0)
+check("default $3 budget: 3.0 is not over_budget",
+      row_of("bud-at")["over_budget"] is False)
+check("default $3 budget: 2.99 is not over_budget",
+      row_of("bud-under")["over_budget"] is False)
+check("per-repo budget_usd=5.0 override respected",
+      row_of("bud-custom-ok")["over_budget"] is False
+      and row_of("bud-custom-ok")["budget"] == 5.0
+      and row_of("bud-custom-eq")["over_budget"] is False
+      and row_of("bud-custom-hi")["over_budget"] is True)
+
+full_payload = board._tasks_payload()
+check("payload includes scorecard, cost_trend (8w), and phase_bars",
+      isinstance(full_payload.get("scorecard"), list)
+      and len(full_payload["scorecard"]) >= 1
+      and isinstance(full_payload.get("cost_trend"), list)
+      and len(full_payload["cost_trend"]) == 8
+      and set(full_payload.get("phase_bars") or {}) == {"month", "all_time"})
+check("model_spend exposes unknown_tip and maps unknown -> before model tracking",
+      full_payload["model_spend"].get("unknown_tip") == "older result events have no model data"
+      and "unknown" not in full_payload["model_spend"]["by_model"]
+      and "before model tracking" in full_payload["model_spend"]["by_model"])
+
+html_text = client.get("/").text
+check("served HTML contains 'before model tracking' and scorecard panel id",
+      "before model tracking" in html_text
+      and "id=scorecard" in html_text
+      and "renderScorecard" in html_text
+      and ".chip.budget" in html_text)
 
 print("FAILED" if fails else "all passed")
 sys.exit(1 if fails else 0)
