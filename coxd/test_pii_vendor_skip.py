@@ -89,7 +89,8 @@ out, evs = gate("vend")
 sc = scan_ev(evs)
 check("vendor/x.min.js with digits passes", out is None)
 check("pii-scan event lists the path only",
-      sc and sc[0]["numeric_skipped_paths"] == ["vendor/x.min.js"] and DIGITS not in json.dumps(evs))
+      sc and sc[0]["numeric_skipped_paths"] == ["vendor/x.min.js"]
+      and DIGITS not in json.dumps(evs))
 out, evs = gate("src")
 check("same digits in normal source blocks (card)", out == "pii-block"
       and '"card"' in json.dumps(evs) and not scan_ev(evs))

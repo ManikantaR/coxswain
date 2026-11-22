@@ -64,15 +64,20 @@ def srules(loc: str, text: str, deny: list[str] | None = None) -> set[str]:
     return {h.rule for h in pii.scan({loc: text}, deny or [], SK)}
 
 
-check("skip_numeric: card skipped at skipped loc", srules("diff:vendor/x.min.js", f"n={CARD16}") == set())
-check("skip_numeric: card still hits elsewhere", srules("diff:src/app.py", f"n={CARD16}") == {"card"})
-check("skip_numeric: ssn skipped at skipped loc", srules("diff:vendor/x.min.js", f"id {SSN}") == set())
+check("skip_numeric: card skipped at skipped loc",
+      srules("diff:vendor/x.min.js", f"n={CARD16}") == set())
+check("skip_numeric: card still hits elsewhere",
+      srules("diff:src/app.py", f"n={CARD16}") == {"card"})
+check("skip_numeric: ssn skipped at skipped loc",
+      srules("diff:vendor/x.min.js", f"id {SSN}") == set())
 check("skip_numeric: denylist still hits in skipped loc",
       srules("diff:vendor/x.min.js", "hi zzterm-test-1", ["zzterm-test-1"]) == {"denylist"})
 check("skip_numeric: secret still hits in skipped loc",
       srules("diff:vendor/x.min.js", f"k='{GH}'") == {"secret"})
-check("matches_any: defaults + override", pii.matches_any("a/vendor/b.js", ["**/vendor/**"])
-      and pii.matches_any("web/x.min.js", ["*.min.js"]) and not pii.matches_any("src/app.py", ["*.min.js"]))
+check("matches_any: defaults + override",
+      pii.matches_any("a/vendor/b.js", ["**/vendor/**"])
+      and pii.matches_any("web/x.min.js", ["*.min.js"])
+      and not pii.matches_any("src/app.py", ["*.min.js"]))
 check("denylist whole word, any case", rules("hello ZORBLAX!", ["zorblax"]) == {"denylist"})
 check("denylist not inside longer word", rules("zorblaxian", ["zorblax"]) == set())
 
