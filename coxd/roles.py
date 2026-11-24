@@ -1,8 +1,11 @@
 """Per-role model + effort resolution: registry > explicit/env > shipped default.
 
-Roles: worker, review, planner. Env: COXD_WORKER_MODEL / COXD_WORKER_EFFORT /
-COXD_REVIEW_MODEL / COXD_REVIEW_EFFORT. Registry keys (per repo, optional):
-worker_model, worker_effort, review_model, review_effort. An invalid effort at any
+Roles: worker, review, rereview, planner. Env: COXD_WORKER_MODEL / COXD_WORKER_EFFORT /
+COXD_REVIEW_MODEL / COXD_REVIEW_EFFORT / COXD_REREVIEW_MODEL / COXD_REREVIEW_EFFORT.
+Registry keys (per repo, optional): worker_model, worker_effort, review_model,
+review_effort, rereview_model, rereview_effort. `rereview` (a review after a fix round,
+which sees only the delta) defaults to the RESOLVED review model/effort, so nothing
+changes until it is configured. An invalid effort at any
 level is ignored (falls through to the next level) rather than failing a task.
 """
 
@@ -17,6 +20,9 @@ DEFAULTS = {
     "worker_effort": "medium",
     "review_model": "claude-opus-5-5",
     "review_effort": "medium",
+    # re-review after a fix round; None = follow the resolved review_* value
+    "rereview_model": None,
+    "rereview_effort": None,
     # agy-handoff planner: read-only Claude plan step (sonnet-class by default)
     "planner_model": "claude-sonnet-5-5",
     "planner_effort": "medium",
@@ -47,5 +53,5 @@ def resolve(reg: dict | None, **explicit: str | None) -> dict:
                 out[key] = v
                 break
         else:
-            out[key] = default
+            out[key] = out[key.replace("rereview_", "review_")] if default is None else default
     return out

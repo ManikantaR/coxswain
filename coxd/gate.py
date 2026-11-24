@@ -443,6 +443,72 @@ def review_diff(worktree: Path, entry: dict | None = None, base: str | None = No
             return ""
 
 
+_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+_STAT_CAP = 8_000
+_FINDINGS_CAP = 20_000
+
+
+def head_sha(worktree: Path) -> str | None:
+    """The worktree's HEAD commit, or None on any error."""
+    try:
+        r = sandbox.run_in_worktree(["git", "rev-parse", "HEAD"], worktree)
+    except Exception:
+        return None
+    out = (r.stdout or "").strip()
+    return out if r.returncode == 0 and _SHA_RE.match(out) else None
+
+
+def _is_ancestor(worktree: Path, sha: str) -> bool:
+    try:
+        r = sandbox.run_in_worktree(["git", "merge-base", "--is-ancestor", sha, "HEAD"],
+                                    worktree)
+    except Exception:
+        return False
+    return r.returncode == 0
+
+
+def rereview_input(worktree: Path, entry: dict | None, since_sha: str | None,
+                   prev_findings: list | None, budget: int = REVIEW_DIFF_BUDGET) -> str:
+    """Reviewer input for a review after a fix round: only the changes since the last
+    reviewed commit, the previous findings, and the full-diff --stat for context.
+
+    Falls back to the plain full review diff when `since_sha` is missing/invalid or is
+    not an ancestor of HEAD (e.g. the branch was rebased) — never a delta we can't trust.
+    """
+    if not since_sha or not _SHA_RE.match(since_sha) or not _is_ancestor(worktree, since_sha):
+        return review_diff(worktree, entry, budget=budget)
+    try:
+        findings = json.dumps(prev_findings or [], indent=1, default=str)
+    except Exception:
+        findings = str(prev_findings)
+    if len(findings) > _FINDINGS_CAP:
+        findings = findings[:_FINDINGS_CAP] + "\n[findings truncated]"
+    stat = ""
+    try:
+        r = sandbox.run_in_worktree(["git", "diff", "--stat", f"{_base_ref(worktree)}...HEAD"],
+                                    worktree)
+        if r.returncode == 0:
+            stat = r.stdout[:_STAT_CAP]
+    except Exception:
+        pass
+    head = (
+        "RE-REVIEW. You already reviewed an earlier version of this branch. The author has "
+        "since pushed fixes.\n"
+        "1. For EACH previous finding below, verify from the new changes whether it is "
+        "actually fixed. Any previous high or medium finding that is not fixed MUST be "
+        "re-reported, and you must NOT approve while one remains.\n"
+        "2. Review ONLY the new changes (the delta diff below) for correctness, security "
+        "and contract problems, including regressions introduced by the fixes. Do not "
+        "re-review code that is unchanged since your last review.\n"
+        "3. The full-diff stat is context only; use read-only tools if you need to see "
+        "surrounding code.\n\n"
+        f"## Previous findings\n{findings}\n\n"
+        f"## Full-diff stat (context only)\n{stat or '(unavailable)'}\n\n"
+        f"## New changes since last review ({since_sha[:12]}..HEAD)\n")
+    delta = review_diff(worktree, entry, base=since_sha, budget=max(budget - len(head), 10_000))
+    return head + (delta if delta.strip() else "(no changes since the last review)\n")
+
+
 def _hard_cap(text: str, budget: int) -> str:
     if len(text) <= budget:
         return text

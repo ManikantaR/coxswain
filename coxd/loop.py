@@ -163,14 +163,37 @@ async def run_task(task_id: str, worker_model: str | None = None,
     entry = registry.get_or_scout(repo, wt)
     return await _gate_review_ship(task_id, wt, repo, entry, worker_model,
                                    review_model, cfg["worker_effort"], emit,
-                                   review_effort=cfg["review_effort"])
+                                   review_effort=cfg["review_effort"],
+                                   rereview_model=cfg["rereview_model"],
+                                   rereview_effort=cfg["rereview_effort"])
+
+
+def _last_review(task_id: str) -> tuple[str, list] | None:
+    """(reviewed head sha, findings) of the latest completed review that asked for fixes,
+    or None. Used when a review runs after a fix round without in-memory state (agy
+    pickup / human resume). Needs a recorded head, else the caller does a full review."""
+    try:
+        evs = store.events(task_id)
+    except Exception:
+        return None
+    for e in reversed(evs):
+        d = e["data"]
+        if e["kind"] == "review" and d.get("outcome") == "reviewed":
+            if d.get("verdict") == "fix" and d.get("head") and d.get("findings"):
+                return d["head"], d["findings"]
+            return None  # latest completed review wasn't a fix request
+    return None
 
 
 async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
                             worker_model: str, review_model: str, effort: str,
-                            emit, review_effort: str = "medium") -> str:
+                            emit, review_effort: str = "medium",
+                            rereview_model: str | None = None,
+                            rereview_effort: str | None = None) -> str:
     """The tail shared by a fresh implement (run_task) and a human-resumed retry
     (resume_task): gate (+ resumed fix loop) -> one review pass -> ship -> CI watch."""
+    rereview_model = rereview_model or review_model
+    rereview_effort = rereview_effort or review_effort
     fixes = 0
     mode = registry.fix_mode(entry)
     fresh = mode == "fresh"
@@ -203,12 +226,22 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
 
     # --- one review pass ---------------------------------------------------
     store.set_state(task_id, "reviewing")
-    r = await lane.review(gate.review_diff(wt, entry), review_model, emit, effort=review_effort,
+    # A review after an earlier `fix` review (agy/human-resumed round) is a re-review.
+    prev = _last_review(task_id)
+    head = await asyncio.to_thread(gate.head_sha, wt)
+    if prev:
+        rv_input = await asyncio.to_thread(gate.rereview_input, wt, entry, prev[0], prev[1])
+        rv_model, rv_effort = rereview_model, rereview_effort
+    else:
+        rv_input = gate.review_diff(wt, entry)
+        rv_model, rv_effort = review_model, review_effort
+    r = await lane.review(rv_input, rv_model, emit, effort=rv_effort,
                           worktree=wt)
     store.add_cost(task_id, r.cost)
     if r.quota_reset_at:
         raise quota.QuotaWait(r.quota_reset_at, "review")
-    emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings})
+    emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings,
+                    "head": head, **({"pass": "re-review"} if prev else {})})
     if r.outcome == "reviewed":
         store.set_review(task_id, r.verdict, r.findings)
     if r.outcome == "review-error":
@@ -234,13 +267,16 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         # let two PRs land with their own reviewer's blocking finding still
         # open (2026-10). Only a fresh `approve` ships; anything else stops.
         store.set_state(task_id, "reviewing")
-        r = await lane.review(gate.review_diff(wt, entry), review_model, emit, effort=review_effort,
-                          worktree=wt)
+        prev_findings = r.findings
+        rv_input = await asyncio.to_thread(gate.rereview_input, wt, entry, head, prev_findings)
+        head = await asyncio.to_thread(gate.head_sha, wt)
+        r = await lane.review(rv_input, rereview_model, emit, effort=rereview_effort,
+                              worktree=wt)
         store.add_cost(task_id, r.cost)
         if r.quota_reset_at:
             raise quota.QuotaWait(r.quota_reset_at, "re-review")
         emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings,
-                        "pass": "re-review"})
+                        "pass": "re-review", "head": head})
         if r.outcome == "reviewed":
             store.set_review(task_id, r.verdict, r.findings)
         if r.outcome == "review-error":
@@ -314,12 +350,21 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
         return "waiting_agy"
     store.set_gate_steps(task_id, g.get("steps"), g.get("test_output"))
     store.set_state(task_id, "reviewing")
-    r = await lane.review(gate.review_diff(wt, entry), cfg["review_model"], emit,
-                          effort=cfg["review_effort"], worktree=wt)
+    prev = _last_review(task_id)
+    head = await asyncio.to_thread(gate.head_sha, wt)
+    if prev:  # a review after an earlier `fix` review: delta + previous findings
+        rv_input = await asyncio.to_thread(gate.rereview_input, wt, entry, prev[0], prev[1])
+        rv_model, rv_effort = cfg["rereview_model"], cfg["rereview_effort"]
+    else:
+        rv_input = gate.review_diff(wt, entry)
+        rv_model, rv_effort = cfg["review_model"], cfg["review_effort"]
+    r = await lane.review(rv_input, rv_model, emit,
+                          effort=rv_effort, worktree=wt)
     store.add_cost(task_id, r.cost)
     if r.quota_reset_at:  # just wait for the reset (quota.park); never fall back
         raise quota.QuotaWait(r.quota_reset_at, "review")
-    emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings})
+    emit("review", {"outcome": r.outcome, "verdict": r.verdict, "findings": r.findings,
+                    "head": head, **({"pass": "re-review"} if prev else {})})
     if r.outcome == "reviewed":
         store.set_review(task_id, r.verdict, r.findings)
     if r.outcome == "review-error":
@@ -366,7 +411,9 @@ async def _agy_claude_fix(task_id: str, t: dict, wt: Path, cfg: dict, emit,
     entry = registry.get_or_scout(t["repo"], wt)
     return await _gate_review_ship(task_id, wt, t["repo"], entry, cfg["worker_model"],
                                    cfg["review_model"], cfg["worker_effort"], emit,
-                                   review_effort=cfg["review_effort"])
+                                   review_effort=cfg["review_effort"],
+                                   rereview_model=cfg["rereview_model"],
+                                   rereview_effort=cfg["rereview_effort"])
 
 
 async def resume_task(task_id: str, note: str, worker_model: str | None = None,
@@ -404,7 +451,9 @@ async def resume_task(task_id: str, note: str, worker_model: str | None = None,
     entry = registry.get_or_scout(repo, wt)
     return await _gate_review_ship(task_id, wt, repo, entry, worker_model,
                                    review_model, cfg["worker_effort"], emit,
-                                   review_effort=cfg["review_effort"])
+                                   review_effort=cfg["review_effort"],
+                                   rereview_model=cfg["rereview_model"],
+                                   rereview_effort=cfg["rereview_effort"])
 
 
 MAX_FRESH_PER_TASK = 2
