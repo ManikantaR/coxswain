@@ -55,6 +55,29 @@ check("card with short groups before and after caught",
       rules(f"12 {SPACED} 34") == {"card"})
 check("published test card + expiry still ok",
       rules("4242 4242 4242 4242 12/25") == set())
+# --- skip_numeric: card/ssn skipped only at the given locations; secret/denylist never
+SK = {"diff:vendor/x.min.js"}
+CARD16 = "4929" + "0000" + "0000" + "0000"
+
+
+def srules(loc: str, text: str, deny: list[str] | None = None) -> set[str]:
+    return {h.rule for h in pii.scan({loc: text}, deny or [], SK)}
+
+
+check("skip_numeric: card skipped at skipped loc",
+      srules("diff:vendor/x.min.js", f"n={CARD16}") == set())
+check("skip_numeric: card still hits elsewhere",
+      srules("diff:src/app.py", f"n={CARD16}") == {"card"})
+check("skip_numeric: ssn skipped at skipped loc",
+      srules("diff:vendor/x.min.js", f"id {SSN}") == set())
+check("skip_numeric: denylist still hits in skipped loc",
+      srules("diff:vendor/x.min.js", "hi zzterm-test-1", ["zzterm-test-1"]) == {"denylist"})
+check("skip_numeric: secret still hits in skipped loc",
+      srules("diff:vendor/x.min.js", f"k='{GH}'") == {"secret"})
+check("matches_any: defaults + override",
+      pii.matches_any("a/vendor/b.js", ["**/vendor/**"])
+      and pii.matches_any("web/x.min.js", ["*.min.js"])
+      and not pii.matches_any("src/app.py", ["*.min.js"]))
 check("denylist whole word, any case", rules("hello ZORBLAX!", ["zorblax"]) == {"denylist"})
 check("denylist not inside longer word", rules("zorblaxian", ["zorblax"]) == set())
 
@@ -167,7 +190,7 @@ calls: list[list[str]] = []
 state = {"diff": "", "log": "msg", "fail": False}
 
 
-def fake_items(repo_path, base, ref, title, body, deny=None):
+def fake_items(repo_path, base, ref, title, body, deny=None, exclude=None, skip_out=None):
     if state["fail"]:
         raise RuntimeError("boom")
     items = {f"diff:{p}": t for p, t in ship._added_lines(state["diff"]).items()}
@@ -277,6 +300,8 @@ import lane  # noqa: E402
 
 check("reviewer prompt has the no-names rule", "Never write people's names" in lane._CRITERIA)
 check("planner prompt has the no-names rule", "Never write people's names" in lane._PLAN_PROMPT)
+check("planner prompt has the invented-identifiers rule",
+      "Never copy an id, email or name" in lane._PLAN_PROMPT)
 
 ship._build_body = _real_build_body
 ship._test_evidence = lambda wt: "evidence"

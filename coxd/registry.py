@@ -149,6 +149,9 @@ def scout(repo_path: Path) -> dict:
                    "merge_level": "manual",  # manual | proposed | auto (earned; see D29)
                    "intake": False,  # opt-in: poll for `coxd-ready` issues (intake.py)
                    "gate_env": {},  # env the gate injects to match CI (e.g. NODE_OPTIONS heap)
+                   # globs left out of the review diff; None = gate.DEFAULT_REVIEW_EXCLUDE,
+                   # a list replaces it
+                   "review_exclude": None,
                    # Opt-in auto-deploy after a merge lands (landed.py). Disabled by
                    # default — set enabled+command per repo. cwd defaults to the repo;
                    # gate_on_ci skips the deploy if the target branch's CI is red.

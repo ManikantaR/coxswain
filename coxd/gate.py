@@ -342,3 +342,153 @@ def diff(worktree: Path, base: str | None = None) -> str:
     if r.returncode != 0:  # e.g. no common ancestor — fall back to the last commit's diff
         r = sandbox.run_in_worktree(["git", "show", "HEAD"], worktree)
     return r.stdout
+
+
+# --- review diff: leave vendored/generated files out, cap the size ----------------------
+# A task that vendored minified libs sent a ~1.3M-token `git diff` to the reviewer and
+# died with "Prompt is too long". The reviewer gets source changes in full, and only a
+# one-line summary (path + size) of vendored/generated files so it can still flag them.
+# Override per repo with the registry key `review_exclude` (a list REPLACES these defaults).
+DEFAULT_REVIEW_EXCLUDE = [
+    "**/vendor/**", "vendor/**", "*.min.js", "*.min.css", "*.map",
+    "package-lock.json", "pnpm-lock.yaml", "poetry.lock", "uv.lock",
+]
+REVIEW_DIFF_BUDGET = 400_000
+_LIST_CAP = 100       # max paths listed per header section
+_PATH_CLIP = 200      # clip pathological path lengths in the header
+
+
+def _review_patterns(entry: dict | None) -> list[str]:
+    pats = (entry or {}).get("review_exclude")
+    if pats is None:
+        return list(DEFAULT_REVIEW_EXCLUDE)
+    if not isinstance(pats, list) or not all(isinstance(p, str) for p in pats):
+        return list(DEFAULT_REVIEW_EXCLUDE)  # malformed registry value — fail safe, not open
+    return [p.strip() for p in pats if p.strip()]
+
+
+def _pathspec(pat: str) -> str:
+    # git's :(glob) anchors at the repo root; a slash-less pattern ("*.min.js",
+    # "package-lock.json") should match at any depth, as in .gitignore.
+    if "/" not in pat:
+        pat = "**/" + pat
+    return f":(exclude,glob){pat}"
+
+
+def _numstat(worktree: Path, base: str, specs: list[str]) -> dict[str, tuple[str, str]] | None:
+    r = sandbox.run_in_worktree(
+        ["git", "diff", "--numstat", "-z", "--no-renames", f"{base}...HEAD", "--", ".", *specs],
+        worktree)
+    if r.returncode != 0:
+        return None
+    out: dict[str, tuple[str, str]] = {}
+    for rec in r.stdout.split("\0"):
+        parts = rec.split("\t", 2)
+        if len(parts) == 3:
+            out[parts[2].lstrip("\n")] = (parts[0], parts[1])
+    return out
+
+
+def _clip(p: str) -> str:
+    return p if len(p) <= _PATH_CLIP else p[:_PATH_CLIP] + "…"
+
+
+def _blob_size(worktree: Path, path: str) -> str:
+    r = sandbox.run_in_worktree(["git", "cat-file", "-s", f"HEAD:{path}"], worktree)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "?"
+
+
+def _split_files(text: str) -> list[str]:
+    parts = re.split(r"(?m)^(?=diff --git )", text)
+    return [p for p in parts if p]
+
+
+def _cap_per_file(chunks: list[str], avail: int) -> tuple[list[str], list[str]]:
+    """Shrink the largest files until the total fits `avail`; return (chunks, truncated names)."""
+    if sum(len(c) for c in chunks) <= avail:
+        return chunks, []
+    lo, hi = 0, max(len(c) for c in chunks)
+    while lo < hi:  # largest per-file cap whose total fits
+        mid = (lo + hi + 1) // 2
+        if sum(min(len(c), mid) for c in chunks) <= avail:
+            lo = mid
+        else:
+            hi = mid - 1
+    cap, out, names = lo, [], []
+    for c in chunks:
+        if len(c) <= cap:
+            out.append(c)
+            continue
+        m = re.match(r"diff --git a/(.*?) b/", c)
+        names.append(_clip(m.group(1) if m else c.split("\n", 1)[0]))
+        out.append(c[:cap].rstrip("\n") + f"\n[truncated: {len(c) - cap} of {len(c)} chars "
+                   "omitted — run `git diff` on this file for the rest]\n")
+    return out, names
+
+
+def review_diff(worktree: Path, entry: dict | None = None, base: str | None = None,
+                budget: int = REVIEW_DIFF_BUDGET) -> str:
+    """The diff the reviewer sees: `diff()` minus vendored/generated/binary files, capped.
+
+    Excluded files are listed up front with their size so they stay visible. If what
+    remains still exceeds `budget`, files are truncated (largest first) with a marker.
+    Never raises: on any error it falls back to a hard-sliced `diff()`.
+    """
+    try:
+        return _review_diff(worktree, entry, base, budget)
+    except Exception:  # a review input must degrade, never error out
+        try:
+            return _hard_cap(diff(worktree, base), budget)
+        except Exception:
+            return ""
+
+
+def _hard_cap(text: str, budget: int) -> str:
+    if len(text) <= budget:
+        return text
+    return text[:budget] + f"\n[truncated at {budget} chars; run `git diff` for the rest]"
+
+
+def _review_diff(worktree: Path, entry: dict | None, base: str | None, budget: int) -> str:
+    base = base or _base_ref(worktree)
+    pats = _review_patterns(entry)
+    specs = [_pathspec(p) for p in pats]
+    all_files = _numstat(worktree, base, [])
+    if all_files is None:  # no merge-base etc. — same fallback as diff()
+        return _hard_cap(diff(worktree, base), budget)
+    kept = _numstat(worktree, base, specs) if specs else dict(all_files)
+    if kept is None:
+        kept = dict(all_files)
+    binary = {p for p, (a, d) in all_files.items() if a == "-" and d == "-"}
+    skipped = [p for p in all_files if p not in kept or p in binary]
+    shown_specs = specs + [f":(exclude,literal){p}" for p in sorted(binary)]
+    r = sandbox.run_in_worktree(
+        ["git", "diff", "--no-renames", f"{base}...HEAD", "--", ".", *shown_specs], worktree)
+    if r.returncode != 0:
+        raise RuntimeError("git diff failed")
+    chunks = _split_files(r.stdout)
+
+    lines: list[str] = []
+    if skipped:
+        lines.append("Not shown (vendored/generated/binary — flag any that look suspicious, "
+                     "e.g. a vendored file with no recorded licence or version):")
+        for p in skipped[:_LIST_CAP]:
+            a, d = all_files[p]
+            size = (f"binary, {_blob_size(worktree, p)} bytes" if p in binary
+                    else f"+{a}/-{d} lines")
+            lines.append(f"  {_clip(p)}  {size}")
+        if len(skipped) > _LIST_CAP:
+            lines.append(f"  … +{len(skipped) - _LIST_CAP} more")
+    header = "\n".join(lines) + "\n\n" if lines else ""
+    # reserve room for the "Truncated" list and per-file markers before capping
+    reserve = 300 + _LIST_CAP * (_PATH_CLIP + 6) + 160 * len(chunks)
+    chunks, truncated = _cap_per_file(chunks, max(budget - len(header) - reserve, 0))
+    if truncated:
+        header += ("Truncated (diff over budget — only the start of these files is shown):\n"
+                   + "\n".join(f"  {p}" for p in truncated[:_LIST_CAP])
+                   + (f"\n  … +{len(truncated) - _LIST_CAP} more" if len(truncated) > _LIST_CAP
+                      else "") + "\n\n")
+    out = header + "".join(chunks)
+    if len(out) > budget:  # backstop (e.g. thousands of tiny files)
+        out = out[:max(budget - 40, 0)] + "\n[truncated at budget]"
+    return out

@@ -249,12 +249,16 @@ def _resolve_base(repo_path: Path, preferred: str | None = None) -> str:
 
 
 def _pii_items(repo_path: Path, base: str, ref: str, title: str, body: str,
-               deny: list[str] | None = None) -> dict[str, str]:
+               deny: list[str] | None = None, exclude: list[str] | None = None,
+               skip_out: dict[str, str | None] | None = None) -> dict[str, str]:
     """What publishing `ref` would expose, as scan items: each commit's own patch
     (add-then-remove history; merges diffed against the first parent), the net diff,
     changed file paths, every commit message, the PR title and body. Author/committer
     names are NOT scanned. Changed paths are scanned too; a path that itself hits is
-    reported only as `path:<i>` / `diff:path:<i>`, never by name."""
+    reported only as `path:<i>` / `diff:path:<i>`, never by name.
+    If `skip_out` is given, it receives {diff location: path} for every diff whose path
+    matches the `exclude` globs (vendored/minified: numeric rules don't apply there). The
+    value is None for a path that itself hits a rule — it must not be named."""
     _git_text(repo_path, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
     _git_text(repo_path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
     flags = (*_PATCH_FLAGS, "--diff-merges=first-parent")
@@ -274,6 +278,8 @@ def _pii_items(repo_path: Path, base: str, ref: str, title: str, body: str,
         for pth, txt in _added_lines(src).items():
             loc = f"diff:path:{idx[pth]}" if pth in dirty and pth in idx else f"diff:{pth}"
             items[loc] = items.get(loc, "") + "\n" + txt
+            if skip_out is not None and exclude and pii.matches_any(pth, exclude):
+                skip_out[loc] = None if pth in dirty else pth
     for i, msg in enumerate(x for x in msgs.split("\0") if x.strip()):
         items[f"commit:{i}"] = msg
     items["pr-title"] = title
@@ -327,8 +333,15 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
             return _pii_block(task_id, "pii-scan-error", {"error": why})
         if missing:
             store.append_event(task_id, "pii-denylist-missing", {})
-        hits = pii.scan(_pii_items(repo_path, base, sha, title, body, deny),
-                        deny)
+        excl = gate._review_patterns(entry)
+        skipped: dict[str, str | None] = {}
+        hits = pii.scan(_pii_items(repo_path, base, sha, title, body, deny, excl, skipped),
+                        deny, set(skipped))
+        names = sorted({n[:gate._PATH_CLIP] for n in skipped.values() if n})
+        if names:  # paths only, never content
+            store.append_event(task_id, "pii-scan", {
+                "numeric_skipped_paths": names[:gate._LIST_CAP],
+                "numeric_skipped_total": len(names)})
         dg, fxd = entry.get("data_globs"), entry.get("fixture_dir")
         if dg is not None and (not isinstance(dg, list) or not all(isinstance(x, str) for x in dg)
                                or not (fxd is None or isinstance(fxd, str))):
@@ -346,7 +359,9 @@ def _pii_gate(task_id: str, t: dict, repo_path: Path, branch: str, wt: Path,
         hits = kept
         if hits and all(h.location == "pr-body" for h in hits):
             body = _redacted_body(t, wt, _tier, _reasons)
-            again = pii.scan(_pii_items(repo_path, base, sha, title, body, deny), deny)
+            skipped2: dict[str, str | None] = {}
+            again = pii.scan(_pii_items(repo_path, base, sha, title, body, deny, excl,
+                                        skipped2), deny, set(skipped2))
             again = [h for h in again if not (
                 h.rule != "secret" and (h.rule, h.location, task_id) in allow)]
             if not again:
