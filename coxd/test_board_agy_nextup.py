@@ -58,7 +58,7 @@ EXISTING_ROW_KEYS = {
     "agy_pickup", "waiting_since", "active", "needs_you", "issue_url",
     "archivable", "archived", "resumable", "agy_cmd", "agy_round", "agy_status",
     "choice", "quota_wait_at", "approve_auto", "deployable", "last", "timing",
-    "models", "resume_at",
+    "models", "resume_at", "budget", "over_budget",
 }
 
 

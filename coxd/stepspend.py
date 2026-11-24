@@ -7,10 +7,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 UNKNOWN = "unknown"
+UNKNOWN_LABEL = "before model tracking"
+UNKNOWN_TIP = "older result events have no model data"
+LANES = ("claude", "agy")
 # state in force when a result event lands -> phase
 _PHASE = {"planning": "plan", "provisioning": "implement", "working": "implement", "fixing": "fix",
           "reviewing": "review"}
-PHASES = ("implement", "fix", "review")
+PHASES = ("plan", "implement", "fix", "review")
 _NEW = re.compile(r"^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?:\[.*\])?$")
 _OLD = re.compile(r"^claude-(\d+)(?:-(\d{1,2}))?-(opus|sonnet|haiku)(?:-\d{8})?(?:\[.*\])?$")
 
@@ -79,31 +82,75 @@ def stage_models(events: list[dict]) -> dict[int, str]:
     return out
 
 
-def aggregate(events_by_task: list[list[dict]], since: float) -> dict:
-    """Totals for result events at/after `since`: per model and per phase."""
+def normalize_lane(lane: str | None) -> str:
+    return "agy" if lane in ("agy", "agy-handoff") else "claude"
+
+
+def _iter_lane_events(events_by_task: list, lanes: list[str | None] | None = None):
+    """Yield (normalized_lane, events) pairs from either list[list[dict]] (+ optional lanes)
+    or list[tuple[lane, list[dict]]]."""
+    for idx, item in enumerate(events_by_task):
+        if isinstance(item, tuple) and len(item) == 2:
+            ln, evs = item
+            yield normalize_lane(ln), evs
+        else:
+            ln = lanes[idx] if lanes is not None and idx < len(lanes) else None
+            yield normalize_lane(ln), item
+
+
+def _display_models(by_model: dict[str, float]) -> dict[str, float]:
+    """Map the internal `unknown` key to UNKNOWN_LABEL for display."""
+    out: dict[str, float] = {}
+    for k, v in by_model.items():
+        label = UNKNOWN_LABEL if k == UNKNOWN else k
+        out[label] = out.get(label, 0.0) + v
+    return out
+
+
+def aggregate(events_by_task: list, since: float, *, lane: str | None = None,
+              lanes: list[str | None] | None = None) -> dict:
+    """Totals for result events at/after `since`: per model and per phase.
+    When `lane` is given, only tasks in that lane are included."""
+    want_lane = normalize_lane(lane) if lane is not None else None
     by_model: dict[str, float] = {}
     by_phase = {p: 0.0 for p in PHASES}
     total = 0.0
-    for evs in events_by_task:
+    for task_lane, evs in _iter_lane_events(events_by_task, lanes):
+        if want_lane is not None and task_lane != want_lane:
+            continue
         for phase, e in phased_results(evs):
             if (e.get("ts") or 0) < since:
                 continue
             for m, c in result_costs(e["data"]).items():
                 name = short_name(m)
                 by_model[name] = by_model.get(name, 0.0) + c
-                by_phase[phase] = by_phase.get(phase, 0.0) + c  # `plan` only when used
+                by_phase[phase] = by_phase.get(phase, 0.0) + c
                 total += c
     return {"total": total, "by_model": by_model, "by_phase": by_phase}
 
 
-def month_spend(events_by_task: list[list[dict]], tz: str = "UTC",
-                now: float | None = None, ledger_total: float | None = None) -> dict:
+def phase_spend(events_by_task: list, since: float = 0.0, *,
+                lanes: list[str | None] | None = None) -> dict[str, dict]:
+    """Per-lane phase totals (plan/implement/fix/review) for result events at/after `since`.
+    Uses the exact same attribution as `aggregate` (all-time uses `since=0`)."""
+    out: dict[str, dict] = {}
+    for ln in LANES:
+        agg = aggregate(events_by_task, since, lane=ln, lanes=lanes)
+        out[ln] = {"total": agg["total"], "by_phase": agg["by_phase"]}
+    return out
+
+
+def month_spend(events_by_task: list, tz: str = "UTC",
+                now: float | None = None, ledger_total: float | None = None,
+                *, lane: str | None = None, lanes: list[str | None] | None = None) -> dict:
     """Month-to-date spend. With `ledger_total` (spend.month_to_date(), the cost_ledger
     sum — the authoritative total) the panel total IS that number. Any remainder the result
     events don't cover is 'unattributed' in both breakdowns; if events exceed the ledger the
     gap is clamped to 0 and reported as `events_exceed_ledger`."""
     now = time.time() if now is None else now
-    out = aggregate(events_by_task, month_start(now, tz))
+    out = aggregate(events_by_task, month_start(now, tz), lane=lane, lanes=lanes)
+    out["by_model"] = _display_models(out["by_model"])
+    out["unknown_tip"] = UNKNOWN_TIP
     if ledger_total is not None:
         gap = ledger_total - out["total"]
         if gap >= 0.005:
