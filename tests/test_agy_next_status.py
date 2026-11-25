@@ -60,7 +60,8 @@ def go(tmp_path, agy_body, mode="ok", stdin="y\n"):
 def test_status_posted_to_board(tmp_path):
     r, posts = go(tmp_path, STEP)
     assert r.returncode == 0, r.stderr
-    assert all(p[0] == "/api/task/T1/agy-status" and p[1] == "application/json" for p in posts)
+    posts = [p for p in posts if p[0] == "/api/task/T1/agy-status"]
+    assert posts and all(p[1] == "application/json" for p in posts)
     bodies = [p[2] for p in posts]
     assert any(b["action"] == "edit: web/x.ts" and b["step"] == 1 for b in bodies)
     assert bodies[-1]["action"] == "finished, publishing"

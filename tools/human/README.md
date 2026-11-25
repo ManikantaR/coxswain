@@ -56,6 +56,41 @@ modifying anything. Normal `agy-next <task_id>` runs also perform an automatic q
 before creating the worktree (excluding `<task_id>`, printing only when something is removed or
 a remote branch is deleted, and never failing the run; set `AGY_NEXT_PRUNE=0` to disable).
 
+### Board usage reporting
+
+Once per confirmed publish, `agy-next` scans the saved stream (`$tmp/agy.out`) for the final
+`result` event's `usage` and `duration_seconds` (falling back to `$tmp/usage.json` and
+`SECONDS - run_t0` when no `result` event is present) and sends a single
+`POST /api/task/<id>/agy-usage` with:
+
+```json
+{
+  "input_tokens": 120000,
+  "output_tokens": 30000,
+  "thinking_tokens": 10000,
+  "cache_read_tokens": 60000,
+  "duration_seconds": 360,
+  "model": "gemini-4-hydrogen-high"
+}
+```
+
+- **Once per publish**: Nothing is posted if `agy` made no changes or if you decline the publish prompt.
+- **Warn and continue**: The request uses `curl -m 5 --connect-timeout 3 -s -f`. If the board is
+  unreachable, times out, or returns an error, `agy-next` prints a warning to stderr
+  (`agy-next: warning: could not post usage to board`) and still exits `0` after pushing.
+- **Board label & subscription separation**: The board renders a separate meta line on the card
+  (`agy: 220k tok · 6m · ≈$1.40 (subscription)`) and a separate monthly summary line in the spend
+  panel (`agy (subscription): N runs · X M tokens · ≈$Y`) with the tooltip
+  `"≈ API price (paid by subscription)"`. Because `agy` runs under your subscription, its
+  estimated USD is display-only and is **never** added to `spend`, `cost_ledger`, `claude_total`,
+  `model_spend`, or the monthly Claude total.
+- **Price table & override file**: `coxd/agyusage.py` estimates API-equivalent cost from a static
+  `PRICES` table in USD per 1M tokens (including Hydrogen at `1.50` input / `7.50` output, with
+  thinking tokens billed at the output rate, `cache_read` at `0.10 × input`, and a `default`
+  fallback for unknown models). You can override or add model rates in
+  `$COXD_HOME/agy-prices.json`; if the file is missing or malformed, `coxd` falls back to the
+  built-in defaults.
+
 ## Sandbox and safety
 
 agy runs with `--sandbox` (terminal restrictions) by default; `--no-sandbox` turns it off

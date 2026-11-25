@@ -23,6 +23,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import agy_handoff
+import agyusage
 import factory
 import intake
 import pii_health
@@ -592,6 +593,7 @@ def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> 
             "agy_round": (sum(1 for e in evs if e["kind"] == "plan")
                           if is_agy else None),
             "agy_status": _agy_status_view(t, info),
+            **({"agy_usage": agyusage.latest(evs)} if is_agy else {}),
             "choice": _choice_payload(t, evs) if t["state"] == "needs_choice" else None,
             "quota_wait_at": agy_handoff.quota_wait_at(t) if t.get("lane") == "agy-handoff" else None,
             # Deploy button shows on a landed task whose repo has a deploy command.
@@ -621,6 +623,7 @@ def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> 
             "active": sum(r["active"] for r in rows),
             "archived": archived_count, "archive_days": _ARCHIVE_DAYS,
             "model_spend": stepspend.month_spend(all_evs, tz, now, ledger_total=spend_now["mtd"]),
+            "agy_spend": agyusage.month(all_evs, tz, now),
             "phase_bars": {
                 "month": stepspend.phase_spend(all_evs, stepspend.month_start(now, tz), lanes=all_lanes),
                 "all_time": stepspend.phase_spend(all_evs, 0.0, lanes=all_lanes),
@@ -721,6 +724,28 @@ async def api_task_agy_status(req: Request) -> JSONResponse:
     if now - _AGY_EVENT_AT.get(tid, 0.0) >= AGY_EVENT_EVERY_S:
         _AGY_EVENT_AT[tid] = now
         store.append_event(tid, "agy-status", {k: st[k] for k in ("step", "action", "elapsed_s", "tokens")})
+    return JSONResponse({"ok": True})
+
+
+async def api_task_agy_usage(req: Request) -> JSONResponse:
+    """The human's agy-next script posts final usage and duration once per publish."""
+    tid = req.path_params["tid"]
+    t = store.get_task(tid)
+    if t is None or t.get("lane") != "agy-handoff":
+        return JSONResponse({"error": "no such agy-handoff task"}, status_code=404)
+    if req.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        return JSONResponse({"error": "content-type must be application/json"}, status_code=415)
+    raw = await req.body()
+    if len(raw) > _AGY_STATUS_MAX_BODY:
+        return JSONResponse({"error": "body too large"}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    cleaned, err = agyusage.clean(body)
+    if cleaned is None:
+        return JSONResponse({"error": err}, status_code=400)
+    store.append_event(tid, "agy-usage", cleaned)
     return JSONResponse({"ok": True})
 
 
@@ -1140,6 +1165,7 @@ app = Starlette(middleware=[Middleware(_GuardMiddleware)], routes=[
     Route("/api/task/{tid}/retry", api_task_retry, methods=["POST"]),
     Route("/api/task/{tid}/agy-choice", api_task_choice, methods=["POST"]),
     Route("/api/task/{tid}/agy-status", api_task_agy_status, methods=["POST"]),
+    Route("/api/task/{tid}/agy-usage", api_task_agy_usage, methods=["POST"]),
     Route("/api/task/{tid}/stop", api_task_stop, methods=["POST"]),
     Route("/api/task/{tid}/resume", api_task_resume, methods=["POST"]),
     Route("/api/task/{tid}/deploy", api_task_deploy, methods=["POST"]),
@@ -1255,6 +1281,7 @@ else if(t.state==='waiting_agy'&&t.agy_wait){h+='<div class=agybox><div class=me
 if(t.state==='waiting_agy'&&t.agy_status)h+=agyLiveHtml(t.agy_status);
 if(t.agy_pickup)h+='<div class=meta>picked up your push '+esc(t.agy_pickup.sha)+' at '+new Date(t.agy_pickup.ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',timeZone:TZ})+(t.agy_round?' · round '+t.agy_round:'')+'</div>';
 if(sp){const tot=t.claude_total!=null?t.claude_total:(sp.plan||0)+(sp.implement||0)+(sp.fix||0)+(sp.review||0);const parts=[['plan',sp.plan],['agy',sp.implement],['fix',sp.fix],['review',sp.review]].filter(([,v])=>v>0).map(([k,v])=>k+' '+usd(v));h+='<div class=meta>Claude '+usd(tot)+(parts.length?' ('+parts.join(' + ')+')':'')+(t.agy_tokens!=null?' · agy '+t.agy_tokens+' tokens':'')+'</div>'}
+if(t.agy_usage){const u=t.agy_usage;h+='<div class=meta title="≈ API price (paid by subscription)">agy: '+esc(Math.round((u.tokens||0)/1000)+'k tok')+' · '+esc(Math.round((u.duration_seconds||0)/60)+'m')+' · ≈'+esc(usd(u.est_usd))+' (subscription)</div>'}
 if(t.waiting_since&&t.state==='waiting_agy')h+='<div class=meta>waiting on you '+Math.max(0,Math.floor((Date.now()/1000-t.waiting_since)/60))+'m</div>';
 return h}
 function fmtTime(ts){if(!ts)return'--:--:--';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
@@ -1302,13 +1329,13 @@ function showOffline(){if(GOT)return;sig=null;document.getElementById('conn').te
 function startWatch(){clearTimeout(offT);offT=setTimeout(showOffline,5000);fetch('/api/factory').then(r=>{if(!r.ok)throw 0;return r.json()}).then(renderFactory).catch(()=>{clearTimeout(offT);showOffline()});connect()}
 function sparkHtml(tr){if(!Array.isArray(tr)||!tr.length)return '';const vals=tr.filter(v=>typeof v==='number'&&isFinite(v));const tip=tr.map((v,i)=>'W-'+(tr.length-1-i)+': '+(typeof v==='number'&&isFinite(v)?'$'+v.toFixed(2):'—')).join(' · ');if(!vals.length)return '<span class="spark meta" title="'+esc(tip)+'">8w $/landed: —</span>';const mx=Math.max(...vals,0.01),w=88,h=18,bw=8,gap=3;const rects=tr.map((v,i)=>{const x=i*(bw+gap);if(typeof v!=='number'||!isFinite(v))return '<rect x="'+x+'" y="'+(h-2)+'" width="'+bw+'" height="2" fill="#2a3140"/>';const bh=Math.max(2,Math.round((v/mx)*(h-2)));return '<rect x="'+x+'" y="'+(h-bh)+'" width="'+bw+'" height="'+bh+'" rx="1" fill="#3b82f6"/>'}).join('');const last=vals[vals.length-1];return '<span class="spark meta" title="'+esc(tip)+'">8w $/landed <svg width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'" aria-label="8-week Claude cost per landed task">'+rects+'</svg> $'+last.toFixed(2)+'</span>'}
 function phaseBarsHtml(pb){if(!pb||typeof pb!=='object')return '';const PS=['plan','implement','fix','review'];const rows=[];for(const[plab,pd]of[['month',pb.month],['all-time',pb.all_time]]){if(!pd||typeof pd!=='object')continue;for(const ln of['claude','agy']){const d=pd[ln];if(!d||!(d.total>0))continue;const bp=d.by_phase||{};const tip=PS.map(p=>p+' $'+(bp[p]||0).toFixed(2)).join(' · ');const segs=PS.map(p=>{const v=bp[p]||0;return v>0?'<span class="pb-'+p+'" style="width:'+(v/d.total*100).toFixed(1)+'%"></span>':''}).join('');rows.push('<div class=pbar-row title="'+esc(plab+' · '+ln+': '+tip)+'"><span class=pbar-lbl>'+esc(plab+' · '+ln)+' ($'+d.total.toFixed(2)+')</span><span class=pbar>'+segs+'</span></div>')}}if(!rows.length)return '';return rows.join('')+'<div class=pbar-leg>'+PS.map(p=>'<span><i class="pb-'+p+'"></i>'+esc(p)+'</span>').join('')+'</div>'}
-function renderSpend(sp,pb,tr){const el=document.getElementById('mspend');if(!sp){el.hidden=true;spSig=null;return}el.hidden=false;const sk=JSON.stringify([sp,pb,tr]);if(sk===spSig)return;spSig=sk;const tip=sp.unknown_tip||UNK_TIP;const fmod=o=>Object.entries(o||{}).map(([m,v])=>(m===UNK_LABEL?'<span class=unk-lbl title="'+esc(tip)+'">'+esc(m)+'</span>':esc(m))+' $'+v.toFixed(2)).join(' · ')||'—';const fm=o=>Object.entries(o||{}).map(([m,v])=>esc(m)+' $'+v.toFixed(2)).join(' · ')||'—';document.getElementById('spendbody').innerHTML='<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+sparkHtml(tr)+'<div class=meta>by model: '+fmod(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'+phaseBarsHtml(pb)}
+function renderSpend(sp,pb,tr,ag){const el=document.getElementById('mspend'),hasAg=ag&&ag.runs>0;if(!sp&&!hasAg){el.hidden=true;spSig=null;return}el.hidden=false;const sk=JSON.stringify([sp,pb,tr,ag]);if(sk===spSig)return;spSig=sk;const tip=(sp&&sp.unknown_tip)||UNK_TIP;const fmod=o=>Object.entries(o||{}).map(([m,v])=>(m===UNK_LABEL?'<span class=unk-lbl title="'+esc(tip)+'">'+esc(m)+'</span>':esc(m))+' $'+v.toFixed(2)).join(' · ')||'—';const fm=o=>Object.entries(o||{}).map(([m,v])=>esc(m)+' $'+v.toFixed(2)).join(' · ')||'—';let h=sp?'<b>Spend this month</b> $'+(sp.total||0).toFixed(2)+sparkHtml(tr)+'<div class=meta>by model: '+fmod(sp.by_model)+'</div><div class=meta>by phase: '+fm(sp.by_phase)+'</div>'+phaseBarsHtml(pb):'<b>Spend this month</b>';if(hasAg)h+='<div class=meta title="≈ API price (paid by subscription)">agy (subscription): '+esc(String(ag.runs))+' runs · '+esc(((ag.tokens||0)/1e6).toFixed(2))+' M tokens · ≈'+esc(usd(ag.est_usd))+'</div>';document.getElementById('spendbody').innerHTML=h}
 function renderScorecard(rows){const wrap=document.getElementById('scwrap'),body=document.getElementById('scbody');if(!Array.isArray(rows)||!rows.length){wrap.hidden=true;scSig=null;return}wrap.hidden=false;const sk=JSON.stringify(rows);if(sk===scSig)return;scSig=sk;const pct=(v,p,t)=>v==null?'—':v.toFixed(0)+'%'+(t!=null?' ('+p+'/'+t+')':'');const mon=v=>v==null?'—':'$'+v.toFixed(2);const strk=r=>r.streak_current==null?'—':r.streak_current+'/'+r.streak_best;const trs=rows.map(r=>'<tr'+(r.is_total?' class=sctot':'')+'><td>'+esc(r.repo)+'</td><td>'+esc(r.lane)+'</td><td>'+r.landed+'</td><td>'+r.needs_you+'</td><td>'+esc(pct(r.first_review_pct,r.first_review_passed,r.first_review_total))+'</td><td>'+esc(pct(r.first_gate_pct,r.first_gate_passed,r.first_gate_total))+'</td><td>'+esc(mon(r.median_cost))+'</td><td>'+esc(mon(r.total_cost))+'</td><td>'+esc(strk(r))+'</td></tr>').join('');body.innerHTML='<table class=sctbl><thead><tr><th>Repo</th><th>Lane</th><th>Landed</th><th>Needs you</th><th>1st review</th><th>1st gate</th><th>Median $</th><th>Total $</th><th>Streak</th></tr></thead><tbody>'+trs+'</tbody></table>'}
 function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getElementById('foff').hidden=!f.paused;document.getElementById('pcap').textContent=f.concurrency?' / '+f.concurrency:'';if(f.host)setHost(f.host);const b=document.getElementById('fb');b.textContent=f.paused?'⏸ Factory OFF':'▶ Factory ON';b.style.background=f.paused?'#5a2a2a':'#1f4d2b';}
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow>'+(c.send_enabled?'<button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button>':'')+'<button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+(c.send_enabled?'':'<div class=meta>agy gets only the reviewed plan; fixes are done by Claude</div>')+'</div>'}
-function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend,s.phase_bars,s.cost_trend);renderScorecard(s.scorecard);renderNextUp(s.agy_queue);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
+function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend,s.phase_bars,s.cost_trend,s.agy_spend);renderScorecard(s.scorecard);renderNextUp(s.agy_queue);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.archived,t.cost,t.over_budget,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)],t.agy_cmd,t.agy_wait,s.agy_queue]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.archived,t.cost,t.over_budget,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)],t.agy_cmd,t.agy_wait,t.agy_usage,s.agy_queue]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=t.archived?['b-arch','ARCHIVED']:(BADGE[t.state]||['b-work',t.state]);
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
