@@ -75,7 +75,6 @@ async def _plan_and_hand_off(task_id: str, t: dict, emit) -> str:
         "depends_on": depends_on,
     })
     store.set_state(task_id, "waiting_agy", f"run agy-next {task_id}")
-    notify.notify_async("coxd · needs you (agy)", f"Run on your Mac: agy-next {task_id}")
     return "waiting_agy"
 
 
@@ -584,7 +583,8 @@ def _terminal(task_id: str, state: str, reason: str | None) -> str:
     if state in ("pr_ready", "needs_human"):  # the AFK ping
         t = store.get_task(task_id)
         if state == "pr_ready":
-            notify.notify_async("coxd · ready to merge", f"{task_id} ({t['repo']})")
+            if t and t.get("lane") != AGY_LANE:
+                notify.notify_async("coxd · ready to merge", f"{task_id} ({t['repo']})")
         else:
             import triage
             notify.notify_async(f"coxd · needs you ({reason})",
