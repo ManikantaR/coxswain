@@ -5,6 +5,7 @@ posts a summary after publishing; this module validates that payload and estimat
 its API-equivalent USD cost (for display only, paid by subscription — never added
 to Claude spend or cost_ledger).
 """
+
 from __future__ import annotations
 
 import json
@@ -119,8 +120,10 @@ def estimate(u: dict) -> float:
     table = load_prices()
     model = u.get("model")
     rates = (
-        table.get(model) if isinstance(model, str) and model in table else None
-    ) or table.get("default") or PRICES["default"]
+        (table.get(model) if isinstance(model, str) and model in table else None)
+        or table.get("default")
+        or PRICES["default"]
+    )
     in_rate = float(rates["input"])
     out_rate = float(rates["output"])
     cache_rate = float(rates.get("cache_read", 0.10 * in_rate))
