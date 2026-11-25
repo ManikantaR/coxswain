@@ -483,6 +483,75 @@ print(json.dumps({"step": step, "action": sys.argv[1], "elapsed_s": int(sys.argv
         -o /dev/null "$AGY_STATUS_URL" >/dev/null 2>&1 || true
 }
 
+post_usage() { # one post per published run; warn and continue if board is unreachable
+  python3 -c '
+import json, math, sys
+stream_path, usage_path, elapsed_s, model = sys.argv[1:5]
+try:
+    fallback_dur = max(0, int(float(elapsed_s)))
+except Exception:
+    fallback_dur = 0
+res_ev = None
+try:
+    with open(stream_path) as f:
+        for line in f:
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(ev, dict) and (ev.get("type") == "result" or ev.get("event") == "result"):
+                res_ev = ev
+except Exception:
+    pass
+u, dur = None, None
+if isinstance(res_ev, dict):
+    if isinstance(res_ev.get("usage"), dict):
+        u = res_ev["usage"]
+    elif isinstance(res_ev.get("result"), dict) and isinstance(res_ev["result"].get("usage"), dict):
+        u = res_ev["result"]["usage"]
+    for cand in (res_ev.get("duration_seconds"),
+                 (res_ev.get("result") or {}).get("duration_seconds") if isinstance(res_ev.get("result"), dict) else None,
+                 u.get("duration_seconds") if isinstance(u, dict) else None):
+        if not isinstance(cand, bool) and isinstance(cand, (int, float)) and math.isfinite(cand) and cand >= 0:
+            dur = cand
+            break
+    if dur is None:
+        ms = res_ev.get("duration_ms")
+        if not isinstance(ms, bool) and isinstance(ms, (int, float)) and math.isfinite(ms) and ms >= 0:
+            dur = ms / 1000.0
+if not isinstance(u, dict):
+    try:
+        u = json.load(open(usage_path))
+    except Exception:
+        u = {}
+    if not isinstance(u, dict):
+        u = {}
+if dur is None:
+    cand = u.get("duration_seconds")
+    if not isinstance(cand, bool) and isinstance(cand, (int, float)) and math.isfinite(cand) and cand >= 0:
+        dur = cand
+    else:
+        dur = fallback_dur
+def pick(*keys):
+    for k in keys:
+        v = u.get(k)
+        if not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0:
+            return int(v)
+    return 0
+print(json.dumps({
+    "input_tokens": pick("input_tokens", "prompt_tokens", "inputTokens"),
+    "output_tokens": pick("output_tokens", "completion_tokens", "candidates_tokens", "outputTokens"),
+    "thinking_tokens": pick("thinking_tokens", "thoughts_tokens", "reasoning_tokens", "thinkingTokens"),
+    "cache_read_tokens": pick("cache_read_tokens", "cached_tokens", "cache_read_input_tokens",
+                              "cached_content_token_count", "cacheReadTokens"),
+    "duration_seconds": dur,
+    "model": model,
+}))' "$tmp/agy.out" "$tmp/usage.json" "$((SECONDS - run_t0))" "$model" 2>/dev/null \
+    | curl -m 5 --connect-timeout 3 -s -f -X POST -H 'Content-Type: application/json' \
+        --data-binary @- -o /dev/null "${COXD_URL%/}/api/task/$tid/agy-usage" >/dev/null 2>&1 \
+    || echo "agy-next: warning: could not post usage to board" >&2
+}
+
 run_t0=$SECONDS
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
@@ -536,6 +605,9 @@ print(json.dumps({"task_id": t, "round": int(r), "model": m, "tokens": json.load
 printf 'Publish %s to origin? [y/N] ' "$branch"
 read -r ans || ans=n
 case $ans in
-  y|Y|yes|YES) git push origin "$branch" ;;
+  y|Y|yes|YES)
+    git push origin "$branch"
+    post_usage
+    ;;
   *) echo "not published"; exit 1 ;;
 esac
