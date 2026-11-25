@@ -21,6 +21,7 @@ import store
 
 BRANCH_PREFIX = "coxd-agy/"
 AGY_PICKUP = "agy-pickup"  # queued reason: a new head was found on the agy branch
+AGY_REPLAN = "agy-replan"  # queued reason: planned files changed on main; plan again
 MAX_FIX_ROUNDS = 2         # any mix of Send-to-agy / Let-Claude-fix / red-gate rounds
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEV = ("high", "med", "low")  # the review schema: shown as critical / major / minor
@@ -592,6 +593,22 @@ def notify_queue(now: float | None = None) -> list[str]:
     tasks, events, open_pr_files, issue_labels = queue_inputs()
     rows = queue(tasks, events, open_pr_files, issue_labels)
     ready_rows = [r for r in rows if r["status"] == "ready"]
+
+    # Tasks that just unblocked get a fresh base (or a re-plan) before we announce them.
+    by_id = {t["id"]: t for t in tasks}
+    changed = False
+    for r in ready_rows:
+        t = by_id.get(r["id"])
+        if t is None or not state["blocked"].get(r["id"]):
+            continue
+        try:
+            changed = refresh_unblocked(t) in ("refreshed", "replan") or changed
+        except Exception as e:  # noqa: BLE001 - never break the queue pass
+            print(f"agy_handoff: refresh failed for {r['id']}: {type(e).__name__}")
+    if changed:
+        tasks, events, open_pr_files, issue_labels = queue_inputs()
+        rows = queue(tasks, events, open_pr_files, issue_labels)
+        ready_rows = [r for r in rows if r["status"] == "ready"]
     blocked_rows = [r for r in rows if r["status"] == "blocked"]
 
     prev_blocked: dict[str, list[str]] = state["blocked"]
@@ -797,6 +814,87 @@ def remote_head(repo_path: str, task_id: str) -> str | None:
         return None
     sha = r.stdout.split()[0]
     return sha if _SHA.match(sha) else None
+
+
+def replan_pending(task_id: str) -> bool:
+    """True while an `agy-replan` event is newer than the latest `plan` event. The
+    supervisor clears the queued reason on claim, so run_task reads this marker."""
+    pending = False
+    for e in store.events(task_id):
+        if e.get("kind") == AGY_REPLAN:
+            pending = True
+        elif e.get("kind") == "plan":
+            pending = False
+    return pending
+
+
+def default_branch_sha(repo_path: str) -> str | None:
+    """Fetch origin in the main checkout and return the SHA of its default branch
+    (origin/HEAD, falling back to origin/main), or None on any failure."""
+    cwd = Path(repo_path)
+    try:
+        if _git(cwd, "fetch", "origin").returncode != 0:
+            return None
+        sym = _git(cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+        ref = sym.stdout.strip() if sym.returncode == 0 and sym.stdout.strip() else "origin/main"
+        r = _git(cwd, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = r.stdout.strip()
+    return sha if r.returncode == 0 and _SHA.match(sha) else None
+
+
+def refresh_unblocked(task: dict) -> str:
+    """A blocked agy task just became ready: bring its branch up to date with main.
+
+    Returns "refreshed" (untouched branch re-pointed at main, base_sha updated, plan
+    kept), "replan" (a planned file changed on main, so queue a new plan round),
+    "skipped" (nothing to do, or the branch carries human commits), or "error".
+    Plain git only; agy is never run.
+    """
+    tid = task.get("id")
+    repo_path, base = task.get("repo_path"), task.get("base_sha")
+    if (not tid or task.get("lane") != "agy-handoff" or task.get("state") != "waiting_agy"
+            or task.get("archived_at") or not repo_path or not base):
+        return "skipped"
+    evs = store.events(tid)
+    if any(e.get("kind") == "agy-head" for e in _round_events(evs)):
+        return "skipped"  # agy/human already pushed in this round
+    remote = remote_head(repo_path, tid)
+    if remote != base:
+        return "skipped"  # human commits (or the branch is gone): leave it alone
+    main_sha = default_branch_sha(repo_path)
+    if not main_sha or main_sha == base:
+        return "skipped"
+    cwd = Path(repo_path)
+    try:
+        diff = _git(cwd, "diff", "--name-only", base, main_sha)
+    except (OSError, subprocess.SubprocessError) as e:
+        store.append_event(tid, "agy-error", {"stage": "refresh", "err": type(e).__name__})
+        return "error"
+    if diff.returncode != 0:
+        store.append_event(tid, "agy-error", {"stage": "refresh", "err": diff.stderr[-300:]})
+        return "error"
+    changed = {ln.strip() for ln in diff.stdout.splitlines() if ln.strip()}
+    overlap = sorted(_files_from_events(evs) & changed)
+    if overlap:
+        if store.cas_state(tid, "waiting_agy", "queued", AGY_REPLAN):
+            store.append_event(tid, AGY_REPLAN, {"from": base, "to": main_sha, "files": overlap})
+            return "replan"
+        return "skipped"
+    branch = f"{BRANCH_PREFIX}{tid}"
+    try:
+        push = _git(cwd, "push", f"--force-with-lease=refs/heads/{branch}:{base}", "origin",
+                    f"{main_sha}:refs/heads/{branch}")
+    except (OSError, subprocess.SubprocessError) as e:
+        store.append_event(tid, "agy-error", {"stage": "refresh", "err": type(e).__name__})
+        return "error"
+    if push.returncode != 0:
+        store.append_event(tid, "agy-error", {"stage": "refresh", "err": push.stderr[-300:]})
+        return "error"
+    store.set_plan(tid, task.get("plan_md") or "", main_sha)
+    store.append_event(tid, "base-refreshed", {"old": base, "new": main_sha, "branch": branch})
+    return "refreshed"
 
 
 def last_seen(task: dict) -> str | None:
