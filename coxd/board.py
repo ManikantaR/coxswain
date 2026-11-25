@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 import agy_handoff
 import agyusage
+import ci_parity
 import factory
 import intake
 import pii_health
@@ -71,7 +72,7 @@ _ARCHIVE_DAYS = store.ARCHIVE_DAYS
 _REASON_STAGE = {
     "worker-error": 0, "coxd-error": 0,
     "gate-red": 1, "worker-stalled": 1,
-    "review-error": 2, "review-findings": 2,
+    "review-error": 2, "review-findings": 2, "review-cap": 2,
     "push-rejected": 3, "pr-error": 3,
     "pii-block": 3, "pii-scan-error": 3,
 }
@@ -253,6 +254,10 @@ def status_line(kind, data, state=None, *, fix_round: int | None = None) -> str:
         if verdict == "reject":
             return "Review rejected"
         return "Review finished"
+    if kind == "review-cap":
+        return f"Review cap reached ({data.get('cap', 3)}) — open findings need you"
+    if kind == "autofix":
+        return "Auto-fixed formatting/lint" if data.get("committed") else ""
     if kind == "ci-triage":
         outcome = data.get("outcome")
         if outcome in ("green", "flaky-cleared"):
@@ -538,6 +543,7 @@ def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> 
     evs_by_id: dict[str, list[dict]] = {}
     levels: dict[str, str] = {}  # one registry read per repo per poll
     budgets: dict[str, float] = {}  # one registry read per repo per poll
+    parity: dict[str, dict | None] = {}  # gate-vs-CI check, once per repo per poll
     q_rows = _agy_queue_rows() if fetch_queue else _agy_queue_cached()
     q_by_id = {r["id"]: r for r in q_rows}
     for t in all_tasks:
@@ -557,6 +563,12 @@ def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> 
         if t["repo"] not in budgets:
             budgets[t["repo"]] = registry.task_budget(t["repo"])
         budget = budgets[t["repo"]]
+        if t["repo"] not in parity:
+            try:  # cached on workflow mtimes; a broken workflow must never break the board
+                parity[t["repo"]] = ci_parity.cached(t["repo"], t.get("repo_path"),
+                                                     registry.load(t["repo"]))
+            except Exception:
+                parity[t["repo"]] = None
         agy_cmd: str | None = None
         agy_wait: str | None = None
         if is_agy and t["state"] == "waiting_agy":
@@ -570,6 +582,7 @@ def _tasks_payload(show_archived: bool = False, *, fetch_queue: bool = True) -> 
         rows.append({
             "id": t["id"], "repo": t["repo"], "state": t["state"], "reason": t["reason"],
             "cost": t["cost"], "budget": budget,
+            "ci_parity": (lambda p: None if not p or p["ok"] else p)(parity[t["repo"]]),
             "over_budget": scorecard.over_budget(t["cost"], budget),
             "pr_url": t["pr_url"],
             "stage": (_agy_stage(t["state"], t["reason"], _has_current_plan(evs)) if is_agy
@@ -1335,11 +1348,12 @@ function renderFactory(f){if(!f)return;FACTORY_PAUSED=!!f.paused;document.getEle
 function agyChoiceHtml(c){const chips=c.findings.map(f=>'<li><span class="chip sev-'+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.summary)+(f.file?' <code>'+esc(f.file)+(f.line?':'+esc(String(f.line)):'')+'</code>':'')+'</li>').join('');const dis=c.capped?' disabled title="'+esc(c.cap_reason||'')+'"':'';const cost=c.claude_cost!=null?'uses Claude quota, about $'+c.claude_cost.toFixed(2)+' last time':'uses Claude quota';return '<div class=agychoice><b>Review findings</b> (round '+c.round+')<ul>'+(chips||'<li>none listed</li>')+'</ul><div class=retryrow>'+(c.send_enabled?'<button class=agyc data-choice=send'+dis+'>Send to agy<br><small>you run agy-next again</small></button>':'')+'<button class=agyc data-choice=claude'+dis+'>Let Claude fix<br><small>'+esc(cost)+'</small></button></div>'+(c.capped?'<div class=meta>'+esc(c.cap_reason)+'</div>':'')+(c.send_enabled?'':'<div class=meta>agy gets only the reviewed plan; fixes are done by Claude</div>')+'</div>'}
 function render(s){s=Object.assign({},s,{tasks:s.tasks.filter(t=>LANE==='all'||t.lane===LANE)});s.needs_you=s.tasks.filter(t=>t.needs_you).length;s.active=s.tasks.filter(t=>t.active).length;GOT=true;clearTimeout(offT);{const sp=s.spend,pm=document.getElementById('pm'),bn=document.getElementById('fspend');if(sp){pm.hidden=false;pm.textContent='month $'+sp.mtd.toFixed(2);bn.hidden=!sp.banner;bn.textContent=sp.banner||''}else{pm.hidden=true;bn.hidden=true}}STAGES=s.stages||STAGES;renderFactory(s.factory);renderSpend(s.model_spend,s.phase_bars,s.cost_trend,s.agy_spend);renderScorecard(s.scorecard);renderNextUp(s.agy_queue);{const pd=document.getElementById('pd'),q=s.pii;if(q){pd.hidden=false;pd.textContent=q.text;pd.style.borderColor=q.level==='ok'?'':(q.level==='due'?'#b8860b':'#a33');pd.style.color=q.level==='ok'?'':(q.level==='due'?'#e0b040':'#e07070')}else{pd.hidden=true}}{const pi=document.getElementById('pi'),n=s.intake;if(n&&n.at){pi.hidden=false;pi.textContent='intake: last poll '+new Date(n.at*1000).toLocaleTimeString()+' · took '+n.taken}else{pi.hidden=true}}document.querySelector('#pn b').textContent=s.needs_you;document.querySelector('#pa b').textContent=s.active;
 const ab=document.getElementById('ab');if(s.archived){ab.hidden=false;ab.querySelector('b').textContent=s.archived;ab.title='landed/failed tasks older than '+s.archive_days+' days ('+(showArchived?'shown':'hidden')+')'}else{ab.hidden=true}
-if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.archived,t.cost,t.over_budget,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)],t.agy_cmd,t.agy_wait,t.agy_usage,s.agy_queue]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
+if(s.tz)TZ=s.tz;const k=JSON.stringify(s.tasks.map(t=>[LANE,t.id,t.lane,t.agy_pickup,t.claude_split,t.claude_total,t.waiting_since&&Math.floor(Date.now()/60000),t.agy_status&&[t.agy_status.ts,Math.floor(Date.now()/10000)],t.state,t.reason,t.archived,t.cost,t.over_budget,t.ci_parity&&t.ci_parity.note,t.plan_cost,t.plan_md&&t.plan_md.length,t.models,t.last,t.issue_url,t.resume_at,t.agy_round,t.quota_wait_at,t.timing&&[t.timing.started_at,t.timing.queued_at,t.timing.finished_at,t.timing.in_progress,t.timing.review_rounds,Math.floor((t.timing.paused_quota_s||0)/60)],t.agy_cmd,t.agy_wait,t.agy_usage,s.agy_queue]));if(k===sig){for(const id of open){const el=document.querySelector('.card[data-id="'+CSS.escape(id)+'"] .feed');if(el)loadFeed(id,el)}return}sig=k;
 const changed=new Set();for(const t of s.tasks){if(prevState.has(t.id)&&prevState.get(t.id)!==t.state)changed.add(t.id);prevState.set(t.id,t.state)}
 const b=document.getElementById('board');if(!s.tasks.length){b.innerHTML='<div class=empty>No tasks yet.</div>';return}let h='';for(const t of s.tasks){const[cls,lab]=t.archived?['b-arch','ARCHIVED']:(BADGE[t.state]||['b-work',t.state]);
 const issueNum=t.issue_url?t.issue_url.split('/').pop():null;
 h+='<div class="card'+(t.needs_you?' needs':'')+(changed.has(t.id)?' flash':'')+'" data-id="'+esc(t.id)+'"><div class=row><span class="lane '+(t.lane==='agy'?'agy':'')+'">'+(t.lane==='agy'?'AGY':'CLAUDE')+'</span><span class="badge '+cls+'">'+lab+'</span>'+(t.archived?'<span class=was>was: '+esc(t.state)+(t.reason?', '+esc(t.reason):'')+'</span>':'')+'<span class=tid>'+esc(t.id)+'</span>'+
+(t.ci_parity?'<span class="chip budget" title="'+esc(t.ci_parity.note)+'">gate≠CI</span>':'')+
 (t.over_budget?'<span class="chip budget" title="'+esc('Claude cost $'+(t.cost||0).toFixed(2)+' exceeds $'+(t.budget||3).toFixed(2)+' budget')+'">over budget</span>':'')+
 (t.issue_url?'<a href="'+esc(t.issue_url)+'" target=_blank style="color:#6cb6ff;font-size:12px">#'+esc(issueNum)+'</a>':'')+'</div>'+
 '<div class=meta>'+esc(t.repo)+(t.cost?' · $'+t.cost.toFixed(3)+(t.plan_cost!=null?' (plan $'+t.plan_cost.toFixed(3)+')':''):'')+(t.reason?' · '+esc(t.reason):'')+(t.pr_url?' · <a href="'+esc(t.pr_url)+'" target=_blank style="color:#6cb6ff">PR</a>':'')+'</div>'+timingLine(t)+pipe(t.stage,t.models,t.stages,t.agy_round?{1:'round '+t.agy_round}:null,t.lane==='claude'&&!!t.stages)+(t.last?'<div class=last>'+esc(t.last)+'</div>':'')+

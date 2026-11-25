@@ -111,6 +111,23 @@ def task_budget(repo_name: str) -> float:
     return float(raw)
 
 
+def autofix_cmds(entry: dict | None) -> list[str]:
+    """Pre-gate fixer commands (formatters/linters in fix mode; see autofix.py). Opt-in:
+    a registry entry without a list of strings under `autofix` runs nothing."""
+    raw = (entry or {}).get("autofix")
+    if not isinstance(raw, list):
+        return []
+    return [c.strip() for c in raw if isinstance(c, str) and c.strip()]
+
+
+def ci_parity_ignore(entry: dict | None) -> list[str]:
+    """CI steps (normalized commands) whose absence from the gate is deliberate."""
+    raw = (entry or {}).get("ci_parity_ignore")
+    if not isinstance(raw, list):
+        return []
+    return [c.strip() for c in raw if isinstance(c, str) and c.strip()]
+
+
 FIX_MODES = ("resume", "fresh")
 
 
@@ -139,6 +156,18 @@ def data_guard_brief(entry: dict | None, brief: str) -> str:
                                           fixture=fixture)
 
 
+def _ci_text(repo_path: Path) -> str:
+    """All workflow YAML text (lower-cased); "" when none. Used to scout opt-in formatters
+    only where CI already enforces them — never reformat a repo whose CI doesn't care."""
+    parts = []
+    for f in sorted((repo_path / ".github" / "workflows").glob("*.y*ml")):
+        try:
+            parts.append(f.read_text(encoding="utf-8"))
+        except OSError:
+            pass
+    return "\n".join(parts).lower()
+
+
 def scout(repo_path: Path) -> dict:
     """Discover commands from the repo's manifests. Deterministic, zero tokens.
 
@@ -147,6 +176,8 @@ def scout(repo_path: Path) -> dict:
     entry: dict = {"test": None, "lint": None, "build": None,
                    "target_branch": "main", "source": None, "runner": None,
                    "merge_level": "manual",  # manual | proposed | auto (earned; see D29)
+                   "autofix": [],  # pre-gate fixers (autofix.py), e.g. ["ruff format ."]
+                   "ci_parity_ignore": [],  # CI steps the gate deliberately skips
                    "intake": False,  # opt-in: poll for `coxd-ready` issues (intake.py)
                    "gate_env": {},  # env the gate injects to match CI (e.g. NODE_OPTIONS heap)
                    # globs left out of the review diff; None = gate.DEFAULT_REVIEW_EXCLUDE,
@@ -184,10 +215,28 @@ def scout(repo_path: Path) -> dict:
         if (repo_path / "turbo.json").exists():
             entry["runner"] = "turbo"
         entry["source"] = "package.json"
+        pjson = {}
+        try:
+            pjson = json.loads(pkg.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            pass
+        deps = {**(pjson.get("devDependencies") or {}), **(pjson.get("dependencies") or {})}
+        run = "pnpm exec" if pm == "pnpm" else "yarn" if pm == "yarn" else "npx --no-install"
+        if "eslint" in deps and any((repo_path / f).exists() for f in (
+                "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs",
+                ".eslintrc", ".eslintrc.js", ".eslintrc.json", ".eslintrc.cjs")):
+            entry["autofix"].append(f"{run} eslint --fix .")
+        if "prettier" in deps and ("prettier" in _ci_text(repo_path)
+                                   or any("format" in k for k in scripts)):
+            entry["autofix"].append(f"{run} prettier --write .")
     elif pyproject.exists():
         text = pyproject.read_text(encoding="utf-8")
         entry["test"] = "pytest -q"
         entry["lint"] = "ruff check ." if "ruff" in text else None
+        if "ruff" in text:
+            entry["autofix"] = ["ruff check --fix ."]
+            if "ruff format" in _ci_text(repo_path):
+                entry["autofix"].append("ruff format .")
         entry["source"] = "pyproject.toml"
     elif (repo_path / "configuration.yaml").exists():
         # Home Assistant config repo: yamllint is the only gate; never deployable.

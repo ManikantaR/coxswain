@@ -85,7 +85,7 @@ def test_empty_queue_and_claude_lane_unchanged() -> None:
     check(
         "Claude task preserves all existing keys",
         EXISTING_ROW_KEYS.issubset(set(crow.keys()))
-        and set(crow.keys()) - EXISTING_ROW_KEYS <= {"agy_wait"},
+        and set(crow.keys()) - EXISTING_ROW_KEYS <= {"agy_wait", "ci_parity"},
     )
     check(
         "Claude task existing field values unchanged",

@@ -59,6 +59,13 @@ TRIAGE: dict[str, dict] = {
             "on which to fix."
         ),
     },
+    "review-cap": {
+        "retry": False,
+        "next_step": (
+            "Three review rounds did not converge. Read the open findings on the "
+            "board, then fix by hand or resume with a note on which to address."
+        ),
+    },
     "push-rejected": {
         "retry": False,
         "next_step": (
@@ -129,7 +136,16 @@ def next_step_line(task: dict) -> str:
     """The plain-words line appended to alerts/digests for a needs_human task."""
     if retry_pending(task):
         return f"Next: {RETRY_TEXT}."
-    return triage(task.get("reason"))["next_step"]
+    line = triage(task.get("reason"))["next_step"]
+    if task.get("reason") == "review-cap":
+        titles = []
+        for f in store.findings_of(task)[:5]:
+            t = f.get("title") or f.get("summary") or f.get("message") or ""
+            if isinstance(t, str) and t.strip():
+                titles.append(t.strip()[:100])
+        if titles:
+            line += " Open: " + "; ".join(titles) + "."
+    return line
 
 
 def due(task: dict, now: float, events: list[dict] | None = None) -> bool:

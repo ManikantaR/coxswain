@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 import agy_handoff
+import autofix
 import gate
 import lane
 import notify
@@ -25,6 +26,7 @@ import store
 import worktree
 
 MAX_FIX = 2
+MAX_REVIEW_ROUNDS = 3  # completed reviews per task, across resumes/agy pickups; then needs-you
 AGY_LANE = "agy-handoff"
 AGY_BRANCH_PREFIX = "coxd-agy/"
 
@@ -167,6 +169,52 @@ async def run_task(task_id: str, worker_model: str | None = None,
                                    rereview_effort=cfg["rereview_effort"])
 
 
+def _review_rounds(task_id: str) -> int:
+    """Completed review passes so far (review events with outcome `reviewed`). Counted from
+    the event log so the cap survives agy pickups and ordinary resumes (only a resume
+    after a `review-cap` stop starts a new allowance); a review-error run
+    produced no verdict and doesn't count."""
+    try:
+        evs = store.events(task_id)
+    except Exception:
+        return 0
+    n = 0
+    for e in evs:
+        if e["kind"] == "review-cap":  # a human resumed past the cap: a fresh allowance
+            n = 0
+        elif e["kind"] == "review" and (e.get("data") or {}).get("outcome") == "reviewed":
+            n += 1
+    return n
+
+
+def _review_capped(task_id: str) -> bool:
+    return _review_rounds(task_id) >= MAX_REVIEW_ROUNDS
+
+
+def _review_cap_stop(task_id: str, emit, findings: list | None = None) -> str:
+    """Stop looping: mark the task needs-you with the open findings instead of paying
+    for another round (one task needed 8)."""
+    if not findings:
+        t = store.get_task(task_id)
+        findings = store.findings_of(t) if t else []
+    emit("review-cap", {"cap": MAX_REVIEW_ROUNDS, "rounds": _review_rounds(task_id),
+                        "findings": findings})
+    return _terminal(task_id, "needs_human", "review-cap")
+
+
+async def _autofix(task_id: str, wt: Path, entry: dict, emit) -> None:
+    """Free pre-gate formatter/linter fixes, committed before the gate so a format-only
+    failure never costs a Claude round. Never counts as a fix round."""
+    if not registry.autofix_cmds(entry):
+        return
+    t = store.get_task(task_id) or {}
+    try:
+        res = await asyncio.to_thread(autofix.run, wt, entry, t.get("repo_path"))
+    except Exception as e:  # best effort: the gate decides red, not the autofixer
+        res = {"ran": [], "committed": False, "files": [], "skipped": f"error: {e}"[:200]}
+    emit("autofix", res)
+
+
 def _last_review(task_id: str) -> tuple[str, list] | None:
     """(reviewed head sha, findings) of the latest completed review that asked for fixes,
     or None. Used when a review runs after a fix round without in-memory state (agy
@@ -198,6 +246,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
     fresh = mode == "fresh"
     while True:
         store.set_state(task_id, "gating")
+        await _autofix(task_id, wt, entry, emit)
         g = await asyncio.to_thread(gate.run_gate, wt, entry)
         emit("gate", g)
         if g["passed"]:
@@ -216,6 +265,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
             # The worker changed nothing twice. That can be right (the gate was
             # flaky), so re-run the gate once before paging a person.
             store.set_state(task_id, "gating")
+            await _autofix(task_id, wt, entry, emit)
             g = await asyncio.to_thread(gate.run_gate, wt, entry)
             emit("gate", g)
             if not g["passed"]:
@@ -224,6 +274,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
             break
 
     # --- one review pass ---------------------------------------------------
+    if _review_capped(task_id):  # e.g. a human-resumed task that already used its rounds
+        return _review_cap_stop(task_id, emit)
     store.set_state(task_id, "reviewing")
     # A review after an earlier `fix` review (agy/human-resumed round) is a re-review.
     prev = _last_review(task_id)
@@ -245,6 +297,9 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         store.set_review(task_id, r.verdict, r.findings)
     if r.outcome == "review-error":
         return _terminal(task_id, "needs_human", "review-error")  # retryable — NOT a verdict
+    if r.outcome == "reviewed" and _review_capped(task_id) and (
+            r.verdict == "reject" or (r.verdict == "fix" and r.findings)):
+        return _review_cap_stop(task_id, emit, r.findings)  # no fix round we can't re-review
     if r.verdict == "reject":
         return _terminal(task_id, "needs_human", "review-findings")
     if r.verdict == "fix" and r.findings:
@@ -257,6 +312,7 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         if await _resume_fix(task_id, wt, worker_model, emit, feedback, effort=effort,
                              fresh=fresh):
             return _terminal(task_id, "needs_human", "worker-stalled")
+        await _autofix(task_id, wt, entry, emit)
         g = await asyncio.to_thread(gate.run_gate, wt, entry)
         emit("gate", g)
         if not g["passed"]:
@@ -265,6 +321,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         # Re-review the fixed diff. Shipping on "the worker said it fixed it"
         # let two PRs land with their own reviewer's blocking finding still
         # open (2026-10). Only a fresh `approve` ships; anything else stops.
+        if _review_capped(task_id):
+            return _review_cap_stop(task_id, emit, r.findings)
         store.set_state(task_id, "reviewing")
         prev_findings = r.findings
         rv_input = await asyncio.to_thread(gate.rereview_input, wt, entry, head, prev_findings)
@@ -281,6 +339,8 @@ async def _gate_review_ship(task_id: str, wt: Path, repo: str, entry: dict,
         if r.outcome == "review-error":
             return _terminal(task_id, "needs_human", "review-error")
         if r.verdict != "approve":
+            if r.outcome == "reviewed" and _review_capped(task_id):
+                return _review_cap_stop(task_id, emit, r.findings)
             return _terminal(task_id, "needs_human", "review-findings")
 
     return await _ship_tail(task_id, wt, emit)
@@ -333,6 +393,7 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
         return _terminal(task_id, "needs_human", "agy-fetch-error")
     emit("agy-pickup", {"sha": sha})
     entry = registry.get_or_scout(repo, wt)
+    await _autofix(task_id, wt, entry, emit)
     g = await asyncio.to_thread(gate.run_gate, wt, entry)
     emit("gate", g)
     if not g["passed"]:
@@ -348,6 +409,8 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
         agy_handoff.next_round(task_id, plan, "agy", "gate")
         return "waiting_agy"
     store.set_gate_steps(task_id, g.get("steps"), g.get("test_output"))
+    if _review_capped(task_id):
+        return _review_cap_stop(task_id, emit)
     store.set_state(task_id, "reviewing")
     prev = _last_review(task_id)
     head = await asyncio.to_thread(gate.head_sha, wt)
@@ -370,6 +433,9 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
         return _terminal(task_id, "needs_human", "review-error")
     if r.verdict == "approve":
         return await _ship_tail(task_id, wt, emit)
+    if r.outcome == "reviewed" and _review_capped(task_id) and (
+            r.verdict == "reject" or (r.verdict == "fix" and r.findings)):
+        return _review_cap_stop(task_id, emit, r.findings)
     if r.verdict == "fix" and r.findings:
         if agy_handoff.rounds_used(task_id) >= agy_handoff.MAX_FIX_ROUNDS:
             return _terminal(task_id, "needs_human", "review-findings")
