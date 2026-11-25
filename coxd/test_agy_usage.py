@@ -284,7 +284,7 @@ check(
     "(subscription)" in html
     and 'title="≈ API price (paid by subscription)"' in html
     and "agy (subscription):" in html
-    and "renderSpend(s.model_spend,s.agy_spend)" in html,
+    and "renderSpend(s.model_spend,s.phase_bars,s.cost_trend,s.agy_spend)" in html,
 )
 
 print("FAILED" if fails else "all passed")
