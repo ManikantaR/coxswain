@@ -42,6 +42,18 @@ async def _plan_and_hand_off(task_id: str, t: dict, emit) -> str:
     store.set_state(task_id, "planning")
     cfg = roles.resolve(registry.load(repo) or {})
     emit("config", cfg)
+    replan = bool(t.get("plan_md")) and agy_handoff.replan_pending(task_id)
+    old_base = t.get("base_sha")
+    if replan:  # planned files changed on main: re-plan against current main
+        if repo_path is None or not old_base:
+            return _terminal(task_id, "needs_human", "agy-base-error")
+        main_sha = await asyncio.to_thread(agy_handoff.default_branch_sha, str(repo_path))
+        if not main_sha:
+            return _terminal(task_id, "needs_human", "agy-base-error")
+        rs = await asyncio.to_thread(sandbox.run_in_worktree,
+                                     ["git", "reset", "--hard", main_sha], wt)
+        if rs.returncode != 0:
+            return _terminal(task_id, "needs_human", "agy-base-error")
     base = await asyncio.to_thread(_git, wt, "rev-parse", "HEAD")
     sha = base.stdout.strip()
     if base.returncode != 0 or not sha:
@@ -57,8 +69,10 @@ async def _plan_and_hand_off(task_id: str, t: dict, emit) -> str:
     if repo_path is None:
         return _terminal(task_id, "needs_human", "agy-push-error")
     # From the main checkout (as ship.py does), a bare SHA -> new remote branch.
-    push = await asyncio.to_thread(_git, repo_path, "push", "origin",
-                                   f"{sha}:refs/heads/{branch}")
+    push_args = ["push", "origin", f"{sha}:refs/heads/{branch}"]
+    if replan:  # the branch exists at the old base: move it, guarded by a lease
+        push_args.insert(1, f"--force-with-lease=refs/heads/{branch}:{old_base}")
+    push = await asyncio.to_thread(_git, repo_path, *push_args)
     if push.returncode != 0:
         emit("agy-error", {"stage": "push", "err": push.stderr[-300:]})
         return _terminal(task_id, "needs_human", "agy-push-error")
@@ -124,7 +138,8 @@ async def run_task(task_id: str, worker_model: str | None = None,
         store.append_event(task_id, kind, data)
 
     if t.get("lane") == AGY_LANE:  # agy handoff: plan + branch, never implement here
-        if t.get("plan_md"):  # plan already handed off: a pushed branch / Claude-fix round
+        # plan already handed off (and not re-planning): a pushed branch / Claude-fix round
+        if t.get("plan_md") and not agy_handoff.replan_pending(task_id):
             return await _agy_continue(task_id, t, emit)
         return await _plan_and_hand_off(task_id, t, emit)
 
