@@ -187,8 +187,24 @@ def _review_rounds(task_id: str) -> int:
     return n
 
 
+def _last_review_approved(task_id: str) -> bool:
+    """True when the latest completed review approved (and no review-cap came after it)."""
+    try:
+        evs = store.events(task_id)
+    except Exception:
+        return False
+    for e in reversed(evs):
+        if e["kind"] == "review-cap":
+            return False
+        if e["kind"] == "review" and (e.get("data") or {}).get("outcome") == "reviewed":
+            return (e.get("data") or {}).get("verdict") == "approve"
+    return False
+
+
 def _review_capped(task_id: str) -> bool:
-    return _review_rounds(task_id) >= MAX_REVIEW_ROUNDS
+    # An approved latest review needs no further round: a resumed ship (pr-error,
+    # push-rejected, crash) must go on to ship, not be stopped as review-cap.
+    return _review_rounds(task_id) >= MAX_REVIEW_ROUNDS and not _last_review_approved(task_id)
 
 
 def _review_cap_stop(task_id: str, emit, findings: list | None = None) -> str:

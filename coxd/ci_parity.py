@@ -120,6 +120,17 @@ def _tool(cmd: str) -> str:
     return cmd.split(" ", 1)[0]
 
 
+_SUBCMD_TOOLS = {"ruff", "cargo", "go", "docker"}
+
+
+def _op(cmd: str) -> str:
+    """Tool plus, for multi-command tools, its subcommand (`ruff check` != `ruff format`)."""
+    parts = cmd.split()
+    if parts and parts[0] in _SUBCMD_TOOLS and len(parts) > 1 and not parts[1].startswith("-"):
+        return " ".join(parts[:2])
+    return _tool(cmd)
+
+
 def check(repo_name: str, repo_path: Path, entry: dict | None) -> dict:
     """{ok, mismatched:[{gate,ci}], ci_only:[...], note} for one repo."""
     entry = entry or {}
@@ -139,7 +150,7 @@ def check(repo_name: str, repo_path: Path, entry: dict | None) -> dict:
     for c in ci:
         if c in gate_set or c in ignore or _tool(c) in ignore:
             continue
-        same_tool = [g for g in gate_cmds if _tool(g) == _tool(c)]
+        same_tool = [g for g in gate_cmds if _op(g) == _op(c)]
         if same_tool:
             mismatched.append({"gate": same_tool[0], "ci": c})
         else:

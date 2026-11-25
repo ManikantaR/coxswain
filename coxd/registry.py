@@ -203,7 +203,9 @@ def scout(repo_path: Path) -> dict:
     if pkg.exists():
         try:
             scripts = json.loads(pkg.read_text(encoding="utf-8")).get("scripts", {}) or {}
-        except (ValueError, OSError):
+            if not isinstance(scripts, dict):
+                scripts = {}
+        except (ValueError, OSError, AttributeError):
             scripts = {}
         pm = "pnpm" if (repo_path / "pnpm-lock.yaml").exists() else \
              "yarn" if (repo_path / "yarn.lock").exists() else "npm run"
@@ -220,7 +222,10 @@ def scout(repo_path: Path) -> dict:
             pjson = json.loads(pkg.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             pass
-        deps = {**(pjson.get("devDependencies") or {}), **(pjson.get("dependencies") or {})}
+        if not isinstance(pjson, dict):
+            pjson = {}
+        deps = {k: v for key in ("devDependencies", "dependencies")
+                if isinstance(pjson.get(key), dict) for k, v in pjson[key].items()}
         run = "pnpm exec" if pm == "pnpm" else "yarn" if pm == "yarn" else "npx --no-install"
         if "eslint" in deps and any((repo_path / f).exists() for f in (
                 "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs",

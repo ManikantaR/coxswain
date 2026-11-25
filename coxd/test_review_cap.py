@@ -108,6 +108,16 @@ def test_error_reviews_do_not_count_and_resume_after_cap_gets_new_allowance():
     assert loop._review_rounds("capx") == 0 and not loop._review_capped("capx")
 
 
+def test_approved_latest_review_is_not_capped_on_resume():
+    # fix, fix, (resume), approve -> 3 reviews, but the last approved: shipping resumes, no cap
+    store.create_task("capok", "example", "brief", "/wt", repo_path="/repo/example")
+    for v in ("fix", "fix", "approve"):
+        store.append_event("capok", "review", {"outcome": "reviewed", "verdict": v})
+    assert loop._review_rounds("capok") == 3 and not loop._review_capped("capok")
+    store.append_event("capok", "review", {"outcome": "reviewed", "verdict": "fix"})
+    assert loop._review_capped("capok")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
