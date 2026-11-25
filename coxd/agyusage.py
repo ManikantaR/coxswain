@@ -137,11 +137,8 @@ def latest(evs: list[dict]) -> dict | None:
         if e.get("kind") == "agy-usage" and isinstance(e.get("data"), dict):
             d = e["data"]
             dur = d.get("duration_seconds")
-            dur_val = (
-                dur
-                if isinstance(dur, (int, float)) and not isinstance(dur, bool) and math.isfinite(dur)
-                else 0
-            )
+            is_num = isinstance(dur, (int, float)) and not isinstance(dur, bool)
+            dur_val = dur if is_num and math.isfinite(dur) else 0
             model = d.get("model")
             return {
                 "tokens": total_tokens(d),
