@@ -135,7 +135,8 @@ check("plan stored", t["plan_md"].startswith("## Files") and t["base_sha"] == ba
 check("plan event", any(e["kind"] == "plan" for e in store.events(tid)))
 remote = git(origin, "rev-parse", f"refs/heads/coxd-agy/{tid}").strip()
 check("remote branch at base sha", remote == base)
-check("notified", bool(pings) and pings[-1][1] == f"Run on your Mac: agy-next {tid}")
+check("no per-task ping (queue ping is debounced via agy_handoff.notify_queue)",
+      not any("agy-next" in m for _, m in pings))
 
 c = TestClient(board.app, base_url="http://localhost:8791")
 r = c.get(f"/api/task/{tid}/plan").json()

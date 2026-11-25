@@ -141,7 +141,8 @@ check("plan is gate summary",
 c = TestClient(board.app, base_url="http://localhost:8791")
 check("round 2 on plan endpoint", c.get(f"/api/task/{t1}/plan").json()["round"] == 2)
 check("same head not re-run", agy_handoff.scan() == [])
-check("agy-next notified", pings[-1][1] == f"Run on your Mac: agy-next {t1}")
+check("no per-task agy-next ping (queue ping is debounced)",
+      not any("agy-next" in m for _, m in pings))
 
 # ---- green gate + findings -> needs_choice ---------------------------------------------
 gate_result[0] = GREEN
