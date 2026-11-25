@@ -45,8 +45,9 @@ curl -s localhost:8791/api/tasks >/dev/null 2>&1 || \
 .venv/bin/python cli.py dispatch ~/repo/<repo> "One-line intent. GitHub issue: https://github.com/<owner>/<repo>/issues/<n>"
 
 # 3. WATCH
-.venv/bin/python cli.py list            # state | id | $cost
-.venv/bin/python cli.py tail <task_id>  # follow to a terminal state   (or the board /events SSE)
+.venv/bin/python cli.py status --repo <repo>  # read COXD_HOME/status/<repo>.md (preferred over polling)
+.venv/bin/python cli.py list                   # state | id | $cost
+.venv/bin/python cli.py tail <task_id>         # follow to a terminal state   (or the board /events SSE)
 
 # 4. REVIEW the diff (gate + Opus review already ran; findings in the PR body)
 git -C ~/.coxswain/worktrees/<task_id> diff origin/main...HEAD
@@ -61,11 +62,15 @@ Board equivalents (coxd/board.py): `POST /api/dispatch {repo, issue, brief}`,
 If the board has owner login on (`COXD_OWNER_USER` set), local POSTs get 403 unless they send
 `-H "X-Coxd-Admin-Token: $(cat $COXD_HOME/admin.token)"` (root-only file; see "Owner login" in deploy/README.md).
 
+## Lead session
+The pinned lead plans, writes issues, dispatches only on request, reviews diffs/PRs, and resumes stuck tasks — it never writes project code, merges without the captain's explicit word, deploys migrations unattended, reads secrets (such as `admin.token`), or weakens safety gates. Read repo status via `cli.py status --repo <repo>` instead of polling. Full runbook: [docs/LEAD-SESSION.md](../../../../docs/LEAD-SESSION.md).
+
 ## Rules
 - **Report outcomes, not mechanics:** "PR ready: <url> — gate green, 1 finding, $0.84".
 - **Never dispatch unprompted. Never infer merge approval.** Merge is the captain's explicit word.
-- On restart, coxd flags in-flight tasks `needs_human` (orphaned) — they need a **manual Resume-w/-note**.
-- **Do not add coxd surface** until `DESIGN-V35.md §3` (≤1-unstick backlog) is recorded met (§4 freeze).
+- Read per-repo STATUS via `.venv/bin/python cli.py status --repo <repo>` rather than polling the board.
+- On restart, coxd auto-resumes/auto-retries active orphans without a PR, and flags orphans with an open PR `needs_human` (`orphaned-on-restart`) — check the PR, then Resume-w/-note or archive.
+- **The §4 freeze is lifted (`docs/DECISIONS.md` D27):** owner-approved roadmap work is allowed; do not add unapproved `coxd` surface.
 
 ## agy queue: lead ordering rules
 When queuing issues for the `coxd-agy` (`agy-handoff`) lane, follow these lead-only ordering and triage rules:

@@ -6,11 +6,13 @@ import roles  # noqa: E402
 
 
 def test_defaults(monkeypatch):
-    for k in ("WORKER_MODEL", "WORKER_EFFORT", "REVIEW_MODEL", "REVIEW_EFFORT"):
+    for k in ("WORKER_MODEL", "WORKER_EFFORT", "REVIEW_MODEL", "REVIEW_EFFORT",
+              "REREVIEW_MODEL", "REREVIEW_EFFORT"):
         monkeypatch.delenv("COXD_" + k, raising=False)
     c = roles.resolve(None)
     assert c == {"worker_model": "claude-sonnet-5-5", "worker_effort": "medium",
                  "review_model": "claude-opus-5-5", "review_effort": "medium",
+                 "rereview_model": "claude-opus-5-5", "rereview_effort": "medium",
                  "planner_model": "claude-sonnet-5-5", "planner_effort": "medium"}
 
 

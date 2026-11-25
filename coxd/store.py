@@ -42,7 +42,8 @@ def _conn() -> sqlite3.Connection:
             source TEXT, evidence TEXT, status TEXT DEFAULT 'pending',
             created REAL, decided REAL);
         CREATE TABLE IF NOT EXISTS repo_streaks(
-            repo TEXT PRIMARY KEY, clean_streak INTEGER NOT NULL DEFAULT 0, updated REAL);
+            repo TEXT PRIMARY KEY, clean_streak INTEGER NOT NULL DEFAULT 0,
+            best_streak INTEGER NOT NULL DEFAULT 0, updated REAL);
         CREATE TABLE IF NOT EXISTS cost_ledger(
             task_id TEXT, ts REAL, delta REAL);
         CREATE INDEX IF NOT EXISTS cost_ts ON cost_ledger(ts);
@@ -61,7 +62,11 @@ def _conn() -> sqlite3.Connection:
                      ("lane", "TEXT"), ("plan_md", "TEXT"), ("base_sha", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
+    have_streaks = {r[1] for r in c.execute("PRAGMA table_info(repo_streaks)")}
+    if "best_streak" not in have_streaks:
+        c.execute("ALTER TABLE repo_streaks ADD COLUMN best_streak INTEGER NOT NULL DEFAULT 0")
     backfill_ledger(c)
+    backfill_best_streaks(c)
     return c
 
 
@@ -105,6 +110,54 @@ def backfill_ledger(c: sqlite3.Connection) -> int:
         c.execute("INSERT INTO meta(key) VALUES('ledger_backfill_v1')")
         c.commit()
         return len(rows)
+    except BaseException:
+        c.rollback()
+        raise
+
+
+def backfill_best_streaks(c: sqlite3.Connection) -> int:
+    """One-time migration (marker 'best_streak_backfill_v1'): populate repo_streaks.best_streak
+    from historical `streak` events and existing clean_streak values."""
+    c.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY)")
+    c.commit()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        if c.execute("SELECT 1 FROM meta WHERE key='best_streak_backfill_v1'").fetchone():
+            c.rollback()
+            return 0
+        best_by_repo: dict[str, int] = {}
+        rows = c.execute(
+            "SELECT t.repo, e.data FROM events e JOIN tasks t ON t.id=e.task_id "
+            "WHERE e.kind='streak' ORDER BY e.seq"
+        ).fetchall()
+        for r in rows:
+            repo = r["repo"]
+            if not repo:
+                continue
+            try:
+                val = json.loads(r["data"] or "{}").get("streak")
+            except (ValueError, AttributeError):
+                continue
+            if (isinstance(val, int) and not isinstance(val, bool)
+                    and val > best_by_repo.get(repo, 0)):
+                best_by_repo[repo] = val
+        updated = 0
+        now = time.time()
+        for repo, best in best_by_repo.items():
+            c.execute(
+                "INSERT INTO repo_streaks(repo,clean_streak,best_streak,updated) VALUES(?,0,?,?) "
+                "ON CONFLICT(repo) DO UPDATE SET "
+                "best_streak=MAX(best_streak, clean_streak, excluded.best_streak)",
+                (repo, best, now),
+            )
+            updated += 1
+        cur = c.execute(
+            "UPDATE repo_streaks SET best_streak=clean_streak WHERE best_streak < clean_streak"
+        )
+        updated += cur.rowcount or 0
+        c.execute("INSERT INTO meta(key) VALUES('best_streak_backfill_v1')")
+        c.commit()
+        return updated
     except BaseException:
         c.rollback()
         raise
@@ -179,6 +232,20 @@ def get_clean_streak(repo: str) -> int:
     return int(r[0]) if r else 0
 
 
+def best_streaks() -> dict[str, int]:
+    """Per-repo best clean-merge streak."""
+    with _conn() as c:
+        rows = c.execute("SELECT repo, best_streak FROM repo_streaks").fetchall()
+    return {r["repo"]: int(r["best_streak"]) for r in rows}
+
+
+def streaks() -> dict[str, tuple[int, int]]:
+    """Per-repo (current, best) clean-merge streaks."""
+    with _conn() as c:
+        rows = c.execute("SELECT repo, clean_streak, best_streak FROM repo_streaks").fetchall()
+    return {r["repo"]: (int(r["clean_streak"]), int(r["best_streak"])) for r in rows}
+
+
 def propose_auto_merge(repo: str) -> bool:
     """If the repo's clean streak reached the threshold, move manual → proposed.
     True only on that transition (one notification, never repeated)."""
@@ -209,10 +276,12 @@ def record_merge(repo: str, clean: bool, task_id: str | None = None) -> int:
             return int(r[0]) if r else 0
         flag = 1 if clean else 0
         c.execute(
-            "INSERT INTO repo_streaks(repo,clean_streak,updated) VALUES(?,?,?) "
+            "INSERT INTO repo_streaks(repo,clean_streak,best_streak,updated) VALUES(?,?,?,?) "
             "ON CONFLICT(repo) DO UPDATE SET "
-            "clean_streak=CASE WHEN ?=1 THEN clean_streak+1 ELSE 0 END, updated=excluded.updated",
-            (repo, flag, time.time(), flag))
+            "best_streak=CASE WHEN ?=1 THEN MAX(best_streak, clean_streak+1) ELSE best_streak END, "
+            "clean_streak=CASE WHEN ?=1 THEN clean_streak+1 ELSE 0 END, "
+            "updated=excluded.updated",
+            (repo, flag, flag, time.time(), flag, flag))
         n = int(c.execute("SELECT clean_streak FROM repo_streaks WHERE repo=?",
                           (repo,)).fetchone()[0])
         if task_id is not None:

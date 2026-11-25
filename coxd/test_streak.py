@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 
@@ -135,5 +136,52 @@ registry.save("eta-cogs", {"test": "t"})
 registry.propose_auto_merge("eta-cogs")
 landed._maybe_propose_auto("eta-cogs")
 check("stale proposal withdrawn on next merge", registry.merge_level("eta-cogs") == "manual")
+
+# --- best_streak tracking + readers + legacy backfill
+check("REPO best_streak preserved at 2 after reset + restart at 1",
+      store.streaks()[REPO] == (1, 2) and store.best_streaks()[REPO] == 2)
+for i in (5, 6):
+    store.create_task(f"c{i}", REPO, "b", "/tmp/wt")
+    store.record_merge(REPO, True, task_id=f"c{i}")
+check("REPO best_streak advances to 3 when current passes previous best",
+      store.streaks()[REPO] == (3, 3) and store.best_streaks()[REPO] == 3)
+check("R2 best_streak stays 12 after dirty merge reset current to 0",
+      store.streaks()[R2] == (0, 12) and store.best_streaks()[R2] == 12)
+check("R3 best_streak stays 10 after dirty merge",
+      store.streaks()[R3] == (0, 10))
+
+# Legacy DB migration: repo_streaks without best_streak column gets ALTER + backfill
+prev_home = os.environ["COXD_HOME"]
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-streak-mig-")
+try:
+    p = store.db_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lc = sqlite3.connect(p)
+    lc.executescript(
+        "CREATE TABLE tasks(id TEXT PRIMARY KEY, repo TEXT, repo_path TEXT, brief TEXT, "
+        "state TEXT, reason TEXT, session_id TEXT, worktree TEXT, cost REAL DEFAULT 0, "
+        "pr_url TEXT, created REAL, updated REAL);"
+        "CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, ts REAL, "
+        "kind TEXT, data TEXT);"
+        "CREATE TABLE repo_streaks(repo TEXT PRIMARY KEY, clean_streak INTEGER NOT NULL DEFAULT 0, "
+        "updated REAL);"
+    )
+    lc.execute("INSERT INTO tasks(id,repo,state) VALUES('lt1','legacy-app','landed')")
+    lc.execute("INSERT INTO tasks(id,repo,state) VALUES('lt2','legacy-app','landed')")
+    lc.execute("INSERT INTO events(task_id,ts,kind,data) VALUES('lt1',10,'streak',?)",
+               (json.dumps({"clean": True, "streak": 4}),))
+    lc.execute("INSERT INTO events(task_id,ts,kind,data) VALUES('lt2',20,'streak',?)",
+               (json.dumps({"clean": False, "streak": 0}),))
+    lc.execute("INSERT INTO repo_streaks(repo,clean_streak,updated) VALUES('legacy-app',1,30)")
+    lc.execute("INSERT INTO repo_streaks(repo,clean_streak,updated) VALUES('no-ev-app',3,30)")
+    lc.commit()
+    lc.close()
+
+    check("legacy db migrated and backfilled best_streak from streak events",
+          store.streaks()["legacy-app"] == (1, 4))
+    check("legacy db repo without events gets best = current",
+          store.streaks()["no-ev-app"] == (3, 3))
+finally:
+    os.environ["COXD_HOME"] = prev_home
 
 sys.exit(0 if all(res) else 1)
