@@ -41,7 +41,16 @@ def _config() -> dict:
     return cfg
 
 
-def notify(title: str, message: str, priority: str = "default") -> list[str]:
+def _safe_copy_text(copy_text: str | None) -> str | None:
+    if not copy_text:
+        return None
+    if any(ch in copy_text for ch in (",", ";", "\n", "\r")):
+        raise ValueError("copy_text must not contain ',', ';', or newlines")
+    return copy_text
+
+
+def notify(title: str, message: str, priority: str = "default",
+           copy_text: str | None = None) -> list[str]:
     """Send to every configured channel. Returns which fired (for tests/logs).
 
     Low-priority messages, and anything inside the household quiet window, arrive
@@ -49,12 +58,13 @@ def notify(title: str, message: str, priority: str = "default") -> list[str]:
     cfg = _config()
     url = cfg.get("board_url")
     silent = priority == "low" or in_quiet_hours()
+    safe_copy = _safe_copy_text(copy_text)
     sent: list[str] = []
     if cfg.get("ntfy_topic"):
-        _ntfy(cfg, title, message, url, "min" if silent else priority)
+        _ntfy(cfg, title, message, url, "min" if silent else priority, copy_text=safe_copy)
         sent.append("ntfy")
     if cfg.get("telegram_token") and cfg.get("telegram_chat"):
-        _telegram(cfg, title, message, url, silent=silent)
+        _telegram(cfg, title, message, url, silent=silent, copy_text=safe_copy)
         sent.append("telegram")
     return sent
 
@@ -76,31 +86,41 @@ def in_quiet_hours(now: datetime | None = None) -> bool:
     return (a <= m or m < b) if a > b else (a <= m < b)
 
 
-def notify_async(title: str, message: str, priority: str = "default") -> None:
+def notify_async(title: str, message: str, priority: str = "default",
+                 copy_text: str | None = None) -> None:
     """Fire-and-forget on a daemon thread (never blocks the event loop)."""
     def _run() -> None:
         try:
-            notify(title, message, priority)
+            notify(title, message, priority, copy_text=copy_text)
         except Exception:  # a failed notification must never break a task
             pass
     threading.Thread(target=_run, daemon=True).start()
 
 
-def _ntfy(cfg: dict, title: str, message: str, url: str | None, priority: str) -> None:
+def _ntfy(cfg: dict, title: str, message: str, url: str | None, priority: str,
+          copy_text: str | None = None) -> None:
     req = urllib.request.Request(
         f"{cfg['ntfy_server'].rstrip('/')}/{cfg['ntfy_topic']}", data=message.encode())
     req.add_header("Title", title)
     req.add_header("Priority", priority)
     if url:
         req.add_header("Click", url)
+    safe_copy = _safe_copy_text(copy_text)
+    if safe_copy:
+        req.add_header("Actions", f"copy, Copy command, {safe_copy}")
     urllib.request.urlopen(req, timeout=10)  # noqa: S310
 
 
 def _telegram(cfg: dict, title: str, message: str, url: str | None,
-              silent: bool = False) -> None:
+              silent: bool = False, copy_text: str | None = None) -> None:
     # Plain text: Markdown mode rejected messages containing task ids/states with
     # underscores (e.g. waiting_quota), and the failure was swallowed — a lost ping.
-    text = f"{title}\n{message}" + (f"\n{url}" if url else "")
+    parts = [title, message]
+    if copy_text:
+        parts.append(copy_text)
+    if url:
+        parts.append(url)
+    text = "\n".join(parts)
     data = urllib.parse.urlencode(
         {"chat_id": cfg["telegram_chat"], "text": text,
          "disable_notification": "true" if silent else "false"}).encode()

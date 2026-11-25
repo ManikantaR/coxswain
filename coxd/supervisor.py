@@ -277,6 +277,7 @@ async def _cleanup_loop(concurrency: int = 2) -> None:
         try:
             await asyncio.to_thread(landed.check_and_cleanup_merged)
             await asyncio.to_thread(agy_handoff.scan)  # new head on a coxd-agy/<id> branch?
+            await asyncio.to_thread(agy_handoff.notify_queue)
             await asyncio.to_thread(rebase.process_pending, lambda: len(_running), concurrency)
         except Exception as e:  # noqa: BLE001 - log and keep polling, never die
             print(f"cleanup pass failed: {e}")

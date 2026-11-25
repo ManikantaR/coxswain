@@ -1,7 +1,8 @@
 """agy handoff lane 3/4: pick up the human-pushed `coxd-agy/<id>` branch.
 
-Plain git only (ls-remote / fetch) plus store bookkeeping. coxd never executes,
-signals or wraps agy; the only interface is the git branch and the board API.
+Plain git only (ls-remote / fetch) plus store bookkeeping. coxd never starts,
+executes, signals, parses, or wraps agy; the only interface is the git branch
+and the board API.
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -390,6 +392,379 @@ def queue_inputs() -> tuple[
     return tasks, events, open_pr_files, issue_labels
 
 
+DEFAULT_PING_DEBOUNCE_S = 600.0
+_PR_URL_NUM_RE = re.compile(r"/pull/(\d+)(?:[/?#]|$)")
+
+
+def _ping_debounce_s() -> float:
+    raw = os.environ.get("COXD_AGY_PING_DEBOUNCE_S")
+    if raw is None or not raw.strip():
+        return DEFAULT_PING_DEBOUNCE_S
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_PING_DEBOUNCE_S
+
+
+def _notify_state_path() -> Path:
+    return registry.home() / "agy_notify_state.json"
+
+
+def _empty_notify_state() -> dict:
+    return {
+        "ready": [],
+        "ready_rounds": {},
+        "blocked": {},
+        "merged": [],
+        "prs_ready_sig": [],
+        "pending": {},
+    }
+
+
+def _load_notify_state() -> dict:
+    p = _notify_state_path()
+    empty = _empty_notify_state()
+    if not p.exists():
+        return empty
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return empty
+    if not isinstance(raw, dict):
+        return empty
+    ready = raw.get("ready")
+    ready_rounds = raw.get("ready_rounds")
+    blocked = raw.get("blocked")
+    merged = raw.get("merged")
+    prs_ready_sig = raw.get("prs_ready_sig")
+    pending = raw.get("pending")
+    return {
+        "ready": sorted(x for x in ready if isinstance(x, str)) if isinstance(ready, list) else [],
+        "ready_rounds": (
+            {
+                k: int(v)
+                for k, v in ready_rounds.items()
+                if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+            }
+            if isinstance(ready_rounds, dict)
+            else {}
+        ),
+        "blocked": (
+            {
+                k: [b for b in v if isinstance(b, str)]
+                for k, v in blocked.items()
+                if isinstance(k, str) and isinstance(v, list)
+            }
+            if isinstance(blocked, dict)
+            else {}
+        ),
+        "merged": [x for x in merged if isinstance(x, str)] if isinstance(merged, list) else [],
+        "prs_ready_sig": (
+            [x for x in prs_ready_sig if isinstance(x, str)]
+            if isinstance(prs_ready_sig, list)
+            else []
+        ),
+        "pending": pending if isinstance(pending, dict) else {},
+    }
+
+
+def _save_notify_state(state: dict) -> None:
+    p = _notify_state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=p.parent,
+            prefix=f".{p.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            tmp_path = fh.name
+            json.dump(state, fh, indent=2, sort_keys=True)
+            fh.flush()
+        os.replace(tmp_path, p)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _plan_round(evs: list[dict]) -> int:
+    return sum(1 for e in evs if e.get("kind") == "plan")
+
+
+def _has_queue_ready(evs: list[dict], rnd: int) -> bool:
+    return any(
+        e.get("kind") == "queue-ready"
+        and isinstance(e.get("data"), dict)
+        and e["data"].get("round") == rnd
+        for e in evs
+    )
+
+
+def _pr_files_set(pr: dict) -> set[str]:
+    raw = pr.get("files")
+    if raw is not None:
+        return {f for f in raw if isinstance(f, str) and f}
+    return plan_files(pr)
+
+
+def _pr_label(task: dict) -> str:
+    url = task.get("pr_url") or ""
+    m = _PR_URL_NUM_RE.search(url)
+    if m:
+        return f"#{m.group(1)}"
+    issue = issue_and_deps(task.get("brief"))[0]
+    if issue is not None:
+        return f"#{issue}"
+    return str(task.get("id") or "")
+
+
+def merge_order(prs: list[dict]) -> list[dict]:
+    """Order ready-to-merge PRs oldest-first, ensuring any PR whose files overlap an
+    older PR is placed after its last overlapping predecessor."""
+    ordered = sorted(prs, key=lambda p: (p.get("created") is None, p.get("created") or 0))
+    files_list = [_pr_files_set(p) for p in ordered]
+    n = len(ordered)
+    for i in range(n):
+        f_i = files_list[i]
+        if not f_i:
+            continue
+        c_i = ordered[i].get("created")
+        last_pred = -1
+        for j in range(n):
+            if j == i:
+                continue
+            c_j = ordered[j].get("created")
+            is_older = c_j is not None and c_i is not None and c_j < c_i
+            if is_older and (f_i & files_list[j]):
+                last_pred = max(last_pred, j)
+        if last_pred > i:
+            pr = ordered.pop(i)
+            fl = files_list.pop(i)
+            ordered.insert(last_pred, pr)
+            files_list.insert(last_pred, fl)
+    return ordered
+
+
+def _present_blockers(
+    tasks: list[dict],
+    events: dict[str, list[dict]],
+    open_pr_files: dict[str, dict[str, set[str]]] | dict[str, list[set[str]]],
+) -> dict[str | None, set[str]]:
+    present: dict[str | None, set[str]] = {}
+    for t in tasks:
+        if t.get("lane") != "agy-handoff":
+            continue
+        tid = t["id"]
+        evs = events.get(tid) or []
+        if not _is_started(t, _round_events(evs)):
+            continue
+        issue = issue_and_deps(t.get("brief"))[0]
+        label = f"#{issue}" if issue is not None else tid
+        present.setdefault(t.get("repo"), set()).add(label)
+    for repo, repo_prs in (open_pr_files or {}).items():
+        bucket = present.setdefault(repo, set())
+        if isinstance(repo_prs, dict):
+            for pr_id in repo_prs:
+                bucket.add(f"PR#{pr_id}" if isinstance(pr_id, int) else str(pr_id))
+        elif isinstance(repo_prs, (list, tuple)):
+            for idx in range(1, len(repo_prs) + 1):
+                bucket.add(f"PR#{idx}")
+    return present
+
+
+def notify_queue(now: float | None = None) -> list[str]:
+    """Debounced, deduplicated queue and merge-order notifications for agy-handoff.
+
+    Uses only the local store and GitHub CLI data via `queue_inputs()`; never starts,
+    signals, or parses `agy`. Returns the list of notification channels fired.
+    """
+    ts = time.time() if now is None else float(now)
+    debounce_s = _ping_debounce_s()
+    state = _load_notify_state()
+
+    tasks, events, open_pr_files, issue_labels = queue_inputs()
+    rows = queue(tasks, events, open_pr_files, issue_labels)
+    ready_rows = [r for r in rows if r["status"] == "ready"]
+    blocked_rows = [r for r in rows if r["status"] == "blocked"]
+
+    prev_blocked: dict[str, list[str]] = state["blocked"]
+    current_blocked: dict[str, list[str]] = {r["id"]: list(r["blocked_by"]) for r in blocked_rows}
+    present = _present_blockers(tasks, events, open_pr_files)
+
+    ready_rounds: dict[str, int] = dict(state["ready_rounds"])
+    merged_set: set[str] = set(state["merged"])
+    pending: dict = dict(state["pending"])
+    raw_pending_ready = pending.get("ready")
+    pending_ready: dict[str, dict] = {}
+    if isinstance(raw_pending_ready, dict):
+        for tid, entry in raw_pending_ready.items():
+            if (
+                isinstance(tid, str)
+                and isinstance(entry, dict)
+                and isinstance(entry.get("round"), int)
+                and not isinstance(entry.get("round"), bool)
+                and isinstance(entry.get("ts"), (int, float))
+                and not isinstance(entry.get("ts"), bool)
+            ):
+                unblocked = entry.get("unblocked_by")
+                pending_ready[tid] = {
+                    "round": entry["round"],
+                    "ts": float(entry["ts"]),
+                    "unblocked_by": (
+                        [b for b in unblocked if isinstance(b, str)]
+                        if isinstance(unblocked, list)
+                        else []
+                    ),
+                    "cmd": entry.get("cmd") if isinstance(entry.get("cmd"), str) else "",
+                }
+
+    current_rounds: dict[str, int] = {}
+    ready_ids: set[str] = set()
+    for r in ready_rows:
+        tid = r["id"]
+        ready_ids.add(tid)
+        evs = events.get(tid) or []
+        rnd = _plan_round(evs)
+        current_rounds[tid] = rnd
+        if ready_rounds.get(tid) == rnd or _has_queue_ready(evs, rnd):
+            ready_rounds[tid] = rnd
+            pending_ready.pop(tid, None)
+            continue
+        existing = pending_ready.get(tid)
+        if existing is None or existing["round"] != rnd:
+            prev_b = prev_blocked.get(tid) or []
+            repo_present = present.get(r.get("repo"), set())
+            gone = [b for b in prev_b if b not in repo_present]
+            pending_ready[tid] = {
+                "round": rnd,
+                "ts": ts,
+                "unblocked_by": gone,
+                "cmd": r["cmd"],
+            }
+        else:
+            existing["cmd"] = r["cmd"]
+
+    # Prune pending items that are no longer ready in the current queue.
+    for tid in list(pending_ready):
+        if tid not in ready_ids:
+            del pending_ready[tid]
+
+    sent: list[str] = []
+
+    if pending_ready:
+        oldest_ts = min(e["ts"] for e in pending_ready.values())
+        if ts - oldest_ts >= debounce_s:
+            to_announce = [r for r in ready_rows if r["id"] in pending_ready]
+            if to_announce:
+                first_cmd = to_announce[0]["cmd"]
+                unblock_groups: dict[str, list[str]] = {}
+                plain_cmds: list[str] = []
+                for r in to_announce:
+                    entry = pending_ready[r["id"]]
+                    gone = entry.get("unblocked_by") or []
+                    if gone:
+                        key = ", ".join(gone)
+                        unblock_groups.setdefault(key, []).append(r["cmd"])
+                    else:
+                        plain_cmds.append(r["cmd"])
+                lines = [
+                    f"{blocker} merged -> ready: {', '.join(cmds)}"
+                    for blocker, cmds in unblock_groups.items()
+                ]
+                if plain_cmds:
+                    lines.append(f"ready: {', '.join(plain_cmds)}")
+                msg = "\n".join(lines)
+                try:
+                    ch = notify.notify("coxd · agy queue", msg, copy_text=first_cmd)
+                except Exception as e:  # noqa: BLE001
+                    print(f"agy_handoff: notify_queue ready send failed: {type(e).__name__}")
+                else:
+                    if isinstance(ch, list):
+                        sent.extend(ch)
+                    for r in to_announce:
+                        tid = r["id"]
+                        entry = pending_ready[tid]
+                        rnd = entry["round"]
+                        if not _has_queue_ready(store.events(tid), rnd):
+                            store.append_event(tid, "queue-ready", {"round": rnd})
+                        ready_rounds[tid] = rnd
+                        merged_set.update(entry.get("unblocked_by") or [])
+                    pending_ready.clear()
+
+    # Ready-to-merge message for agy-handoff PRs.
+    pr_tasks = [
+        {
+            **t,
+            "files": (
+                _files_from_events(events[t["id"]]) if t["id"] in events else plan_files(t)
+            ),
+        }
+        for t in tasks
+        if t.get("lane") == "agy-handoff"
+        and t.get("state") == "pr_ready"
+        and not t.get("archived_at")
+        and t.get("pr_url")
+    ]
+    ordered_prs = merge_order(pr_tasks)
+    current_sig = [_pr_label(p) for p in ordered_prs]
+    raw_pending_merge = pending.get("prs_ready")
+    pending_merge: dict | None = (
+        dict(raw_pending_merge)
+        if isinstance(raw_pending_merge, dict)
+        and isinstance(raw_pending_merge.get("ts"), (int, float))
+        and not isinstance(raw_pending_merge.get("ts"), bool)
+        else None
+    )
+
+    if not current_sig:
+        state["prs_ready_sig"] = []
+        pending_merge = None
+    elif current_sig == state["prs_ready_sig"]:
+        pending_merge = None
+    else:
+        if pending_merge is None:
+            pending_merge = {"ts": ts, "sig": list(current_sig)}
+        else:
+            pending_merge = {"ts": float(pending_merge["ts"]), "sig": list(current_sig)}
+        if ts - pending_merge["ts"] >= debounce_s:
+            merge_msg = (
+                f"{len(current_sig)} PRs ready to merge, in this order: "
+                f"{', '.join(current_sig)}"
+            )
+            try:
+                ch = notify.notify("coxd · agy queue", merge_msg)
+            except Exception as e:  # noqa: BLE001
+                print(f"agy_handoff: notify_queue merge send failed: {type(e).__name__}")
+            else:
+                if isinstance(ch, list):
+                    sent.extend(ch)
+                state["prs_ready_sig"] = list(current_sig)
+                pending_merge = None
+
+    new_pending: dict = {}
+    if pending_ready:
+        new_pending["ready"] = pending_ready
+    if pending_merge:
+        new_pending["prs_ready"] = pending_merge
+
+    state["ready"] = sorted(
+        tid for tid, rnd in ready_rounds.items() if current_rounds.get(tid, rnd) == rnd
+    )
+    state["ready_rounds"] = ready_rounds
+    state["blocked"] = current_blocked
+    state["merged"] = sorted(merged_set)
+    state["pending"] = new_pending
+    _save_notify_state(state)
+    return sent
+
+
 _TRUE, _FALSE = ("1", "true", "yes", "on"), ("0", "false", "no", "off", "")
 
 
@@ -503,7 +878,6 @@ def next_round(task_id: str, plan_md: str, via: str, source: str) -> None:
         "depends_on": depends_on,
     })
     store.set_state(task_id, "waiting_agy", f"run agy-next {task_id}")
-    notify.notify_async("coxd · needs you (agy)", f"Run on your Mac: agy-next {task_id}")
 
 
 def record_claude_round(task_id: str, source: str) -> None:
