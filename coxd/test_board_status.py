@@ -246,5 +246,37 @@ check("served HTML contains 'before model tracking' and scorecard panel id",
       and "renderScorecard" in html_text
       and ".chip.budget" in html_text)
 
+# --- 7. agy_compare payload (zero agy tasks) and board HTML panel ------------
+prev_home = os.environ.get("COXD_HOME")
+os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-board-agycmp-")
+try:
+    board._reset_agy_queue_cache()
+    store.create_task("cl-only-1", "repo-test", "brief", "/tmp/wt", size="small")
+    zero_payload = board._tasks_payload()
+    ac = zero_payload.get("agy_compare")
+    check("payload includes agy_compare with groups and collecting hint on zero agy tasks",
+          isinstance(ac, dict)
+          and isinstance(ac.get("groups"), list)
+          and len(ac["groups"]) == 4
+          and ac.get("hint") == {"state": "collecting", "n": 0, "need": 5})
+    agy_groups = [g for g in ac["groups"] if g["lane"] == "agy"]
+    check("zero agy tasks -> agy groups have 0 tasks and None metrics",
+          len(agy_groups) == 2
+          and all(g["tasks"] == 0 and g["first_pass_pct"] is None
+                  and g["median_claude_usd"] is None and g["spark"] == []
+                  for g in agy_groups))
+finally:
+    if prev_home is None:
+        os.environ.pop("COXD_HOME", None)
+    else:
+        os.environ["COXD_HOME"] = prev_home
+    board._reset_agy_queue_cache()
+
+check("board HTML contains agycmp panel and renderAgyCompare",
+      "agycmp" in board._HTML
+      and "agycmp" in html_text
+      and "renderAgyCompare" in board._HTML
+      and "agy lane (plan+review)" in board._HTML)
+
 print("FAILED" if fails else "all passed")
 sys.exit(1 if fails else 0)

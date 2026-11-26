@@ -59,7 +59,8 @@ def _conn() -> sqlite3.Connection:
                      ("test_output", "TEXT"), ("archived_at", "REAL"),
                      ("intent", "TEXT"), ("resume_at", "REAL"),
                      ("greenlight_tier", "TEXT"), ("greenlight_reasons", "TEXT"),
-                     ("lane", "TEXT"), ("plan_md", "TEXT"), ("base_sha", "TEXT")):
+                     ("lane", "TEXT"), ("plan_md", "TEXT"), ("base_sha", "TEXT"),
+                     ("size", "TEXT")):
         if col not in have:
             c.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
     have_streaks = {r[1] for r in c.execute("PRAGMA table_info(repo_streaks)")}
@@ -164,7 +165,8 @@ def backfill_best_streaks(c: sqlite3.Connection) -> int:
 
 
 def create_task(task_id: str, repo: str, brief: str, worktree: str,
-                repo_path: str = "", intent: str = "", lane: str | None = None) -> None:
+                repo_path: str = "", intent: str = "", lane: str | None = None,
+                size: str | None = None) -> None:
     """`brief` is the full implementer prompt (rules block + intent); `intent` is
     the captain's raw one-liner, kept separate so ship.py titles the PR from the
     real intent, not the prepended rules heading."""
@@ -172,10 +174,10 @@ def create_task(task_id: str, repo: str, brief: str, worktree: str,
     with _conn() as c:
         c.execute(
             "INSERT OR REPLACE INTO tasks"
-            "(id,repo,repo_path,brief,intent,state,worktree,created,updated,lane) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "(id,repo,repo_path,brief,intent,state,worktree,created,updated,lane,size) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, repo, repo_path, brief, intent or brief, "queued", worktree, now, now,
-             lane),
+             lane, size),
         )
     append_event(task_id, "created", {"repo": repo})
 

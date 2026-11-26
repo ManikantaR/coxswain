@@ -242,5 +242,46 @@ add(21, labels=("coxd-working",))
 intake.clear_working("widgets", SLUG, f"x\n\nGitHub issue: {URL}21")
 check("working cleared on land", names(21) == [])
 
+# --- size:small / size:medium label handling (issue #106) --------------------
+check("size_of small", intake.size_of([{"name": "size:small"}]) == "small")
+check("size_of medium", intake.size_of([{"name": "size:medium"}]) == "medium")
+check("size_of both -> None",
+      intake.size_of([{"name": "size:small"}, {"name": "size:medium"}]) is None)
+check("size_of none -> None", intake.size_of([]) is None and intake.size_of(None) is None)
+check("size_of unrelated -> None",
+      intake.size_of([{"name": "bug"}, {"name": "size:S"}, {"name": "size:large"}]) is None)
+
+dispatch_calls: list[tuple[tuple, dict]] = []
+
+
+def spy_dispatch(*args, **kwargs):
+    dispatch_calls.append((args, kwargs))
+    path, brief = args[0], args[1]
+    tid = f"widgets-sz-{len(dispatch_calls)}"
+    store.create_task(tid, "widgets", brief, "/tmp/x", repo_path=path,
+                      lane=kwargs.get("lane"), size=kwargs.get("size"))
+    return tid
+
+
+dispatch.dispatch = spy_dispatch
+issues[20]["state"] = "CLOSED"
+
+# coxd-ready with no size label -> exact old signature (no size kwarg)
+add(50, labels=("coxd-ready",))
+check("unsized ready dispatched", intake.poll_once() == 1)
+check("unsized ready exact old signature",
+      len(dispatch_calls) == 1
+      and len(dispatch_calls[-1][0]) == 2
+      and dispatch_calls[-1][1] == {})
+issues[50]["state"] = "CLOSED"
+
+# coxd-ready with size:small -> size passed and stored
+add(51, labels=("coxd-ready", "size:small"))
+check("sized ready dispatched", intake.poll_once() == 1)
+check("size:small passed to dispatch and stored",
+      dispatch_calls[-1][1] == {"size": "small"}
+      and store.get_task(f"widgets-sz-{len(dispatch_calls)}")["size"] == "small")
+issues[51]["state"] = "CLOSED"
+
 print("FAILED" if fails else "all passed")
 sys.exit(1 if fails else 0)

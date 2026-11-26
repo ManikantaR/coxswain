@@ -16,7 +16,8 @@ import store
 import worktree
 
 
-def dispatch(repo_path: str | Path, brief: str, lane: str | None = None) -> str:
+def dispatch(repo_path: str | Path, brief: str, lane: str | None = None,
+             size: str | None = None) -> str:
     repo_path = Path(repo_path).expanduser().resolve()
     if not (repo_path / ".git").exists():
         raise ValueError(f"{repo_path} is not a git repo")
@@ -29,5 +30,5 @@ def dispatch(repo_path: str | Path, brief: str, lane: str | None = None) -> str:
     if rb:  # compounding lessons first, so the implementer reads them up front (P1)
         brief = f"{rb}\n\n{brief}"
     store.create_task(task_id, repo_name, brief, str(wt),
-                      repo_path=str(repo_path), intent=intent, lane=lane)
+                      repo_path=str(repo_path), intent=intent, lane=lane, size=size)
     return task_id
