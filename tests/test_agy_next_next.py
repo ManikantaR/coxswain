@@ -463,3 +463,39 @@ def test_next_cli_usage_errors(tmp_path):
             assert r.returncode == 2, bad_args
     finally:
         srv.shutdown()
+
+
+def test_rate_limit_429_as_last_stderr_write_stops_session(tmp_path):
+    rows = [
+        _row("task-test-1", issue=1, title="Task 1"),
+        _row("task-test-2", issue=2, title="Task 2"),
+    ]
+    # fake agy: publishable change first, then 429 as its very last write, exit at once
+    env, _, srv, marker, sleep_log, _ = _setup_next(
+        tmp_path,
+        'echo hi > new.txt\nprintf "HTTP 429 Too Many Requests\\n" >&2\nexit 0\n',
+        lambda idx: rows[idx:],
+    )
+    try:
+        r = _run_next(env, stdin="y\ny\ny\ny\n")
+    finally:
+        srv.shutdown()
+    assert r.returncode == 3
+    assert "rate limit / quota" in r.stderr
+    assert "HTTP 429 Too Many Requests" in r.stderr  # stderr still replayed
+    assert "Run next" not in r.stdout
+    assert len(marker.read_text().splitlines()) == 1
+    assert not sleep_log.exists()
+
+
+def test_invalid_queue_model_is_shown_as_default(tmp_path):
+    rows = [_row("task-test-1", issue=1, title="Task 1", model="bad model;rm -rf")]
+    env, _, srv, marker, _, _ = _setup_next(tmp_path, "echo hi > new.txt\n", rows)
+    try:
+        r = _run_next(env, stdin="n\n")
+    finally:
+        srv.shutdown()
+    assert r.returncode == 0
+    assert "· default (queue model" in r.stdout
+    assert "rejected)" in r.stdout
+    assert not marker.exists()

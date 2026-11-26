@@ -357,7 +357,11 @@ for r in rows:
         model_arg = str(raw_model) if raw_model else ""
         if model_arg and not valid_id.match(model_arg):
             model_arg = ""
-        model_disp = str(raw_model) if raw_model else "default"
+        # Show the model that will actually be used: an id that fails the
+        # regex is dropped (agy runs with its default), so say so.
+        model_disp = model_arg or "default"
+        if raw_model and not model_arg:
+            model_disp = "default (queue model " + json.dumps(clean(raw_model))[:60] + " rejected)"
         disp = f"{label(r)} {title} \u00b7 {len(files)} files \u00b7 {model_disp}"
         ready_lines.append(f"{tid}|{model_arg}|{disp}")
     else:
@@ -829,10 +833,13 @@ sbx=(--settings "$tmp/session.json"); [ "$sandbox" = 1 ] && sbx+=(--sandbox)
 echo "agy-next: sandbox $([ "$sandbox" = 1 ] && echo on || echo OFF)"
 : > "$tmp/agy.err"
 agy -p "$(cat "$tmp/prompt.md")" ${sbx[@]+"${sbx[@]}"} --model "$model" --output-format stream-json --print-timeout 30m \
-  2> >(tee "$tmp/agy.err" >&2) \
+  2> "$tmp/agy.err" \
   | filter "$tmp/agy.out" "$tmp/usage.json" "$tmp/steps"
 agy_rc=${PIPESTATUS[0]}
 set -e
+# stderr was captured synchronously (no process-substitution tee that could
+# still be writing when check_rate_limit reads it); replay it now.
+cat "$tmp/agy.err" >&2 || true
 ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 [ "$agy_rc" -eq 0 ] || echo "agy-next: agy exited with status $agy_rc" >&2
 check_rate_limit
