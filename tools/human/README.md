@@ -14,6 +14,7 @@ Install: `ln -sf "$PWD/tools/human/agy-next" ~/.local/bin/agy-next`
 `export COXD_URL=http://<board-host>:<port>` in your shell profile (required; exit 2 if unset), then:
 
     agy-next <task_id> [--model <agy-model-id>] [--no-sandbox]
+    agy-next --next [--no-sandbox]
     agy-next --prune [--dry-run]
 
 Model: `--model`, else `$AGY_MODEL`, else `gemini-4-argon-high`. See `agy models` for ids
@@ -33,7 +34,38 @@ branch `coxd-agy/<task_id>` is pushed to origin. Token usage is printed and appe
 for PR merge detection when pruning).
 
 Env overrides: `AGY_REPO_ROOT` (default `~/repo`), `AGY_NEXT_LOG`, `AGY_NEXT_PRUNE=0` (disables
-auto-prune on normal runs).
+auto-prune on normal runs), `AGY_NEXT_MAX` (session task cap for `--next`, default `3`, hard cap `5`).
+
+### Session queue driver (`--next`)
+
+Start it yourself, in the foreground, in a plain terminal. It refuses to run (exit 2) inside
+Claude Code or any AI tool, and must never be scheduled, backgrounded, wrapped in a loop or
+driven by an agent.
+
+`agy-next --next [--no-sandbox]` walks the ready queue interactively:
+1. Fetches `GET /api/agy/queue` and takes the first `status == "ready"` row (falling back to
+   `$AGY_MODEL` or the default when the row's `model` is null). Only initial plans (`round <= 1`)
+   are sent to `agy`; fix rounds (`round > 1`) are skipped and shown as waiting. If nothing is
+   ready, it prints what is waiting and exits `0`.
+2. Displays `#<issue> <title> · <N files> · <model>` and prompts `Run it? [y/N]` (or
+   `Run next <id>? [y/N]` after a publish). Any answer other than `y`/`yes` (or EOF) stops
+   immediately.
+3. Runs `agy-next <id> --model <m>` in the foreground with the same guards and the `y/N` publish
+   prompt before pushing. Any non-zero exit (no changes, declined publish, or error) stops the
+   session immediately.
+4. Stops immediately (exit `3`) if `agy` stderr or error events report a rate limit (`429`,
+   `quota`, or `rate limit`), even if that task published.
+5. Tracks the number of published tasks against `AGY_NEXT_MAX` (default `3`, hard-capped at `5`;
+   values `< 1` or non-numeric exit `2`). When the limit is reached, it stops; otherwise it runs
+   a 90-second countdown (`Ctrl-C` to stop) before re-fetching the queue.
+
+### Per-task lock
+
+Every single-task run (`agy-next <task_id>`, including tasks launched by `--next`) acquires a
+directory lock at `$RUNS/.lock-<id>` (default `~/.local/state/agy-next/runs/.lock-<id>`) and
+removes it with `rmdir` on exit. If the lock already exists, `agy-next` exits `1` without
+removing it so another active terminal is protected. If a previous process was `kill -9`'d and
+left a stale lock behind, remove the printed directory manually (`rmdir ~/.local/state/agy-next/runs/.lock-<id>`).
 
 ### Pruning worktrees
 

@@ -6,12 +6,15 @@ set -euo pipefail
 
 usage() {
   echo "usage: agy-next <task_id> [--model <agy-model-id>] [--no-sandbox]   (model default \$AGY_MODEL or gemini-4-argon-high; list: agy models)" >&2
+  echo "       agy-next --next [--no-sandbox]" >&2
   echo "       agy-next --prune [--dry-run]" >&2
   exit 2
 }
 [ $# -ge 1 ] || usage
 prune=0
 dry=0
+next=0
+sandbox=1  # agy --sandbox (terminal restrictions) unless --no-sandbox
 tid=""
 if [ "$1" = "--prune" ]; then
   prune=1
@@ -22,13 +25,21 @@ if [ "$1" = "--prune" ]; then
       *) usage ;;
     esac
   done
+elif [ "$1" = "--next" ]; then
+  next=1
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --no-sandbox) sandbox=0; shift ;;
+      *) usage ;;
+    esac
+  done
 else
   case $1 in
     -*) usage ;;
   esac
   tid=$1; shift
   model=${AGY_MODEL:-gemini-4-argon-high}
-  sandbox=1  # agy --sandbox (terminal restrictions) unless --no-sandbox
   while [ $# -gt 0 ]; do
     case $1 in
       --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
@@ -44,11 +55,33 @@ else
   esac
 fi
 
+if [ "$next" = 1 ]; then
+  if [ -n "${CLAUDECODE:-}" ] || [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ]; then
+    echo "agy-next --next must be started by a person in a plain terminal, not from an AI coding tool" >&2
+    exit 2
+  fi
+fi
+
 if [ -z "${COXD_URL:-}" ]; then
   echo "agy-next: COXD_URL is not set (e.g. export COXD_URL=http://host:port in your shell profile)" >&2
   exit 2
 fi
 command -v python3 >/dev/null || { echo "agy-next: python3 required" >&2; exit 2; }
+
+if [ "$next" = 1 ]; then
+  max=${AGY_NEXT_MAX:-3}
+  case $max in
+    ''|*[!0-9]*) echo "agy-next: AGY_NEXT_MAX must be a positive integer" >&2; exit 2 ;;
+  esac
+  if [ "$max" -lt 1 ]; then
+    echo "agy-next: AGY_NEXT_MAX must be at least 1" >&2
+    exit 2
+  fi
+  if [ "$max" -gt 5 ]; then
+    echo "agy-next: AGY_NEXT_MAX=$max exceeds hard cap; clamping to 5" >&2
+    max=5
+  fi
+fi
 
 REPO_ROOT=${AGY_REPO_ROOT:-$HOME/repo}
 LOG=${AGY_NEXT_LOG:-$HOME/.local/state/agy-next.log}
@@ -56,12 +89,20 @@ LOG=${AGY_NEXT_LOG:-$HOME/.local/state/agy-next.log}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/agy-next.XXXXXX")
 # Keep agy's raw stream of every run (for "why was it denied?"); newest 20 kept.
 RUNS=${AGY_NEXT_RUNS:-$HOME/.local/state/agy-next/runs}
+lock_dir=""
 keep_stream() {
   [ -s "$tmp/agy.out" ] || return 0
   mkdir -p "$RUNS" && cp "$tmp/agy.out" "$RUNS/${tid:-unknown}-$(date +%Y%m%d-%H%M%S).jsonl" 2>/dev/null || true
   ls -t "$RUNS"/*.jsonl 2>/dev/null | tail -n +21 | while read -r f; do rm -f "$f"; done
 }
-trap 'keep_stream; rm -rf "$tmp"' EXIT
+cleanup() {
+  keep_stream
+  if [ -n "$lock_dir" ]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 prune_all() { # <quiet|loud> <dry|nodry> [exclude_tid]
   local mode=$1 dry_mode=$2 exclude_tid=${3:-}
@@ -270,6 +311,168 @@ if [ "$prune" = 1 ]; then
   prune_all loud "$([ "$dry" = 1 ] && echo dry || echo nodry)"
   exit 0
 fi
+
+run_next() {
+  trap 'exit 130' INT TERM
+  local count=0 rl_file="$tmp/rate-limit"
+  local cand_id cand_model cand_display cand_round
+  local chosen_id chosen_model chosen_display
+  local ans rc secs child_args
+
+  while true; do
+    if ! curl -fsS -m 15 "${COXD_URL%/}/api/agy/queue" -o "$tmp/queue.json" </dev/null; then
+      echo "agy-next: could not fetch queue from ${COXD_URL%/}/api/agy/queue" >&2
+      exit 1
+    fi
+
+    if ! python3 - "$tmp/queue.json" "$tmp/ready.txt" "$tmp/blocked.txt" <<'PY'
+import json, re, sys
+
+q_path, ready_path, blocked_path = sys.argv[1:4]
+data = json.load(open(q_path))
+rows = data.get("queue") if isinstance(data, dict) else (data if isinstance(data, list) else None)
+if not isinstance(rows, list):
+    raise ValueError("invalid queue payload")
+
+def clean(s):
+    return " ".join("".join(c if c.isprintable() else " " for c in str(s or "")).split())
+
+def label(r):
+    iss = r.get("issue")
+    return f"#{iss}" if iss is not None else str(r.get("id") or "")
+
+valid_id = re.compile(r"^[A-Za-z0-9._-]+$")
+ready_lines = []
+blocked_lines = []
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    tid = str(r.get("id") or "")
+    if not tid or tid.startswith(".") or not valid_id.match(tid):
+        continue
+    title = clean(r.get("title"))
+    if r.get("status") == "ready":
+        files = r.get("files") if isinstance(r.get("files"), list) else []
+        raw_model = r.get("model")
+        model_arg = str(raw_model) if raw_model else ""
+        if model_arg and not valid_id.match(model_arg):
+            model_arg = ""
+        model_disp = str(raw_model) if raw_model else "default"
+        disp = f"{label(r)} {title} \u00b7 {len(files)} files \u00b7 {model_disp}"
+        ready_lines.append(f"{tid}|{model_arg}|{disp}")
+    else:
+        bb = r.get("blocked_by") if isinstance(r.get("blocked_by"), list) else []
+        why = ", ".join(clean(x) for x in bb) if bb else "blocked"
+        blocked_lines.append(f"waiting: {label(r)} {title} (blocked by: {why})")
+
+with open(ready_path, "w") as f:
+    if ready_lines:
+        f.write("\n".join(ready_lines) + "\n")
+with open(blocked_path, "w") as f:
+    if blocked_lines:
+        f.write("\n".join(blocked_lines) + "\n")
+PY
+    then
+      echo "agy-next: invalid queue response from board" >&2
+      exit 1
+    fi
+
+    chosen_id=""
+    chosen_model=""
+    chosen_display=""
+    while IFS='|' read -r cand_id cand_model cand_display; do
+      [ -n "$cand_id" ] || continue
+      if ! curl -fsS -m 15 "${COXD_URL%/}/api/task/$cand_id/plan" -o "$tmp/plan.json" </dev/null; then
+        echo "agy-next: could not fetch plan for $cand_id" >&2
+        exit 1
+      fi
+      cand_round=$(python3 - "$tmp/plan.json" <<'PY'
+import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get("round")
+except Exception:
+    v = 1
+print(v if isinstance(v, int) and not isinstance(v, bool) else (str(v) if v is not None else "1"))
+PY
+      )
+      case $cand_round in *[!0-9]*|'') cand_round=1 ;; esac
+      if [ "$cand_round" -gt 1 ]; then
+        echo "skipping $cand_id: fix rounds are not sent to agy (round $cand_round)"
+        printf 'waiting: %s (round %s: fix rounds are not sent to agy)\n' "$cand_display" "$cand_round" >> "$tmp/blocked.txt"
+        continue
+      fi
+      chosen_id=$cand_id
+      chosen_model=${cand_model:-${AGY_MODEL:-gemini-4-argon-high}}
+      chosen_display=$cand_display
+      break
+    done < "$tmp/ready.txt"
+
+    if [ -z "$chosen_id" ]; then
+      if [ -s "$tmp/blocked.txt" ]; then
+        cat "$tmp/blocked.txt"
+      else
+        echo "queue empty"
+      fi
+      exit 0
+    fi
+
+    echo "$chosen_display"
+    if [ "$count" -eq 0 ]; then
+      printf 'Run it? [y/N] '
+    else
+      printf 'Run next %s? [y/N] ' "$chosen_id"
+    fi
+    read -r ans || ans=n
+    case $ans in
+      y|Y|yes|YES) ;;
+      *) echo "stopped"; exit 0 ;;
+    esac
+
+    rm -f "$rl_file"
+    child_args=("$chosen_id" --model "$chosen_model")
+    [ "$sandbox" = 1 ] || child_args+=(--no-sandbox)
+    set +e
+    AGY_NEXT_RL_FILE="$rl_file" "$0" "${child_args[@]}"
+    rc=$?
+    set -e
+
+    if [ -e "$rl_file" ]; then
+      echo "agy-next: agy reported a rate limit / quota; stopping the session. Wait before trying again." >&2
+      exit 3
+    fi
+    if [ "$rc" -ne 0 ]; then
+      echo "agy-next: stopped (task $chosen_id exited with status $rc)" >&2
+      exit "$rc"
+    fi
+
+    count=$((count + 1))
+    if [ "$count" -ge "$max" ]; then
+      echo "session limit reached ($count)"
+      break
+    fi
+
+    secs=90
+    while [ "$secs" -gt 0 ]; do
+      printf '\rWaiting %2ds before next task (Ctrl-C to stop)... ' "$secs"
+      sleep 1 </dev/null
+      secs=$((secs - 1))
+    done
+    printf '\r%*s\r' 60 ""
+  done
+}
+
+if [ "$next" = 1 ]; then
+  run_next
+  exit 0
+fi
+
+trap 'exit 130' INT TERM
+mkdir -p "$RUNS"
+if ! mkdir "$RUNS/.lock-$tid" 2>/dev/null; then
+  echo "agy-next: $tid is already running in another terminal (lock $RUNS/.lock-$tid)" >&2
+  exit 1
+fi
+lock_dir="$RUNS/.lock-$tid"
 
 # Refuse to run while the Antigravity app holds saved "always allow" approvals: agy adds
 # them to every run and they can be far broader than our allow-list (e.g. command(gh)).
@@ -570,14 +773,69 @@ allow += ["write_file(%s)" % wt, "read_file(%s)" % wt]
 print(json.dumps({"permissions": {"allow": allow, "deny": perms.get("deny", []),
                                   "ask": perms.get("ask", [])}}))
 PY
+check_rate_limit() {
+  [ -n "${AGY_NEXT_RL_FILE:-}" ] || return 0
+  # Match 429 on word boundaries (avoids token counts like 14290), quota, and rate limit
+  # variants. Only inspect stderr and stream events that are error events (key "error",
+  # type/event "error", or result event with is_error), never model response text.
+  python3 - "$tid" "$tmp/agy.out" "$tmp/agy.err" "$AGY_NEXT_RL_FILE" <<'PY' || true
+import json, re, sys
+
+tid, out_path, err_path, rl_path = sys.argv[1:5]
+pat = re.compile(r"\b429\b|quota|rate[ _-]limit", re.IGNORECASE)
+
+def is_error_event(ev):
+    if not isinstance(ev, dict):
+        return False
+    if "error" in ev and ev["error"]:
+        return True
+    if ev.get("type") == "error" or ev.get("event") == "error":
+        return True
+    if (ev.get("type") == "result" or ev.get("event") == "result") and ev.get("is_error"):
+        return True
+    return False
+
+matched = False
+try:
+    with open(err_path, errors="replace") as f:
+        for line in f:
+            if pat.search(line):
+                matched = True
+                break
+except OSError:
+    pass
+
+if not matched:
+    try:
+        with open(out_path, errors="replace") as f:
+            for line in f:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if is_error_event(ev) and pat.search(line):
+                    matched = True
+                    break
+    except OSError:
+        pass
+
+if matched:
+    with open(rl_path, "w") as f:
+        f.write(f"{tid} rate-limit\n")
+PY
+}
+
 sbx=(--settings "$tmp/session.json"); [ "$sandbox" = 1 ] && sbx+=(--sandbox)
 echo "agy-next: sandbox $([ "$sandbox" = 1 ] && echo on || echo OFF)"
+: > "$tmp/agy.err"
 agy -p "$(cat "$tmp/prompt.md")" ${sbx[@]+"${sbx[@]}"} --model "$model" --output-format stream-json --print-timeout 30m \
+  2> >(tee "$tmp/agy.err" >&2) \
   | filter "$tmp/agy.out" "$tmp/usage.json" "$tmp/steps"
 agy_rc=${PIPESTATUS[0]}
 set -e
 ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 [ "$agy_rc" -eq 0 ] || echo "agy-next: agy exited with status $agy_rc" >&2
+check_rate_limit
 
 if git diff --quiet "$pre"..HEAD && [ -z "$(git status --porcelain)" ]; then
   final_status "no changes"
