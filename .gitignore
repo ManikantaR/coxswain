@@ -17,3 +17,4 @@ dist/
 deploy/.env
 deploy/deployer.env
 deploy/deployer/allowlist.json
+out.tmp
