@@ -82,6 +82,28 @@ def clean(text: str) -> str:
     return _INVISIBLE_RE.sub("", text or "")
 
 
+def size_of(labels) -> str | None:
+    """Return 'small', 'medium', or None from issue labels (`size:small` / `size:medium`).
+    Ignores all other labels; returns None when both or neither are present."""
+    names: set[str] = set()
+    for lb in labels or ():
+        if isinstance(lb, dict):
+            n = lb.get("name")
+            if isinstance(n, str):
+                names.add(n)
+        elif isinstance(lb, str):
+            names.add(lb)
+    has_small = "size:small" in names
+    has_medium = "size:medium" in names
+    if has_small and has_medium:
+        return None
+    if has_small:
+        return "small"
+    if has_medium:
+        return "medium"
+    return None
+
+
 def _relabel(slug: str, number: int, add: str | None = None,
              remove: str | list[str] | None = None) -> None:
     args = ["issue", "edit", str(number), "-R", slug]
@@ -232,8 +254,14 @@ def _process_repo(name: str, path: str, label: str = READY) -> int:
                       + ", ".join(f"{h.rule}@{h.location}" for h in hits))
                 continue
             brief = f"{title}\n\n{body}\n\nGitHub issue: {url}".strip()
+            size = size_of(it.get("labels"))
             if label == AGY:
-                dispatch.dispatch(path, brief, lane=LANE_AGY)
+                if size is not None:
+                    dispatch.dispatch(path, brief, lane=LANE_AGY, size=size)
+                else:
+                    dispatch.dispatch(path, brief, lane=LANE_AGY)
+            elif size is not None:
+                dispatch.dispatch(path, brief, size=size)
             else:
                 dispatch.dispatch(path, brief)
             taken += 1

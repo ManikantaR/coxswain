@@ -804,6 +804,27 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
                           timeout=60)
 
 
+def agy_tokens_trailer(worktree: str | Path, sha: str) -> int | None:
+    """Read a non-negative integer `Agy-Tokens` git trailer from commit `sha` in
+    `worktree`. Plain git only; returns None on error or when missing/malformed."""
+    if not worktree or not sha:
+        return None
+    try:
+        r = _git(Path(worktree), "log", "-1",
+                 "--format=%(trailers:key=Agy-Tokens,valueonly)", sha)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    if not lines:
+        return None
+    raw = lines[-1]
+    if not re.fullmatch(r"[0-9]+", raw):
+        return None
+    return int(raw)
+
+
 def remote_head(repo_path: str, task_id: str) -> str | None:
     """Head SHA of origin's coxd-agy/<id>, or None (missing branch, network, bad output)."""
     try:

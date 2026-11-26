@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["COXD_HOME"] = tempfile.mkdtemp(prefix="coxd-agy-")
 os.environ["COXD_WORKTREES"] = tempfile.mkdtemp(prefix="coxd-agy-wt-")
 
+import agy_handoff  # noqa: E402
 import board  # noqa: E402
 import ci_triage  # noqa: E402
 import intake  # noqa: E402
@@ -171,6 +172,30 @@ check("plan-error -> needs_human", store.get_task(t3["id"])["state"] == "needs_h
 check("no branch on failure", subprocess.run(
     ["git", "rev-parse", "--verify", "-q", f"refs/heads/coxd-agy/{t3['id']}"],
     cwd=origin).returncode != 0)
+
+# --- agy_tokens_trailer: valid int, missing, malformed -----------------------
+tr_repo = Path(tempfile.mkdtemp(prefix="coxd-agy-trailer-"))
+git(tr_repo, "init", "-b", "main")
+(tr_repo / "f.txt").write_text("v1\n")
+git(tr_repo, "add", ".")
+git(tr_repo, "commit", "-m", "feat: with trailer\n\nAgy-Tokens: 1234")
+sha_ok = git(tr_repo, "rev-parse", "HEAD").strip()
+check("agy_tokens_trailer reads integer",
+      agy_handoff.agy_tokens_trailer(tr_repo, sha_ok) == 1234)
+
+(tr_repo / "f.txt").write_text("v2\n")
+git(tr_repo, "add", ".")
+git(tr_repo, "commit", "-m", "feat: without trailer")
+sha_none = git(tr_repo, "rev-parse", "HEAD").strip()
+check("agy_tokens_trailer missing -> None",
+      agy_handoff.agy_tokens_trailer(tr_repo, sha_none) is None)
+
+(tr_repo / "f.txt").write_text("v3\n")
+git(tr_repo, "add", ".")
+git(tr_repo, "commit", "-m", "feat: malformed trailer\n\nAgy-Tokens: approx-5k")
+sha_bad = git(tr_repo, "rev-parse", "HEAD").strip()
+check("agy_tokens_trailer malformed -> None",
+      agy_handoff.agy_tokens_trailer(tr_repo, sha_bad) is None)
 
 print("FAILED" if fails else "all passed")
 sys.exit(1 if fails else 0)

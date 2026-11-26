@@ -422,7 +422,11 @@ async def _agy_continue(task_id: str, t: dict, emit) -> str:
     sha = await asyncio.to_thread(agy_handoff.fetch_into_worktree, t)
     if not sha:
         return _terminal(task_id, "needs_human", "agy-fetch-error")
-    emit("agy-pickup", {"sha": sha})
+    pickup_data: dict[str, object] = {"sha": sha}
+    agy_tokens = await asyncio.to_thread(agy_handoff.agy_tokens_trailer, wt, sha)
+    if agy_tokens is not None:
+        pickup_data["agy_tokens"] = agy_tokens
+    emit("agy-pickup", pickup_data)
     entry = registry.get_or_scout(repo, wt)
     await _autofix(task_id, wt, entry, emit)
     g = await asyncio.to_thread(gate.run_gate, wt, entry)
