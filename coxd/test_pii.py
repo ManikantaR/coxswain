@@ -55,6 +55,40 @@ check("card with short groups before and after caught",
       rules(f"12 {SPACED} 34") == {"card"})
 check("published test card + expiry still ok",
       rules("4242 4242 4242 4242 12/25") == set())
+
+
+# --- 13-digit epoch-ms timestamps under JSON timestamp keys are exempt
+def _luhn_with_prefix(prefix: str, length: int) -> str:
+    base = prefix + "0" * (length - len(prefix) - 1)
+    for d in "0123456789":
+        cand = base + d
+        if pii._luhn(cand):
+            return cand
+    raise AssertionError("no luhn check digit")
+
+
+TS_MS = _luhn_with_prefix("17" + "6000" + "0000" + "00", 13)
+check("epoch-ms fixture is 13-digit Luhn-valid in range",
+      len(TS_MS) == 13 and pii._luhn(TS_MS) and pii._TS_MIN_MS <= int(TS_MS) < pii._TS_MAX_MS)
+check("epoch-ms under when (spaced) not flagged",
+      "card" not in rules('{"entries":[{"idx":0,"when": ' + TS_MS + ',"tag":"x"}]}'))
+check("epoch-ms under when (compact) not flagged",
+      "card" not in rules('{"entries":[{"idx":0,"when":' + TS_MS + ',"tag":"x"}]}'))
+for ts_key in ("createdAt", "updated_at", "ts"):
+    check(f"epoch-ms under {ts_key} not flagged",
+          "card" not in rules(f'{{"{ts_key}": {TS_MS}}}'))
+check("epoch-ms under card still flagged", "card" in rules(f'{{"card": {TS_MS}}}'))
+check("epoch-ms in plain text still flagged", "card" in rules("number " + TS_MS))
+check("epoch-ms under id still flagged", "card" in rules(f'{{"id": {TS_MS}}}'))
+TS_16 = _luhn_with_prefix("17" + "6000" + "0000" + "000", 16)
+check("16-digit luhn under when still flagged",
+      len(TS_16) == 16 and pii._luhn(TS_16) and "card" in rules(f'{{"when": {TS_16}}}'))
+OLD_TS = _luhn_with_prefix("10" + "0000" + "0000" + "00", 13)
+check("out-of-range 13-digit luhn under when still flagged",
+      len(OLD_TS) == 13 and pii._luhn(OLD_TS) and int(OLD_TS) < pii._TS_MIN_MS
+      and "card" in rules(f'{{"when": {OLD_TS}}}'))
+check("13-digit with trailing dot under when still flagged",
+      "card" in rules(f'{{"when": {TS_MS}.5}}'))
 # --- skip_numeric: card/ssn skipped only at the given locations; secret/denylist never
 SK = {"diff:vendor/x.min.js"}
 CARD16 = "4929" + "0000" + "0000" + "0000"

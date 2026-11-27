@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import registry
@@ -25,6 +26,12 @@ _SECRET_RES = [re.compile(p) for p in (
 )]
 _SSN_RE = re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")
 _CARD_RUN_RE = re.compile(r"(?<![\w-])\d(?:[ -]?\d)*(?![\w-]?\d)(?!\w)")
+_TS_KEY_VAL_RE = re.compile(
+    r'"(?P<k>when|ts|timestamp|created|createdAt|updatedAt|\w*_at|\w*At)"\s*:\s*'
+    r"(?P<v>\d{13})(?![\w.-])"
+)
+_TS_MIN_MS = int(datetime(2015, 1, 1, tzinfo=UTC).timestamp() * 1000)
+_TS_MAX_MS = int(datetime(2100, 1, 1, tzinfo=UTC).timestamp() * 1000)
 
 # Well-known published test card numbers (processor docs).
 _TEST_CARDS = {
@@ -48,11 +55,25 @@ def _luhn(digits: str) -> bool:
     return total % 10 == 0
 
 
+def _mask_timestamps(text: str) -> str:
+    def _repl(m: re.Match[str]) -> str:
+        v = m.group("v")
+        if _TS_MIN_MS <= int(v) < _TS_MAX_MS:
+            lo, hi = m.start("v") - m.start(), m.end("v") - m.start()
+            s = m.group(0)
+            return s[:lo] + " " * (hi - lo) + s[hi:]
+        return m.group(0)
+
+    return _TS_KEY_VAL_RE.sub(_repl, text)
+
+
 def _has_card(text: str) -> bool:
     """Each digit run is split into separator-delimited groups; every contiguous span of
     whole groups totalling 13-19 digits is Luhn-checked, so a card next to a short group
     (e.g. an expiry) is still caught while one unbroken run is checked only as a whole.
-    Spans overlapping a published test card number are skipped."""
+    Spans overlapping a published test card number are skipped.
+    13-digit epoch-ms timestamps under listed JSON timestamp keys are masked first."""
+    text = _mask_timestamps(text)
     for m in _CARD_RUN_RE.finditer(text):
         groups = re.split(r"[ -]", m.group())
         digits = "".join(groups)
